@@ -1,38 +1,38 @@
-import js from '@eslint/js'
 import globals from 'globals'
-import react from 'eslint-plugin-react'
-import reactHooks from 'eslint-plugin-react-hooks'
-import reactRefresh from 'eslint-plugin-react-refresh'
+import js from '@eslint/js'
+import eslintPluginVue from 'eslint-plugin-vue'
 
 export default [
-  { ignores: ['dist'] },
+  js.configs.recommended,
   {
-    files: ['**/*.{js,jsx}'],
+    files: ['**/*.js', '**/*.vue'],
     languageOptions: {
-      ecmaVersion: 2020,
-      globals: globals.browser,
-      parserOptions: {
-        ecmaVersion: 'latest',
-        ecmaFeatures: { jsx: true },
-        sourceType: 'module',
+      globals: {
+        ...globals.browser,
+        ...globals.node
       },
+      sourceType: 'module',
+      ecmaVersion: 'latest',
     },
-    settings: { react: { version: '18.3' } },
     plugins: {
-      react,
-      'react-hooks': reactHooks,
-      'react-refresh': reactRefresh,
+      vue: eslintPluginVue,
     },
     rules: {
-      ...js.configs.recommended.rules,
-      ...react.configs.recommended.rules,
-      ...react.configs['jsx-runtime'].rules,
-      ...reactHooks.configs.recommended.rules,
-      'react/jsx-no-target-blank': 'off',
-      'react-refresh/only-export-components': [
-        'warn',
-        { allowConstantExport: true },
-      ],
-    },
-  },
-]
+      // Vue 相关规则
+      'vue/multi-word-component-names': 'off',
+      'vue/no-multiple-template-root': 'off',
+      'vue/require-default-prop': 'off',
+      
+      // JavaScript 规则
+      'prefer-const': 'error',
+      'no-var': 'error',
+      'no-console': 'off',
+      'no-unused-vars': 'warn',
+      'no-undef': 'error',
+      'comma-dangle': ['error', 'only-multiline'],
+      'quotes': ['error', 'single', { 'allowTemplateLiterals': true }],
+      'semi': ['error', 'never'],
+      'indent': ['error', 2],
+    }
+  }
+];

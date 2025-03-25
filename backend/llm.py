@@ -74,6 +74,38 @@ class LLMService:
                 if matches:
                     json_str = matches.group(1).strip()
                     return json.loads(json_str)
+                    
+                # 如果上面的尝试失败，查找任何有效的JSON对象
+                pattern = r'({[\s\S]*?})'
+                matches = re.findall(pattern, raw_response)
+                
+                for potential_json in matches:
+                    try:
+                        # 清理，删除非标准JSON格式中的注释和多余字符
+                        cleaned_json = re.sub(r'//.*?[\n\r]|/\*.*?\*/', '', potential_json, flags=re.DOTALL)
+                        # 验证大括号是否匹配
+                        if cleaned_json.count('{') == cleaned_json.count('}'):
+                            parsed = json.loads(cleaned_json)
+                            # 确保解析出的结果至少包含reply字段
+                            if isinstance(parsed, dict) and 'reply' in parsed:
+                                return parsed
+                    except:
+                        continue
+                
+                # 尝试查找最后一种情况：JSON可能没有被完全包裹
+                pattern = r'({[^{}]*"reply":[^{}]*"[^"]*"[^{}]*})'
+                matches = re.search(pattern, raw_response, re.DOTALL)
+                if matches:
+                    try:
+                        return json.loads(matches.group(1).strip())
+                    except:
+                        pass
+                    
                 raise ValueError("No valid JSON block found")
             except Exception as e:
-                raise ValueError(f"Failed to parse JSON response: {str(e)}")
+                print(f"JSON解析错误，原始响应: {raw_response}")
+                # 如果所有尝试都失败，构造一个基本的回复
+                return {
+                    "reply": "对不起，我遇到了一些技术问题，无法正确回应。能请你重新表述一下吗？",
+                    "expression": "生气"
+                }

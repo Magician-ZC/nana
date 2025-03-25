@@ -28,6 +28,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = "default"
     agent_type: Optional[str] = None
     personality: Optional[str] = None
+    is_category: Optional[bool] = False
 
 class AgentRequest(BaseModel):
     agent_name: str
@@ -96,28 +97,36 @@ async def chat_endpoint(websocket: WebSocket):
         await websocket.close()
 
 async def normal_chat_flow(request: ChatRequest):
-    reply, audio_data, expression = await chat_service.generate_reply(
+    reply, audio_data, expression, guidance_message = await chat_service.generate_reply(
         request.message, 
         request.session_id,
         agent_type=request.agent_type,
-        personality=request.personality
+        personality=request.personality,
+        is_category=request.is_category
     )
     
     print("-- /api/chat --")
     print("agent_type:", request.agent_type)
     print("personality:", request.personality)
+    print("is_category:", request.is_category)
     print("reply:", reply)
     print("expression:", expression)
+    if guidance_message:
+        print("guidance_message:", guidance_message)
 
     audio_base64 = base64.b64encode(audio_data).decode('ascii') if audio_data else ''
     
-    return JSONResponse(
-        content={
-            "message": reply,
-            "audio": audio_base64,
-            "expression": expression
-        }
-    )
+    response_data = {
+        "message": reply,
+        "audio": audio_base64,
+        "expression": expression
+    }
+    
+    # 如果有引导决策消息，添加到响应中
+    if guidance_message:
+        response_data["guidance_message"] = guidance_message
+    
+    return JSONResponse(content=response_data)
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

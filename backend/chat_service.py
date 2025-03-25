@@ -28,22 +28,31 @@ class ChatService:
             return self.main_agent.set_agent(agent_name)
         return False
 
-    async def generate_reply(self, message: str, session_id: str, agent_type: Optional[str] = None, personality: Optional[str] = None) -> Tuple[str, Optional[bytes], str]:
+    async def generate_reply(self, message: str, session_id: str, agent_type: Optional[str] = None, personality: Optional[str] = None, is_category: bool = False) -> Tuple[str, Optional[bytes], str, Optional[str]]:
         """
         生成回复
         :param message: 用户消息
         :param session_id: 会话ID
         :param agent_type: 智能体类型
         :param personality: 智能体的性格描述
-        :return: (回复文本, 语音数据, 表情)
+        :param is_category: 是否是快捷提问类别
+        :return: (回复文本, 语音数据, 表情, 引导决策消息)
         """
         try:
             # 如果收到新的agent_type，先切换智能体
             if agent_type and agent_type in ["nanaA", "nanaB", "nanaC"]:
                 self.main_agent.set_agent(agent_type)
             
-            # 使用 MainAgent 生成回复和表情，传入性格描述
-            reply, expression = await self.main_agent.reply(message, personality=personality)
+            # 使用 MainAgent 生成回复和表情，传入性格描述和快捷提问标志
+            reply, expression = await self.main_agent.reply(message, personality=personality, is_category=is_category)
+            
+            # 检查是否有引导决策消息
+            guidance_message = None
+            if is_category:
+                # 查看最近一次对话是否是系统引导
+                if (len(self.main_agent.conversation_history.turns) >= 2 and 
+                    self.main_agent.conversation_history.turns[-1].ask == "SYSTEM_GUIDANCE"):
+                    guidance_message = self.main_agent.conversation_history.turns[-1].answer
             
             # 生成语音 (如果TTS服务已启用)
             audio_data = None   
@@ -53,8 +62,8 @@ class ChatService:
                 except Exception as e:
                     print(f"生成语音时出错了喵: {e}")
             
-            return reply, audio_data, expression
+            return reply, audio_data, expression, guidance_message
             
         except Exception as e:
             print(f"生成回复时出错了喵: {e}")
-            return "对不起，我现在有点累了，能稍后再聊吗？", None, "生气"
+            return "对不起，我现在有点累了，能稍后再聊吗？", None, "生气", None

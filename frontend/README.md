@@ -1,8 +1,30 @@
-# React + Vite
+# Nana 前端项目
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+这是一个基于Vue 3、Vite和Live2D技术的智能助手前端项目。
 
-Currently, two official plugins are available:
+## 技术栈
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- Vue 3 组合式API
+- Pinia 状态管理
+- Vite 构建工具
+- Live2D 模型展示
+
+## 开发环境设置
+
+```bash
+# 安装依赖
+npm install
+
+# 启动开发服务器
+npm run dev
+
+# 构建生产版本
+npm run build
+```
+
+## 功能特性
+
+- 多种Live2D角色形象
+- 实时语音交互
+- 聊天历史记录
+- 角色动态表情反馈

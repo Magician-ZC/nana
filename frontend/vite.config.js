@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import vue from '@vitejs/plugin-vue'
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -9,5 +9,5 @@ export default defineConfig({
     strictPort: true,   // 端口被占用时直接报错
     cors: true,  
   },
-  plugins: [react()],
+  plugins: [vue()],
 })
