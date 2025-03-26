@@ -16,7 +16,9 @@
           @click="handleAgentSelect(agent.id)"
         >
           <div class="agent-name">{{ agent.name }}</div>
-          <div class="agent-description">{{ agent.description }}</div>
+          <div class="agent-description">
+            {{ agent.description }}
+          </div>
           <div v-if="agent.id.startsWith('custom_')" class="agent-actions">
             <div class="edit-btn" @click.stop="handleEditAgent(agent)">
               <span>✎</span>
@@ -44,7 +46,7 @@
 </template>
 
 <script setup>
-import { ref, computed, defineProps, defineEmits, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useChatStore } from '../stores/chat'
 import CustomAgentForm from './CustomAgentForm.vue'
 
@@ -75,11 +77,6 @@ const selectedAgentName = computed(() => {
 })
 
 const handleAgentSelect = async (agentId) => {
-  if (agentId === selectedAgent.value) {
-    isOpen.value = false
-    return
-  }
-
   try {
     // 找到选中的agent完整信息
     const selectedAgentData = agents.value.find(agent => agent.id === agentId)

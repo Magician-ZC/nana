@@ -2,7 +2,7 @@ from fastapi import FastAPI, WebSocket, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import base64
 from chat_service import ChatService
 from tts import TTSService
@@ -13,6 +13,9 @@ import json
 import asyncio
 import os
 import uuid
+import shutil
+import tempfile
+# from llm import LLMService  # 注释掉，因为我们使用chat_service中的LLM服务
 
 app = FastAPI()
 
@@ -48,10 +51,171 @@ class CustomAgentRequest(BaseModel):
 chat_service = ChatService()
 tts_service = TTSService(Config.FISH_API_KEY, Config.FISH_REFERENCE_ID)
 speech_service = SpeechService()
+# llm_service = LLMService(Config.LLM_API_KEY, Config.LLM_API_URL)  # 注释掉，使用chat_service中的LLM服务
 
 # 确保保存自定义角色的目录存在
 CUSTOM_AGENTS_DIR = "save/custom_agents"
+TEMP_UPLOADS_DIR = "temp_uploads"
 os.makedirs(CUSTOM_AGENTS_DIR, exist_ok=True)
+os.makedirs(TEMP_UPLOADS_DIR, exist_ok=True)
+
+# 文本提取函数
+def extract_text_from_file(file_path, file_extension):
+    """从不同格式的文件中提取文本
+    
+    Args:
+        file_path (str): 文件路径
+        file_extension (str): 文件扩展名
+        
+    Returns:
+        str: 提取的文本内容
+    """
+    if file_extension == '.txt':
+        # 直接读取文本文件
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except UnicodeDecodeError:
+            # 尝试使用其他编码
+            with open(file_path, 'r', encoding='gbk') as f:
+                return f.read()
+    
+    elif file_extension in ['.doc', '.docx']:
+        try:
+            # 使用python-docx库提取文本
+            import docx
+            doc = docx.Document(file_path)
+            return '\n'.join([paragraph.text for paragraph in doc.paragraphs])
+        except ImportError:
+            return "缺少python-docx库，无法解析Word文档。"
+    
+    elif file_extension == '.pdf':
+        try:
+            # 使用PyPDF2提取文本
+            from PyPDF2 import PdfReader
+            reader = PdfReader(file_path)
+            text = ""
+            for page in reader.pages:
+                text += page.extract_text() + "\n"
+            return text
+        except ImportError:
+            return "缺少PyPDF2库，无法解析PDF文档。"
+    
+    return "不支持的文件格式"
+
+@app.post("/api/extract_agent_info")
+async def extract_agent_info(file: UploadFile = File(...)):
+    """从上传的文件中提取Agent信息
+    
+    Args:
+        file: 上传的文件
+        
+    Returns:
+        dict: 包含提取结果的响应
+    """
+    try:
+        # 检查文件类型
+        file_extension = os.path.splitext(file.filename)[1].lower()
+        if file_extension not in ['.txt', '.pdf', '.doc', '.docx']:
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": "不支持的文件格式，仅支持txt、pdf、doc、docx"
+                }
+            )
+        
+        # 保存上传的文件
+        temp_file_path = os.path.join(TEMP_UPLOADS_DIR, f"{uuid.uuid4()}{file_extension}")
+        with open(temp_file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # 提取文本内容
+        file_content = extract_text_from_file(temp_file_path, file_extension)
+        
+        if not file_content or file_content == "不支持的文件格式":
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": "文件内容提取失败或文件为空"
+                }
+            )
+            
+        # 使用chat_service中的LLM服务提取角色信息
+        prompt = f"""请从以下文本中提取出一个可能的角色描述信息，包括：
+1. 角色名称 (name)
+2. 性格特征 (personality)
+3. 兴趣爱好 (interests)
+4. 生活习惯 (lifestyle)
+5. 价值观 (values)
+6. 角色标签 (tags)：请从这些词中选择最多4个最符合角色特点的标签：温柔体贴、阳光活泼、冷酷高傲、知性优雅、单纯天真、幽默风趣、古灵精怪、深沉内敛、率真直爽、浪漫多情、神秘莫测、坚毅果断、温暖治愈、机智敏锐、傲娇可爱
+
+如果某些信息无法从文本中提取，可以留空。
+请以JSON格式返回结果，如：
+{{
+  "name": "...",
+  "personality": "...",
+  "interests": "...",
+  "lifestyle": "...",
+  "values": "...",
+  "tags": ["标签1", "标签2", ...]
+}}
+
+文本内容：
+{file_content[:2000]}  # 限制文本长度
+"""
+        
+        # 使用chat_service中的llm_service
+        response = await chat_service.llm_service.async_chat(prompt)
+        
+        # 尝试解析LLM返回的JSON
+        try:
+            # 从回复中提取JSON部分
+            start_index = response.find('{')
+            end_index = response.rfind('}') + 1
+            
+            if start_index >= 0 and end_index > start_index:
+                json_str = response[start_index:end_index]
+                agent_info = json.loads(json_str)
+                
+                # 移除临时文件
+                os.remove(temp_file_path)
+                
+                return JSONResponse(
+                    content={
+                        "success": True,
+                        "name": agent_info.get("name", ""),
+                        "personality": agent_info.get("personality", ""),
+                        "interests": agent_info.get("interests", ""),
+                        "lifestyle": agent_info.get("lifestyle", ""),
+                        "values": agent_info.get("values", ""),
+                        "tags": agent_info.get("tags", [])
+                    }
+                )
+            else:
+                raise ValueError("无法在回复中找到JSON格式数据")
+                
+        except Exception as e:
+            print(f"解析LLM回复失败: {e}")
+            print(f"LLM回复内容: {response}")
+            
+            # 移除临时文件
+            os.remove(temp_file_path)
+            
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": f"解析文件信息失败: {str(e)}"
+                }
+            )
+            
+    except Exception as e:
+        print(f"处理上传文件失败: {e}")
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": f"处理文件失败: {str(e)}"
+            }
+        )
 
 @app.post("/api/create_custom_agent")
 async def create_custom_agent(request: CustomAgentRequest):
@@ -82,8 +246,9 @@ async def create_custom_agent(request: CustomAgentRequest):
         with open(os.path.join(CUSTOM_AGENTS_DIR, f"{agent_id}.json"), "w", encoding="utf-8") as f:
             json.dump(agent_config, f, ensure_ascii=False, indent=2)
         
-        # 创建角色提示词文件
-        with open(os.path.join(CUSTOM_AGENTS_DIR, f"{agent_id}.txt"), "w", encoding="utf-8") as f:
+        # 先只写入角色基本信息
+        agent_file_path = os.path.join(CUSTOM_AGENTS_DIR, f"{agent_id}.txt")
+        with open(agent_file_path, "w", encoding="utf-8") as f:
             f.write(f"""你是一个名为{request.name}的角色。
 {request.description}
 
@@ -98,8 +263,84 @@ async def create_custom_agent(request: CustomAgentRequest):
 
 价值观：
 {request.values}
+""")
+        
+        # 先尝试从nanaA.txt读取任务规则部分
+        template_paths = ["prompts/nanaA.txt", "prompts/prompt_template.txt"]
+        task_rules = None
+        
+        for template_path in template_paths:
+            try:
+                if os.path.exists(template_path):
+                    with open(template_path, "r", encoding="utf-8") as template_file:
+                        template_content = template_file.read()
+                        
+                        # 查找任务规则的起始位置
+                        task_input_pos = template_content.find("任务输入:")
+                        if task_input_pos > 0:
+                            # 提取任务规则部分
+                            task_rules = template_content[task_input_pos:]
+                            break  # 找到有效模板即退出循环
+            except Exception as e:
+                print(f"读取模板 {template_path} 失败: {e}")
+        
+        # 如果找到了有效的任务规则，追加到角色文件中
+        if task_rules:
+            with open(agent_file_path, "a", encoding="utf-8") as agent_file:
+                agent_file.write("\n" + task_rules)
+        else:
+            # 使用硬编码的任务规则作为后备方案 - 使用原始字符串避免处理大括号
+            with open(agent_file_path, "a", encoding="utf-8") as agent_file:
+                agent_file.write(r"""
+任务输入:
+用户的个人信息：
+{user_info}
 
-请按照以上设定与用户进行对话。""")
+对话记录：
+{chat_history}
+
+用户的最新问题：
+{user_message}
+
+相关记忆：
+{memory}
+
+任务输出:
+1. 回复内容
+2. 表情
+3. 用户个人信息（仅在用户明确提供新信息时才更新）
+
+回复规则：
+1. 对于普通对话，回复控制在15字以内
+2. 对于快捷提问类别（如情感咨询师、人际关系等），需要提供专业且详细的回答，字数不限
+3. 根据历史对话记录和补充信息回答问题
+4. 当用户使用快捷提问类别且有相关的用户信息时，请根据这些信息提供个性化的专业建议
+5. 提供建议时，仅关注解决方案和专业分析，不要在建议中附加引导用户做决策的问题
+6. 当用户回复了决策（如"我决定原谅他"、"我选择继续努力"等）时，应立即更新相关用户信息，反映用户的最新选择和态度变化
+
+用户个人信息处理规则：
+1. 当用户明确提供新的个人信息，或对建议做出选择和决策时，在输出中包含"user_info"字段
+2. 如果用户没有提供新信息或没有做出明确决策，请勿包含"user_info"字段
+3. 新的个人信息应该保持原有格式，不要随意添加不确定的信息
+4. 当用户做出决策后，应更新相关的用户信息部分，如修改"最近状况"中的相关条目，反映用户的新选择
+
+表情规则：
+在以下表情选一个表情符合回复的内容
+吐舌,黑脸,眼泪,脸红,nn眼,生气瘪嘴,死鱼眼,生气,咪咪眼,嘟嘴,钱钱眼,爱心,泪眼
+
+输出格式：
+必须输出以下JSON格式（仅在有新用户信息时才包含user_info字段）：
+{{
+  "reply": "<回答内容>",
+  "expression": "<表情>"
+}}
+
+或者当用户提供了新的个人信息或做出了决策时：
+{{
+  "reply": "<回答内容>",
+  "expression": "<表情>",
+  "user_info": "<用户个人信息>"
+}} """)
             
         return JSONResponse(
             content={
@@ -210,9 +451,93 @@ async def update_custom_agent(agent_id: str, request: CustomAgentRequest):
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(agent_config, f, ensure_ascii=False, indent=2)
         
-        # 更新角色提示词文件
+        # 读取现有的提示词文件，保留任务规则部分
         prompt_path = os.path.join(CUSTOM_AGENTS_DIR, f"{agent_id}.txt")
+        task_rules = ""
+        
+        if os.path.exists(prompt_path):
+            try:
+                with open(prompt_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    # 查找任务规则的起始位置
+                    task_input_pos = content.find("任务输入:")
+                    if task_input_pos > 0:
+                        # 提取任务规则部分
+                        task_rules = content[task_input_pos:]
+            except Exception as e:
+                print(f"读取现有提示词文件失败: {e}")
+                # 如果读取失败，尝试从固定模板中读取
+                template_paths = ["prompts/nanaA.txt", "prompts/prompt_template.txt"]
+                for template_path in template_paths:
+                    try:
+                        if os.path.exists(template_path):
+                            with open(template_path, "r", encoding="utf-8") as template_file:
+                                template_content = template_file.read()
+                                
+                                # 查找任务规则的起始位置
+                                task_input_pos = template_content.find("任务输入:")
+                                if task_input_pos > 0:
+                                    # 提取任务规则部分
+                                    task_rules = template_content[task_input_pos:]
+                                    break  # 找到有效模板即退出循环
+                    except Exception as template_error:
+                        print(f"读取模板 {template_path} 失败: {template_error}")
+                
+                # 如果仍然没有找到有效的任务规则，使用硬编码的后备方案
+                if not task_rules:
+                    task_rules = r"""任务输入:
+用户的个人信息：
+{user_info}
+
+对话记录：
+{chat_history}
+
+用户的最新问题：
+{user_message}
+
+相关记忆：
+{memory}
+
+任务输出:
+1. 回复内容
+2. 表情
+3. 用户个人信息（仅在用户明确提供新信息时才更新）
+
+回复规则：
+1. 对于普通对话，回复控制在15字以内
+2. 对于快捷提问类别（如情感咨询师、人际关系等），需要提供专业且详细的回答，字数不限
+3. 根据历史对话记录和补充信息回答问题
+4. 当用户使用快捷提问类别且有相关的用户信息时，请根据这些信息提供个性化的专业建议
+5. 提供建议时，仅关注解决方案和专业分析，不要在建议中附加引导用户做决策的问题
+6. 当用户回复了决策（如"我决定原谅他"、"我选择继续努力"等）时，应立即更新相关用户信息，反映用户的最新选择和态度变化
+
+用户个人信息处理规则：
+1. 当用户明确提供新的个人信息，或对建议做出选择和决策时，在输出中包含"user_info"字段
+2. 如果用户没有提供新信息或没有做出明确决策，请勿包含"user_info"字段
+3. 新的个人信息应该保持原有格式，不要随意添加不确定的信息
+4. 当用户做出决策后，应更新相关的用户信息部分，如修改"最近状况"中的相关条目，反映用户的新选择
+
+表情规则：
+在以下表情选一个表情符合回复的内容
+吐舌,黑脸,眼泪,脸红,nn眼,生气瘪嘴,死鱼眼,生气,咪咪眼,嘟嘴,钱钱眼,爱心,泪眼
+
+输出格式：
+必须输出以下JSON格式（仅在有新用户信息时才包含user_info字段）：
+{{
+  "reply": "<回答内容>",
+  "expression": "<表情>"
+}}
+
+或者当用户提供了新的个人信息或做出了决策时：
+{{
+  "reply": "<回答内容>",
+  "expression": "<表情>",
+  "user_info": "<用户个人信息>"
+}}"""
+                
+        # 更新角色提示词文件，保留任务规则部分
         with open(prompt_path, "w", encoding="utf-8") as f:
+            # 写入角色基本信息
             f.write(f"""你是一个名为{request.name}的角色。
 {request.description}
 
@@ -228,7 +553,9 @@ async def update_custom_agent(agent_id: str, request: CustomAgentRequest):
 价值观：
 {request.values}
 
-请按照以上设定与用户进行对话。""")
+""")
+            # 追加任务规则部分
+            f.write(task_rules)
             
         return JSONResponse(
             content={

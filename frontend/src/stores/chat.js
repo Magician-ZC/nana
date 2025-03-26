@@ -35,6 +35,11 @@ export const useChatStore = defineStore('chat', () => {
   const currentAgent = ref('nanaA')
   const isTracking = ref(true)
   const hasShownWelcome = ref({})  // 改为对象，记录每个agent是否显示过欢迎消息
+  const agents = ref([
+    { id: 'nanaA', name: '娜娜A', description: '傲娇猫娘' },
+    { id: 'nanaB', name: '娜娜B', description: '知性大姐姐' },
+    { id: 'nanaC', name: '娜娜C', description: '元气少女' }
+  ])
   
   // 获取当前角色信息
   const currentAgentInfo = computed(() => 
@@ -46,7 +51,36 @@ export const useChatStore = defineStore('chat', () => {
     isTracking.value = status
   }
   
+  // 加载自定义角色列表
+  async function loadCustomAgents() {
+    try {
+      const response = await fetch('http://localhost:8666/api/list_custom_agents')
+      const data = await response.json()
+      
+      if (data.success && data.agents) {
+        // 过滤掉已存在的自定义角色
+        const existingCustomIds = agents.value
+          .filter(agent => agent.id.startsWith('custom_'))
+          .map(agent => agent.id)
+        
+        // 添加新的自定义角色
+        data.agents.forEach(agent => {
+          if (!existingCustomIds.includes(agent.id)) {
+            agents.value.push(agent)
+          }
+        })
+      }
+    } catch (error) {
+      console.error('加载自定义角色列表失败:', error)
+    }
+  }
+  
   function changeAgent(agentId, modelId) {
+    // 如果切换到当前角色，不做任何操作
+    if (currentAgent.value === agentId) {
+      return
+    }
+    
     // 不再清空消息历史，只切换角色
     currentAgent.value = agentId
     
@@ -56,10 +90,8 @@ export const useChatStore = defineStore('chat', () => {
     console.log(`Chat Store - changeAgent: agentId=${agentId}, modelId=${newModelId}`)
     currentModel.value = newModelId
     
-    // 检查是否需要显示欢迎消息
-    if (!hasShownWelcome.value[agentId]) {
-      showWelcomeMessage()
-    }
+    // 每次切换角色都显示欢迎消息，不再检查是否已经显示过
+    showWelcomeMessage()
   }
   
   async function sendMessage(message) {
@@ -144,15 +176,30 @@ export const useChatStore = defineStore('chat', () => {
   // 显示欢迎消息
   function showWelcomeMessage() {
     const agentId = currentAgent.value
-    const agentInfo = AGENT_WELCOME_MESSAGES[currentModel.value]
+    // 获取当前角色信息，如果没有预设则使用默认欢迎语
+    let agentInfo = AGENT_WELCOME_MESSAGES[currentModel.value]
     
-    if (agentInfo && !hasShownWelcome.value[agentId]) {
+    // 如果是自定义角色且没有预设欢迎语
+    if (!agentInfo && agentId.startsWith('custom_')) {
+      // 从agents中查找自定义角色的名称
+      const customAgent = agents.value.find(agent => agent.id === agentId)
+      const customName = customAgent ? customAgent.name : '自定义角色'
+      
+      // 创建默认欢迎语
+      agentInfo = {
+        message: `您好，我是${customName}，很高兴为您服务。有什么我可以帮助您的吗？`,
+        personality: '友好、乐于助人'
+      }
+    }
+    
+    if (agentInfo) {
       messages.value.push({ 
         type: 'assistant', 
         content: agentInfo.message,
         timestamp: formatTime(),
         agentId: agentId
       })
+      // 记录已经显示过欢迎消息，此行可保留用于兼容性
       hasShownWelcome.value[agentId] = true
     }
   }
@@ -166,10 +213,12 @@ export const useChatStore = defineStore('chat', () => {
     isTracking,
     hasShownWelcome,
     currentAgentInfo,
+    agents,
     // 方法
     setTrackingStatus,
     changeAgent,
     sendMessage,
-    showWelcomeMessage
+    showWelcomeMessage,
+    loadCustomAgents
   }
 }) 

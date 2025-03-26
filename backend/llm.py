@@ -13,6 +13,24 @@ class LLMService:
             api_key=api_key
         )
         
+    async def async_chat(self, message: str, temperature: float = 0.7, max_tokens: int = 2048) -> str:
+        """简单的异步聊天方法，直接返回文本回复
+        
+        Args:
+            message: 用户消息
+            temperature: 温度参数
+            max_tokens: 最大token数
+            
+        Returns:
+            str: 模型回复的文本
+        """
+        return await self.generate_response(
+            message=message,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            is_json=False
+        )
+        
     async def generate_response(
         self, 
         message: str,

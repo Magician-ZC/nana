@@ -11,7 +11,7 @@
       <template v-else>
         <!-- 渲染消息列表 -->
         <div 
-          v-for="(message, index) in chatStore.messages" 
+          v-for="(message, index) in sortedMessages" 
           :key="index" 
         >
           <!-- 消息时间戳，独立于消息之外，在消息上方显示 -->
@@ -36,8 +36,8 @@
             
             <!-- 消息内容区域 -->
             <div class="message-content">
-              <!-- 当不是当前agent的助手消息时显示名称 -->
-              <div v-if="message.type === 'assistant' && message.agentId !== chatStore.currentAgent" class="message-sender">
+              <!-- 所有助手消息都显示名称 -->
+              <div v-if="message.type === 'assistant'" class="message-sender">
                 {{ getAgentName(message.agentId) }}
               </div>
               
@@ -158,7 +158,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, watch, computed } from 'vue'
 import { useChatStore } from '../stores/chat'
 
 const chatStore = useChatStore()
@@ -238,11 +238,10 @@ function getAgentName(agentId) {
     'nanaC': '娜娜C - 元气少女'
   }
   
-  // 对于自定义agent，截取ID显示
+  // 对于自定义agent，从store中获取名称
   if (agentId?.startsWith('custom_')) {
-    // 尝试从store获取自定义agent信息
-    const customAgent = chatStore.getCustomAgentById?.(agentId)
-    return customAgent ? customAgent.name : `自定义角色(${agentId.substring(7)})`
+    const customAgent = chatStore.agents?.find(agent => agent.id === agentId)
+    return customAgent ? customAgent.name : '自定义角色'
   }
   
   return agentNames[agentId] || agentId
@@ -379,6 +378,18 @@ function shouldShowTimestamp(message, index) {
   const timeDiff = currentTime - prevTime
   return timeDiff > 180000
 }
+
+// 添加计算属性来对消息进行排序
+const sortedMessages = computed(() => {
+  return [...chatStore.messages].sort((a, b) => {
+    // 首先按时间戳排序
+    if (a.timestamp && b.timestamp) {
+      return new Date(a.timestamp) - new Date(b.timestamp)
+    }
+    // 如果没有时间戳，则按索引排序
+    return chatStore.messages.indexOf(a) - chatStore.messages.indexOf(b)
+  })
+})
 
 onMounted(() => {
   // 在组件挂载后显示欢迎消息

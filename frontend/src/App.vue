@@ -1,5 +1,14 @@
 <template>
-  <div class="app">
+  <div class="app" :class="{ 'dark': isDarkMode }">
+    <!-- 深色模式切换按钮 -->
+    <button 
+      @click="toggleDarkMode" 
+      class="theme-toggle-btn"
+      :title="isDarkMode ? '切换到浅色模式' : '切换到深色模式'"
+    >
+      <i :class="isDarkMode ? 'fa-solid fa-sun' : 'fa-solid fa-moon'"></i>
+    </button>
+    
     <TimeWeather />
     <QuickQuestions />
     <div class="live2d-main">
@@ -22,6 +31,41 @@ import QuickQuestions from './components/QuickQuestions.vue'
 
 const chatStore = useChatStore()
 const live2dRef = ref(null)
+const isDarkMode = ref(false)
+
+// 切换深色/浅色模式
+const toggleDarkMode = () => {
+  isDarkMode.value = !isDarkMode.value
+  // 保存用户偏好到本地存储
+  localStorage.setItem('darkMode', isDarkMode.value)
+  updateTheme()
+}
+
+// 更新主题
+const updateTheme = () => {
+  if (isDarkMode.value) {
+    document.documentElement.classList.add('dark')
+  } else {
+    document.documentElement.classList.remove('dark')
+  }
+}
+
+// 检查系统偏好
+const checkSystemPreference = () => {
+  // 先检查用户之前的设置
+  const savedPreference = localStorage.getItem('darkMode')
+  
+  if (savedPreference !== null) {
+    // 如果有保存的设置，使用它
+    isDarkMode.value = savedPreference === 'true'
+  } else {
+    // 否则使用系统偏好
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+    isDarkMode.value = prefersDark
+  }
+  
+  updateTheme()
+}
 
 // 当收到消息更新和表情设置
 watch(() => chatStore.messages, async (newMessages, oldMessages) => {
@@ -80,6 +124,20 @@ const handleKeyPress = (e) => {
 
 onMounted(() => {
   window.addEventListener('keydown', handleKeyPress)
+  // 加载自定义角色列表
+  chatStore.loadCustomAgents()
+  
+  // 检查并应用主题设置
+  checkSystemPreference()
+  
+  // 监听系统主题变化
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+    // 只有当用户没有手动设置过主题时，才跟随系统变化
+    if (localStorage.getItem('darkMode') === null) {
+      isDarkMode.value = e.matches
+      updateTheme()
+    }
+  })
 })
 
 onUnmounted(() => {
@@ -160,5 +218,38 @@ body {
     bottom: 0 !important;
     border-radius: 0 !important;
   }
+}
+
+/* 深色模式切换按钮 */
+.theme-toggle-btn {
+  position: fixed;
+  top: 20px;
+  left: 20px;
+  z-index: 100;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background-color: rgba(0, 0, 0, 0.7);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+  transition: all 0.3s ease;
+}
+
+.theme-toggle-btn:hover {
+  transform: scale(1.1);
+  background-color: rgba(50, 50, 50, 0.8);
+}
+
+.dark .theme-toggle-btn {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+.dark .theme-toggle-btn:hover {
+  background-color: rgba(255, 255, 255, 0.3);
 }
 </style> 
