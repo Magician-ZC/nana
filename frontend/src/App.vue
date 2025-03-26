@@ -4,7 +4,7 @@
     <QuickQuestions />
     <div class="live2d-main">
       <Live2DModel ref="live2dRef" :modelId="chatStore.currentModel" />
-      <AgentSelector @agent-change="handleAgentChange" :currentModel="chatStore.currentModel" />
+      <AgentSelector @agent-change="handleAgentChange" :currentModel="chatStore.currentAgent" />
     </div>
     
     <ChatPanel />
@@ -46,7 +46,7 @@ watch(() => chatStore.messages, async (newMessages, oldMessages) => {
       const defaultExpressions = {
         'nanaA': '酷酷',
         'nanaB': '开心',
-        'nanaC': '害羞'
+        'nanaC': '害羞',
       }
       live2dRef.value?.showExpression(defaultExpressions[chatStore.currentModel] || '酷酷')
     }
@@ -59,9 +59,10 @@ watch(() => chatStore.messages, async (newMessages, oldMessages) => {
 }, { deep: true })
 
 // 处理agent变更
-const handleAgentChange = (agentId) => {
+const handleAgentChange = (modelId) => {
+  console.log('App收到形象变更:', modelId)
   if (live2dRef.value) {
-    live2dRef.value.changeModel(agentId)
+    live2dRef.value.changeModel(modelId)
   }
 }
 

@@ -69,8 +69,11 @@ class ConversationHistory:
         turn = ConversationTurn(message, reply)
         self.turns.append(turn)
         
-        # 当对话数量达到最大值且不是系统引导消息时，自动归档一半的对话
-        if len(self.turns) >= self.max_turns and message != "SYSTEM_GUIDANCE":
+        print(f"对话历史: 当前共有{len(self.turns)}轮对话")
+        
+        # 当对话数量达到10轮且不是系统引导消息时，触发自动归档
+        if len(self.turns) >= 10 and message != "SYSTEM_GUIDANCE":
+            print(f"对话数量达到{len(self.turns)}轮，触发自动归档")
             await self._auto_archive(user_info_processor)
             
     async def _summarize_dialog(self, turns: List[ConversationTurn]) -> str:
@@ -83,48 +86,69 @@ class ConversationHistory:
             str: 用户人物画像总结
         """
         # 提取所有对话内容
-        all_text = "\n".join([f"{turn.ask}\n{turn.answer}" for turn in turns])
+        all_text = "\n".join([f"用户: {turn.ask}\n助手: {turn.answer}" for turn in turns])
         
         # 使用LLM生成用户画像
         from llm import LLMService
         llm_service = LLMService(api_key=Config.LLM_API_KEY, api_url=Config.LLM_API_URL)
         
-        prompt = f"""请根据以下对话内容，分析并总结用户的人物画像，包括：
-                1. 性格特征
-                2. 兴趣爱好
-                3. 生活习惯
-                4. 价值观
-                5. 其他重要信息
+        prompt = f"""请你仔细分析以下对话内容，并对这段对话进行全面而详细的总结。
+                
+                你需要总结的方面包括：
+                1. 对话主题（对话主要讨论了什么内容）
+                2. 用户关注点（用户最关心的问题或事情）
+                3. 用户情感状态（用户的情绪变化和表现）
+                4. 用户人物特征分析，包括：
+                   - 性格特征
+                   - 兴趣爱好
+                   - 生活习惯
+                   - 价值观
+                5. 对话中提到的关键事实（如用户提到的具体经历、活动、人物等）
+                6. 用户可能面临的问题
+                7. 助手提供的主要建议
 
                 对话内容：
                 {all_text}
 
                 请以JSON格式返回，包含以下字段：
                 {{
-                    "personality": "性格特征描述",
-                    "interests": "兴趣爱好描述",
-                    "lifestyle": "生活习惯描述",
-                    "values": "价值观描述",
-                    "other_info": "其他重要信息"
+                    "conversation_topic": "对话主题的详细描述",
+                    "user_focus": "用户关注点的详细描述",
+                    "emotional_state": "用户情感状态的详细描述",
+                    "personality": "性格特征的详细描述",
+                    "interests": "兴趣爱好的详细描述",
+                    "lifestyle": "生活习惯的详细描述",
+                    "values": "价值观的详细描述",
+                    "key_facts": "对话中提到的关键事实的详细描述",
+                    "user_issues": "用户可能面临的问题的详细描述",
+                    "assistant_suggestions": "助手提供的主要建议的详细描述"
                 }}
+                
+                重要提示：请确保分析全面且深入，捕捉对话中的隐含信息和细节。如果某些信息在对话中未提及，请在相应字段中标注"未提及"。
                 """
         
         try:
             response = await llm_service.generate_response(prompt, is_json=True)
             if response:
                 # 将JSON格式转换为易读的文本格式
-                summary = "用户人物画像：\n"
-                summary += f"性格特征：{response.get('personality', '未知')}\n"
-                summary += f"兴趣爱好：{response.get('interests', '未知')}\n"
-                summary += f"生活习惯：{response.get('lifestyle', '未知')}\n"
-                summary += f"价值观：{response.get('values', '未知')}\n"
-                summary += f"其他信息：{response.get('other_info', '未知')}\n"
+                summary = "对话归纳总结：\n\n"
+                summary += f"对话主题：{response.get('conversation_topic', '未提及')}\n\n"
+                summary += f"用户关注点：{response.get('user_focus', '未提及')}\n\n"
+                summary += f"情感状态：{response.get('emotional_state', '未提及')}\n\n"
+                summary += "用户人物画像：\n"
+                summary += f"- 性格特征：{response.get('personality', '未提及')}\n"
+                summary += f"- 兴趣爱好：{response.get('interests', '未提及')}\n"
+                summary += f"- 生活习惯：{response.get('lifestyle', '未提及')}\n"
+                summary += f"- 价值观：{response.get('values', '未提及')}\n\n"
+                summary += f"关键事实：{response.get('key_facts', '未提及')}\n\n"
+                summary += f"用户问题：{response.get('user_issues', '未提及')}\n\n"
+                summary += f"助手建议：{response.get('assistant_suggestions', '未提及')}\n"
                 return summary, response
         except Exception as e:
-            print(f"生成用户画像时出错：{e}")
+            print(f"生成对话总结时出错：{e}")
             
         # 如果生成失败，返回默认文本
-        return "无法生成用户画像", None
+        return "无法生成对话总结", None
 
     async def _auto_archive(self, user_info_processor=None):
         """自动归档一半的对话
@@ -135,8 +159,11 @@ class ConversationHistory:
         if not self.turns:
             return
             
-        # 计算要归档的对话数量
-        archive_count = len(self.turns) // 2
+        # 计算要归档的对话数量 (降低阈值，每10次对话就进行归档)
+        archive_count = min(10, len(self.turns) // 2)
+        
+        if archive_count < 3:  # 确保至少有3轮对话才进行归档
+            archive_count = 3
         
         # 准备归档内容
         archive_turns = self.turns[:archive_count]
@@ -144,9 +171,11 @@ class ConversationHistory:
         # 对对话进行总结
         summary, raw_profile = await self._summarize_dialog(archive_turns)
         
-        print("以下内容将被归档：")
+        print("\n==== 开始对话归档 ====")
+        print(f"归档轮数: {archive_count}/{len(self.turns)}")
+        print("归档总结:")
         print(summary)
-        print("--------------------------------")
+        print("==== 归档完成 ====\n")
         
         # 保存到向量数据库
         self.collection.add(
@@ -219,14 +248,33 @@ class ConversationHistory:
             if not raw_profile:
                 return False
             
+            print("\n==== 开始用户信息同步 ====")
+            print("对话总结生成完成，准备更新用户信息")
+            
+            # 保存原始用户信息用于对比
+            original_user_info = user_info_processor.user_info
+
             # 将用户画像信息转换为用户信息格式
             user_info_text = self._convert_profile_to_user_info(raw_profile, user_info_processor.user_info)
             
             # 判断是否有实质性变化
-            if user_info_processor.has_substantial_changes(user_info_processor.user_info, user_info_text):
+            if user_info_processor.has_substantial_changes(original_user_info, user_info_text):
                 print("检测到用户信息有实质性变化，进行同步更新")
+                print("更改前的用户信息:")
+                print("----------------------------------------")
+                print(original_user_info)
+                print("----------------------------------------")
+                print("更改后的用户信息:")
+                print("----------------------------------------")
+                print(user_info_text)
+                print("----------------------------------------")
                 user_info_processor.save_user_info(user_info_text)
+                print("用户信息已成功更新")
+                print("==== 用户信息同步完成 ====\n")
                 return True
+            else:
+                print("未检测到用户信息有实质性变化，跳过更新")
+                print("==== 用户信息同步完成 ====\n")
             
             return False
         except Exception as e:
@@ -287,17 +335,32 @@ class ConversationHistory:
         
         # 更新用户信息
         # 1. 更新兴趣爱好
-        if "interests" in profile and profile["interests"] != "未知":
+        if "interests" in profile and profile["interests"] != "未知" and profile["interests"] != "未提及":
             interests = profile["interests"]
             if "爱好" in info_dict:
-                current_hobbies = info_dict["爱好"].split("、")
+                # 解析现有爱好，确保它是一个列表
+                if info_dict["爱好"].startswith("[") and info_dict["爱好"].endswith("]"):
+                    try:
+                        import ast
+                        current_hobbies = ast.literal_eval(info_dict["爱好"])
+                    except:
+                        # 如果解析失败，按常规方式分割
+                        current_hobbies = info_dict["爱好"].replace("[", "").replace("]", "").split("、")
+                else:
+                    current_hobbies = info_dict["爱好"].split("、")
+                
+                # 清理列表项
+                current_hobbies = [h.strip().strip("'\"") for h in current_hobbies if h.strip()]
+                
                 # 从用户画像中提取潜在的爱好
                 new_hobbies = re.findall(r'([^，,、。.;；]+)(?:、|，|,|。|；|;|$)', interests)
                 for hobby in new_hobbies:
                     hobby = hobby.strip()
                     if hobby and len(hobby) > 1 and hobby not in current_hobbies:
                         current_hobbies.append(hobby)
-                info_dict["爱好"] = "、".join(current_hobbies)
+                
+                if current_hobbies:
+                    info_dict["爱好"] = "、".join(current_hobbies)
             else:
                 info_dict["爱好"] = interests.replace("，", "、").replace(",", "、")
         
@@ -305,18 +368,70 @@ class ConversationHistory:
         status_dict = self._parse_status_section(info_dict.get("最近状况", ""))
         
         # 2. 更新心理状态
-        if ("personality" in profile and profile["personality"] != "未知") or \
-           ("other_info" in profile and profile["other_info"] != "未知"):
-            mental_state = profile.get("personality", "") + " " + profile.get("other_info", "")
-            status_dict["心理状态"] = mental_state.strip()
+        if ("emotional_state" in profile and profile["emotional_state"] not in ["未知", "未提及"]) or \
+           ("personality" in profile and profile["personality"] not in ["未知", "未提及"]):
+            mental_state = ""
+            if "emotional_state" in profile and profile["emotional_state"] not in ["未知", "未提及"]:
+                mental_state += profile["emotional_state"]
+            if "personality" in profile and profile["personality"] not in ["未知", "未提及"]:
+                if mental_state:
+                    mental_state += "。"
+                mental_state += profile["personality"]
+            
+            # 如果已有心理状态信息，整合而不是替换
+            if "心理状态" in status_dict and status_dict["心理状态"]:
+                current_mental = status_dict["心理状态"]
+                # 避免重复信息
+                if mental_state and not any(part in current_mental for part in mental_state.split("。")):
+                    status_dict["心理状态"] = f"{current_mental}。{mental_state}"
+            else:
+                status_dict["心理状态"] = mental_state.strip()
         
         # 3. 更新价值观
-        if "values" in profile and profile["values"] != "未知":
-            info_dict["价值观"] = profile["values"]
+        if "values" in profile and profile["values"] not in ["未知", "未提及"]:
+            if "价值观" in info_dict and info_dict["价值观"]:
+                # 整合现有价值观信息
+                current_values = info_dict["价值观"]
+                new_values = profile["values"]
+                # 避免重复信息
+                if not any(part in current_values for part in new_values.split("。")):
+                    info_dict["价值观"] = f"{current_values}。{new_values}"
+            else:
+                info_dict["价值观"] = profile["values"]
         
         # 4. 更新生活习惯
-        if "lifestyle" in profile and profile["lifestyle"] != "未知":
-            status_dict["生活习惯"] = profile["lifestyle"]
+        if "lifestyle" in profile and profile["lifestyle"] not in ["未知", "未提及"]:
+            if "生活习惯" in status_dict and status_dict["生活习惯"]:
+                # 整合现有生活习惯信息
+                current_lifestyle = status_dict["生活习惯"]
+                new_lifestyle = profile["lifestyle"]
+                # 避免重复信息
+                if not any(part in current_lifestyle for part in new_lifestyle.split("。")):
+                    status_dict["生活习惯"] = f"{current_lifestyle}。{new_lifestyle}"
+            else:
+                status_dict["生活习惯"] = profile["lifestyle"]
+        
+        # 5. 处理其他关键信息
+        if "user_issues" in profile and profile["user_issues"] not in ["未知", "未提及"]:
+            # 根据用户问题更新相关状态字段
+            issues = profile["user_issues"]
+            # 学习相关问题
+            if any(kw in issues.lower() for kw in ["学习", "考试", "成绩", "课程"]):
+                if "学习情况" in status_dict:
+                    # 整合，避免重复
+                    if not any(part in status_dict["学习情况"] for part in issues.split("。")):
+                        status_dict["学习情况"] = f"{status_dict['学习情况']}。{issues}"
+                else:
+                    status_dict["学习情况"] = issues
+            
+            # 人际关系问题
+            if any(kw in issues.lower() for kw in ["人际", "关系", "朋友", "同学", "孤立"]):
+                if "人际关系" in status_dict:
+                    # 整合，避免重复
+                    if not any(part in status_dict["人际关系"] for part in issues.split("。")):
+                        status_dict["人际关系"] = f"{status_dict['人际关系']}。{issues}"
+                else:
+                    status_dict["人际关系"] = issues
         
         # 将更新后的状态词典重新格式化并更新到info_dict
         if status_dict:

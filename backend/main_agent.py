@@ -11,6 +11,7 @@ class MainAgent:
         self.conversation_history = conversation_history
         self.llm_service = llm_service
         self.current_agent = "nanaA"  # 默认使用娜娜A
+        self.prompt_template = ""  # 用于存储自定义提示词
         self._load_prompt_template()
             
         # 确保日志和个人信息目录存在
@@ -49,6 +50,24 @@ class MainAgent:
         self._load_prompt_template()
         return True
 
+    def set_custom_agent(self, prompt: str, config: dict) -> bool:
+        """设置自定义智能体
+        
+        Args:
+            prompt: 自定义提示词
+            config: 配置信息
+            
+        Returns:
+            bool: 是否成功设置
+        """
+        try:
+            self.current_agent = config["id"]
+            self.prompt_template = prompt
+            return True
+        except Exception as e:
+            print(f"设置自定义智能体失败: {e}")
+            return False
+
     def _log_conversation(self, role: str, content: str) -> None:
         """记录对话到日志文件"""
         current_date = datetime.now().strftime('%Y%m%d')
@@ -72,6 +91,9 @@ class MainAgent:
         # 记录用户消息
         self._log_conversation('user', message)
         
+        # 获取当前对话轮数
+        turns_count = len(self.conversation_history.turns) + 1  # +1 是因为当前消息还未添加
+        
         # 获取相关记忆
         memory_text = self._get_relevant_memories(message)
         print("相关记忆:", memory_text)
@@ -91,7 +113,31 @@ class MainAgent:
         # 处理回复
         if reply_content:
             await self._handle_successful_reply(message, reply_content)
+
+        # 检查是否需要发送对话总结 (每10轮对话)
+        if turns_count % 10 == 0 and turns_count >= 10:
+            print(f"已经进行了{turns_count}轮对话，准备发送对话总结")
+            # 确保先添加当前对话
+            await self.conversation_history.add_dialog(message, reply_content, self.user_info_processor)
             
+            # 触发归档并获取总结
+            summary_profile = await self.conversation_history._auto_archive(self.user_info_processor)
+            
+            if summary_profile:
+                # 确保更新用户信息
+                print("从归档总结更新用户信息")
+                updated_info = self.user_info_processor.get_user_info()
+                if updated_info != self.user_info:
+                    print("用户信息已更新")
+                    self.user_info = updated_info
+                
+                # 在用户下一次提问后，将总结作为系统消息添加到对话历史
+                await self.conversation_history.add_dialog("SYSTEM_GUIDANCE", 
+                    f"【系统消息】根据我们的对话，我整理了一些要点：\n\n{summary_profile}", 
+                    None)
+                
+                print("对话总结已添加到对话历史，将在用户下一次提问后显示")
+        
         return reply_content, expression
 
     async def _generate_reply(self, message: str, memory_text: str = "无补充信息", personality: str = None, is_category: bool = False) -> Tuple[str, str]:
@@ -350,14 +396,22 @@ class MainAgent:
         
         # 尝试将对话归纳总结同步到用户信息
         try:
+            # 检查是否有用户做出决策，如果有则强制同步
+            force_update = is_user_decision
+            
             # 每5次对话强制进行一次同步
-            force_update = len(self.conversation_history.turns) % 5 == 0
-            if force_update:
+            if len(self.conversation_history.turns) % 5 == 0:
+                force_update = True
                 print("每5次对话强制同步一次用户信息")
-            synced = await self.conversation_history.sync_profile_to_user_info(self.user_info_processor, force_update)
-            if synced:
-                # 更新内存中的用户信息
-                self.user_info = self.user_info_processor.user_info
-                print("成功将对话归纳总结同步到用户信息")
+            
+            if force_update:
+                print("强制同步用户信息")
+                synced = await self.conversation_history.sync_profile_to_user_info(self.user_info_processor, force_update)
+                if synced:
+                    # 更新内存中的用户信息
+                    self.user_info = self.user_info_processor.user_info
+                    print("成功将对话归纳总结同步到用户信息")
+                    print("更新后的用户信息:")
+                    print(self.user_info)
         except Exception as e:
             print(f"同步用户信息时出错: {e}")

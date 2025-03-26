@@ -17,13 +17,24 @@ const AGENT_WELCOME_MESSAGES = {
   }
 }
 
+// 格式化时间函数
+function formatTime() {
+  const now = new Date()
+  return {
+    time: now,
+    hours: now.getHours().toString().padStart(2, '0'),
+    minutes: now.getMinutes().toString().padStart(2, '0')
+  }
+}
+
 export const useChatStore = defineStore('chat', () => {
   // 状态
   const messages = ref([])
   const loading = ref(false)
   const currentModel = ref('nanaA')
+  const currentAgent = ref('nanaA')
   const isTracking = ref(true)
-  const hasShownWelcome = ref(false)
+  const hasShownWelcome = ref({})  // 改为对象，记录每个agent是否显示过欢迎消息
   
   // 获取当前角色信息
   const currentAgentInfo = computed(() => 
@@ -35,11 +46,20 @@ export const useChatStore = defineStore('chat', () => {
     isTracking.value = status
   }
   
-  function changeAgent(agentId) {
-    // 切换agent时，清空消息历史并重置状态
-    messages.value = []
-    currentModel.value = agentId
-    hasShownWelcome.value = false
+  function changeAgent(agentId, modelId) {
+    // 不再清空消息历史，只切换角色
+    currentAgent.value = agentId
+    
+    // 如果提供了modelId，使用它。否则默认使用agentId
+    const newModelId = modelId || agentId
+    
+    console.log(`Chat Store - changeAgent: agentId=${agentId}, modelId=${newModelId}`)
+    currentModel.value = newModelId
+    
+    // 检查是否需要显示欢迎消息
+    if (!hasShownWelcome.value[agentId]) {
+      showWelcomeMessage()
+    }
   }
   
   async function sendMessage(message) {
@@ -47,8 +67,13 @@ export const useChatStore = defineStore('chat', () => {
     
     console.log('发送消息:', message)
     
-    // 添加用户消息到聊天记录
-    messages.value.push({ type: 'user', content: message })
+    // 添加带时间戳的用户消息到聊天记录
+    messages.value.push({ 
+      type: 'user', 
+      content: message,
+      timestamp: formatTime(),
+      agentId: currentAgent.value 
+    })
     
     loading.value = true
     try {
@@ -69,7 +94,7 @@ export const useChatStore = defineStore('chat', () => {
         body: JSON.stringify({ 
           message: message,
           session_id: 'default',
-          agent_type: currentModel.value,
+          agent_type: currentAgent.value,  // 使用agent ID而不是model ID
           personality: agentPersonality,
           is_category: isQuickQuestion
         }),
@@ -78,13 +103,23 @@ export const useChatStore = defineStore('chat', () => {
       const data = await response.json()
       console.log('收到回复:', data)
       
-      // 添加助手回复到聊天记录
-      messages.value.push({ type: 'assistant', content: data.message })
+      // 添加带时间戳的助手回复到聊天记录
+      messages.value.push({ 
+        type: 'assistant', 
+        content: data.message,
+        timestamp: formatTime(),
+        agentId: currentAgent.value 
+      })
       
       // 如果有引导决策消息，添加为单独的一条助手消息
       if (data.guidance_message) {
         setTimeout(() => {
-          messages.value.push({ type: 'assistant', content: data.guidance_message })
+          messages.value.push({ 
+            type: 'assistant', 
+            content: data.guidance_message,
+            timestamp: formatTime(),
+            agentId: currentAgent.value 
+          })
         }, 500); // 添加500ms延迟，使其看起来像是分开发送的
       }
       
@@ -95,7 +130,9 @@ export const useChatStore = defineStore('chat', () => {
       // 添加错误消息
       messages.value.push({ 
         type: 'assistant', 
-        content: "抱歉，我遇到了一些问题，请稍后再试。" 
+        content: "抱歉，我遇到了一些问题，请稍后再试。",
+        timestamp: formatTime(),
+        agentId: currentAgent.value 
       })
       
       return null
@@ -106,13 +143,17 @@ export const useChatStore = defineStore('chat', () => {
   
   // 显示欢迎消息
   function showWelcomeMessage() {
-    if (messages.value.length === 0 && !hasShownWelcome.value) {
-      const agentInfo = AGENT_WELCOME_MESSAGES[currentModel.value]
+    const agentId = currentAgent.value
+    const agentInfo = AGENT_WELCOME_MESSAGES[currentModel.value]
+    
+    if (agentInfo && !hasShownWelcome.value[agentId]) {
       messages.value.push({ 
         type: 'assistant', 
-        content: agentInfo.message 
+        content: agentInfo.message,
+        timestamp: formatTime(),
+        agentId: agentId
       })
-      hasShownWelcome.value = true
+      hasShownWelcome.value[agentId] = true
     }
   }
   
@@ -121,6 +162,7 @@ export const useChatStore = defineStore('chat', () => {
     messages,
     loading,
     currentModel,
+    currentAgent,
     isTracking,
     hasShownWelcome,
     currentAgentInfo,

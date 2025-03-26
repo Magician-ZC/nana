@@ -20,7 +20,7 @@ const props = defineProps({
 const MODEL_PATHS = {
   nanaA: '/models/Haru/Haru.model3.json',
   nanaB: '/models/Hiyori/Hiyori.model3.json',
-  nanaC: '/models/PinkFox/PinkFox.model3.json'
+  nanaC: '/models/PinkFox/PinkFox.model3.json',
 }
 
 // 表情映射对象，使用中文作为 key
@@ -55,17 +55,19 @@ const currentModel = ref(props.modelId)
 const isLoading = ref(false)
 
 // 监听modelId变化
-watch(() => props.modelId, (newModelId) => {
+watch(() => props.modelId, (newModelId, oldModelId) => {
+  console.log(`模型ID变更: ${oldModelId} => ${newModelId}`)
   if (newModelId && newModelId !== currentModel.value && !isLoading.value) {
     currentModel.value = newModelId
     loadModel(newModelId)
   }
-})
+}, { immediate: true }) // 添加immediate确保首次加载时也会执行
 
 // 加载模型的方法
 const loadModel = async (modelId) => {
   if (!app.value || isLoading.value) return
   
+  console.log(`开始加载模型: ${modelId}`)
   isLoading.value = true
   
   // 移除当前模型 - 彻底清理
@@ -127,7 +129,7 @@ const loadModel = async (modelId) => {
   
   try {
     const modelPath = MODEL_PATHS[modelId] || MODEL_PATHS.nanaA
-    console.log(`加载模型: ${modelPath}`)
+    console.log(`加载模型路径: ${modelPath}`)
     
     // 添加一个加载指示文本
     if (app.value) {
@@ -247,10 +249,13 @@ defineExpose({
   showExpression,
   setTracking,
   changeModel: (modelId) => {
+    console.log(`changeModel被调用: ${currentModel.value} => ${modelId}`)
     if (modelId && modelId !== currentModel.value && !isLoading.value) {
       currentModel.value = modelId
       loadModel(modelId)
+      return true
     }
+    return false
   }
 })
 

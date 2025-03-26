@@ -13,44 +13,87 @@
         <div 
           v-for="(message, index) in chatStore.messages" 
           :key="index" 
-          :class="['message', message.type, { 'short-message': message.content.length <= 10 }]"
         >
-          <!-- AI助手头像 -->
-          <div v-if="message.type === 'assistant'" class="avatar">
-            <img src="/avatars/agent.png" alt="Agent" />
+          <!-- 消息时间戳，独立于消息之外，在消息上方显示 -->
+          <div v-if="shouldShowTimestamp(message, index)" class="message-timestamp">
+            {{ formatDisplayTime(message.timestamp) }}
           </div>
-          <!-- 消息气泡 -->
-          <div class="message-bubble">
-            {{ message.content }}
+          
+          <!-- 消息分组 - 显示agent变更 -->
+          <div v-if="shouldShowAgentChange(message, index)" class="agent-change-notice">
+            切换到 {{ getAgentName(message.agentId) }}
           </div>
-          <!-- 用户头像 -->
-          <div v-if="message.type === 'user'" class="avatar">
-            <img src="/avatars/user.png" alt="User" />
+          
+          <div :class="['message', message.type, { 
+            'short-message': message.content.length <= 10,
+            'current-agent': message.agentId === chatStore.currentAgent,
+            'other-agent': message.agentId && message.agentId !== chatStore.currentAgent
+          }]">
+            <!-- AI助手头像 -->
+            <div v-if="message.type === 'assistant'" class="avatar">
+              <img :src="getAgentAvatar(message.agentId)" :alt="getAgentName(message.agentId)" />
+            </div>
+            
+            <!-- 消息内容区域 -->
+            <div class="message-content">
+              <!-- 当不是当前agent的助手消息时显示名称 -->
+              <div v-if="message.type === 'assistant' && message.agentId !== chatStore.currentAgent" class="message-sender">
+                {{ getAgentName(message.agentId) }}
+              </div>
+              
+              <!-- 消息气泡 -->
+              <div class="message-bubble">
+                {{ message.content }}
+              </div>
+            </div>
+            
+            <!-- 用户头像 -->
+            <div v-if="message.type === 'user'" class="avatar">
+              <img src="/avatars/user.png" alt="User" />
+            </div>
           </div>
         </div>
       </template>
       
       <!-- 加载状态显示 -->
-      <div v-if="chatStore.loading" class="message assistant">
-        <div class="avatar">
-          <img src="/avatars/agent.png" alt="Agent" />
+      <div v-if="chatStore.loading">
+        <!-- 时间戳 -->
+        <div class="message-timestamp">
+          {{ formatDisplayTime(formatTime()) }}
         </div>
-        <div class="message-bubble">
-          <div class="typing-indicator">
-            <span></span>
-            <span></span>
-            <span></span>
+        
+        <div class="message assistant">
+          <div class="avatar">
+            <img :src="getAgentAvatar(chatStore.currentAgent)" :alt="getAgentName(chatStore.currentAgent)" />
+          </div>
+          <div class="message-content">
+            <div class="message-bubble">
+              <div class="typing-indicator">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
       
       <!-- 录音状态显示 -->
-      <div v-if="isRecording && recordingText" class="message user recognizing">
-        <div class="message-bubble">
-          {{ recordingText }}
+      <div v-if="isRecording && recordingText">
+        <!-- 时间戳 -->
+        <div class="message-timestamp">
+          {{ formatDisplayTime(formatTime()) }}
         </div>
-        <div class="avatar">
-          <img src="/avatars/user.png" alt="User" />
+        
+        <div class="message user recognizing">
+          <div class="message-content">
+            <div class="message-bubble">
+              {{ recordingText }}
+            </div>
+          </div>
+          <div class="avatar">
+            <img src="/avatars/user.png" alt="User" />
+          </div>
         </div>
       </div>
       
@@ -134,6 +177,89 @@ const chatPanelRef = ref(null)
 let mediaRecorder = null
 // 语音按钮按压状态
 const voiceButtonPressed = ref(false)
+
+// 添加formatTime函数
+function formatTime() {
+  const now = new Date()
+  return {
+    time: now,
+    hours: now.getHours().toString().padStart(2, '0'),
+    minutes: now.getMinutes().toString().padStart(2, '0')
+  }
+}
+
+// 格式化显示时间
+function formatDisplayTime(timestamp) {
+  if (!timestamp || !timestamp.time) return ''
+  
+  const now = new Date()
+  const messageTime = new Date(timestamp.time)
+  
+  // 检查是否为同一天
+  const isToday = messageTime.getDate() === now.getDate() && 
+                  messageTime.getMonth() === now.getMonth() && 
+                  messageTime.getFullYear() === now.getFullYear()
+  
+  // 检查是否为昨天
+  const yesterday = new Date(now)
+  yesterday.setDate(now.getDate() - 1)
+  const isYesterday = messageTime.getDate() === yesterday.getDate() && 
+                      messageTime.getMonth() === yesterday.getMonth() && 
+                      messageTime.getFullYear() === yesterday.getFullYear()
+  
+  if (isToday) {
+    return `${timestamp.hours}:${timestamp.minutes}`
+  } else if (isYesterday) {
+    return `昨天 ${timestamp.hours}:${timestamp.minutes}`
+  } else {
+    // 其他日期显示完整日期
+    const month = (messageTime.getMonth() + 1).toString().padStart(2, '0')
+    const day = messageTime.getDate().toString().padStart(2, '0')
+    return `${month}-${day} ${timestamp.hours}:${timestamp.minutes}`
+  }
+}
+
+// 判断是否需要显示agent变更提示
+function shouldShowAgentChange(message, index) {
+  if (index === 0 || !message.agentId) return false
+  
+  // 如果当前消息的agentId与前一条不同，则显示变更提示
+  const prevMessage = chatStore.messages[index - 1]
+  return message.agentId !== prevMessage.agentId && message.type === 'assistant'
+}
+
+// 获取agent名称
+function getAgentName(agentId) {
+  if (!agentId) return '未知'
+  
+  const agentNames = {
+    'nanaA': '娜娜A - 傲娇猫娘',
+    'nanaB': '娜娜B - 知性大姐姐',
+    'nanaC': '娜娜C - 元气少女'
+  }
+  
+  // 对于自定义agent，截取ID显示
+  if (agentId?.startsWith('custom_')) {
+    // 尝试从store获取自定义agent信息
+    const customAgent = chatStore.getCustomAgentById?.(agentId)
+    return customAgent ? customAgent.name : `自定义角色(${agentId.substring(7)})`
+  }
+  
+  return agentNames[agentId] || agentId
+}
+
+// 获取agent头像
+function getAgentAvatar(agentId) {
+  if (!agentId) return '/avatars/agent.png'
+  
+  const avatars = {
+    'nanaA': '/avatars/agent.png',
+    'nanaB': '/avatars/agent.png',
+    'nanaC': '/avatars/agent.png'
+  }
+  
+  return avatars[agentId] || '/avatars/agent.png'
+}
 
 // 当消息列表更新时，自动滚动到底部
 watch(() => chatStore.messages.length, async () => {
@@ -233,6 +359,27 @@ const handleKeyDown = (e) => {
   }
 }
 
+// 判断是否需要显示时间戳
+function shouldShowTimestamp(message, index) {
+  if (index === 0) return true // 第一条消息总是显示时间
+  
+  // 如果消息没有时间戳，不显示
+  if (!message.timestamp || !message.timestamp.time) return false
+  
+  const prevMessage = chatStore.messages[index - 1]
+  
+  // 如果前一条消息没有时间戳，当前消息显示时间
+  if (!prevMessage.timestamp || !prevMessage.timestamp.time) return true
+  
+  // 获取当前消息和前一条消息的时间
+  const currentTime = new Date(message.timestamp.time)
+  const prevTime = new Date(prevMessage.timestamp.time)
+  
+  // 如果消息间隔超过3分钟(180000毫秒)，显示时间
+  const timeDiff = currentTime - prevTime
+  return timeDiff > 180000
+}
+
 onMounted(() => {
   // 在组件挂载后显示欢迎消息
   chatStore.showWelcomeMessage()
@@ -271,7 +418,7 @@ onUnmounted(() => {
 .chat-messages {
   flex: 1;
   overflow-y: auto;
-  padding: 20px;
+  padding: 5px;
   display: flex;
   flex-direction: column;
   gap: 15px;
@@ -289,46 +436,28 @@ onUnmounted(() => {
 
 .message {
   display: flex;
+  margin-bottom: 16px;
+  position: relative;
   align-items: flex-end;
-  margin-bottom: 15px;
-  max-width: 90%;
 }
 
 .message.user {
-  align-self: flex-end;
+  flex-direction: row;
+  justify-content: flex-end;
 }
 
 .message.assistant {
-  align-self: flex-start;
-}
-
-.message-bubble {
-  padding: 10px 15px;
-  border-radius: 18px;
-  background-color: #4a6fa5;
-  color: white;
-  max-width: 85%;
-  word-break: break-word;
-  line-height: 1.4;
-}
-
-.user .message-bubble {
-  background-color: #2c7c7e;
-  border-bottom-right-radius: 4px;
-}
-
-.assistant .message-bubble {
-  background-color: #454654;
-  border-bottom-left-radius: 4px;
+  flex-direction: row;
+  justify-content: flex-start;
 }
 
 .avatar {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  border-radius: 4px;
+  overflow: hidden;
   margin: 0 8px;
   flex-shrink: 0;
-  overflow: hidden;
 }
 
 .avatar img {
@@ -337,9 +466,78 @@ onUnmounted(() => {
   object-fit: cover;
 }
 
+/* 消息内容区域 */
+.message-content {
+  display: flex;
+  flex-direction: column;
+  max-width: 70%;
+}
+
+/* 发送者名称 */
+.message-sender {
+  font-size: 12px;
+  color: #999;
+  margin-bottom: 4px;
+  padding-left: 10px;
+}
+
+/* 消息气泡 */
+.message-bubble {
+  padding: 10px 15px;
+  border-radius: 18px;
+  position: relative;
+  word-break: break-word;
+  line-height: 1.5;
+  font-size: 15px;
+}
+
+.user .message-bubble {
+  background-color: #95ec69;
+  color: #000;
+}
+
+.assistant .message-bubble {
+  background-color: #fff;
+  color: #000;
+}
+
+/* 时间戳 */
+.message-timestamp {
+  font-size: 12px;
+  color: #999;
+  margin-top: 5px;
+  display: block;
+  text-align: center;
+  padding: 10px 0;
+}
+
+/* 其他agent的消息样式 */
+.message.other-agent .message-bubble {
+  background-color: #f0f0f0;
+}
+
+/* agent变更提示 */
+.agent-change-notice {
+  width: 70%;
+  text-align: center;
+  font-size: 12px;
+  color: #fff;
+  margin: 10px auto;
+  padding: 5px 10px;
+  background-color: rgba(80, 80, 80, 0.7);
+  border-radius: 12px;
+  position: relative;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+/* 针对短消息的特殊样式 */
 .short-message .message-bubble {
-  padding-left: 15px;
-  padding-right: 15px;
+  padding: 8px 12px;
+}
+
+/* 录音中的样式 */
+.recognizing .message-bubble {
+  background-color: rgba(149, 236, 105, 0.7);
 }
 
 .chat-input-area {
@@ -507,10 +705,5 @@ textarea {
   50% {
     height: 20px;
   }
-}
-
-.recognizing .message-bubble {
-  background-color: #87556c;
-  font-style: italic;
 }
 </style> 

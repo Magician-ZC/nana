@@ -4,6 +4,8 @@ from tts import TTSService
 from config import Config
 from main_agent import MainAgent
 from conversation import ConversationHistory
+import os
+import json
 
 class ChatService:
     def __init__(self):
@@ -16,6 +18,10 @@ class ChatService:
         # 初始化对话历史和主Agent
         self.conversation_history = ConversationHistory(max_turns=Config.MAX_TURNS)
         self.main_agent = MainAgent(self.llm_service, self.conversation_history)
+        
+        # 自定义agent目录
+        self.custom_agents_dir = "save/custom_agents"
+        os.makedirs(self.custom_agents_dir, exist_ok=True)
 
     def change_agent(self, agent_name: str, session_id: str) -> bool:
         """
@@ -26,6 +32,29 @@ class ChatService:
         """
         if agent_name in ["nanaA", "nanaB", "nanaC"]:
             return self.main_agent.set_agent(agent_name)
+        elif agent_name.startswith("custom_"):
+            # 加载自定义角色
+            config_path = os.path.join(self.custom_agents_dir, f"{agent_name}.json")
+            prompt_path = os.path.join(self.custom_agents_dir, f"{agent_name}.txt")
+            
+            if os.path.exists(config_path) and os.path.exists(prompt_path):
+                try:
+                    # 读取配置文件
+                    with open(config_path, "r", encoding="utf-8") as f:
+                        config = json.load(f)
+                    
+                    # 读取提示词文件
+                    with open(prompt_path, "r", encoding="utf-8") as f:
+                        prompt = f.read()
+                    
+                    # 设置自定义角色
+                    return self.main_agent.set_custom_agent(prompt, config)
+                except Exception as e:
+                    print(f"加载自定义角色失败: {e}")
+                    return False
+            else:
+                print(f"自定义角色文件不存在: {agent_name}")
+                return False
         return False
 
     async def generate_reply(self, message: str, session_id: str, agent_type: Optional[str] = None, personality: Optional[str] = None, is_category: bool = False) -> Tuple[str, Optional[bytes], str, Optional[str]]:
@@ -40,8 +69,8 @@ class ChatService:
         """
         try:
             # 如果收到新的agent_type，先切换智能体
-            if agent_type and agent_type in ["nanaA", "nanaB", "nanaC"]:
-                self.main_agent.set_agent(agent_type)
+            if agent_type:
+                self.change_agent(agent_type, session_id)
             
             # 使用 MainAgent 生成回复和表情，传入性格描述和快捷提问标志
             reply, expression = await self.main_agent.reply(message, personality=personality, is_category=is_category)

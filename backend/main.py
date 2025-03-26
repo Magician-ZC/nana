@@ -11,6 +11,8 @@ from speech_service import SpeechService
 import uvicorn
 import json
 import asyncio
+import os
+import uuid
 
 app = FastAPI()
 
@@ -34,9 +36,259 @@ class AgentRequest(BaseModel):
     agent_name: str
     session_id: Optional[str] = "default"
 
+class CustomAgentRequest(BaseModel):
+    name: str
+    description: str
+    model: str
+    personality: str
+    interests: str
+    lifestyle: str
+    values: str
+
 chat_service = ChatService()
 tts_service = TTSService(Config.FISH_API_KEY, Config.FISH_REFERENCE_ID)
 speech_service = SpeechService()
+
+# 确保保存自定义角色的目录存在
+CUSTOM_AGENTS_DIR = "save/custom_agents"
+os.makedirs(CUSTOM_AGENTS_DIR, exist_ok=True)
+
+@app.post("/api/create_custom_agent")
+async def create_custom_agent(request: CustomAgentRequest):
+    """创建自定义角色
+    
+    Args:
+        request: 角色信息
+        
+    Returns:
+        dict: 包含创建结果的响应
+    """
+    try:
+        # 生成唯一ID
+        agent_id = f"custom_{uuid.uuid4().hex[:8]}"
+        
+        # 创建角色配置文件
+        agent_config = {
+            "id": agent_id,
+            "name": request.name,
+            "description": request.description,
+            "model": request.model,
+            "personality": request.personality,
+            "interests": request.interests,
+            "lifestyle": request.lifestyle,
+            "values": request.values
+        }
+        
+        with open(os.path.join(CUSTOM_AGENTS_DIR, f"{agent_id}.json"), "w", encoding="utf-8") as f:
+            json.dump(agent_config, f, ensure_ascii=False, indent=2)
+        
+        # 创建角色提示词文件
+        with open(os.path.join(CUSTOM_AGENTS_DIR, f"{agent_id}.txt"), "w", encoding="utf-8") as f:
+            f.write(f"""你是一个名为{request.name}的角色。
+{request.description}
+
+性格特征：
+{request.personality}
+
+兴趣爱好：
+{request.interests}
+
+生活习惯：
+{request.lifestyle}
+
+价值观：
+{request.values}
+
+请按照以上设定与用户进行对话。""")
+            
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": f"成功创建角色 {request.name}",
+                "agent_id": agent_id
+            }
+        )
+    except Exception as e:
+        print(f"创建自定义角色失败: {e}")
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": f"创建角色失败: {str(e)}"
+            }
+        )
+
+@app.get("/api/list_custom_agents")
+async def list_custom_agents():
+    """获取所有自定义角色列表
+    
+    Returns:
+        dict: 包含自定义角色列表的响应
+    """
+    try:
+        agents = []
+        if not os.path.exists(CUSTOM_AGENTS_DIR):
+            return JSONResponse(
+                content={
+                    "success": True,
+                    "agents": []
+                }
+            )
+            
+        for filename in os.listdir(CUSTOM_AGENTS_DIR):
+            if filename.endswith(".json"):
+                try:
+                    with open(os.path.join(CUSTOM_AGENTS_DIR, filename), "r", encoding="utf-8") as f:
+                        agent_config = json.load(f)
+                        # 确保agent_config包含所有必要字段
+                        required_fields = ["id", "name", "description", "model", 
+                                          "personality", "interests", "lifestyle", "values"]
+                        for field in required_fields:
+                            if field not in agent_config:
+                                agent_config[field] = ""
+                        agents.append(agent_config)
+                except Exception as e:
+                    print(f"读取自定义角色配置文件失败: {filename}, 错误: {e}")
+        
+        return JSONResponse(
+            content={
+                "success": True,
+                "agents": agents
+            }
+        )
+    except Exception as e:
+        print(f"获取自定义角色列表失败: {e}")
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": f"获取角色列表失败: {str(e)}"
+            }
+        )
+
+@app.put("/api/update_custom_agent/{agent_id}")
+async def update_custom_agent(agent_id: str, request: CustomAgentRequest):
+    """更新自定义角色
+    
+    Args:
+        agent_id: 角色ID
+        request: 更新后的角色信息
+        
+    Returns:
+        dict: 包含更新结果的响应
+    """
+    try:
+        # 检查是否是自定义角色
+        if not agent_id.startswith("custom_"):
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": "只能更新自定义角色"
+                }
+            )
+            
+        # 检查角色是否存在
+        config_path = os.path.join(CUSTOM_AGENTS_DIR, f"{agent_id}.json")
+        if not os.path.exists(config_path):
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": "角色不存在"
+                }
+            )
+            
+        # 更新角色配置文件
+        agent_config = {
+            "id": agent_id,
+            "name": request.name,
+            "description": request.description,
+            "model": request.model,
+            "personality": request.personality,
+            "interests": request.interests,
+            "lifestyle": request.lifestyle,
+            "values": request.values
+        }
+        
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(agent_config, f, ensure_ascii=False, indent=2)
+        
+        # 更新角色提示词文件
+        prompt_path = os.path.join(CUSTOM_AGENTS_DIR, f"{agent_id}.txt")
+        with open(prompt_path, "w", encoding="utf-8") as f:
+            f.write(f"""你是一个名为{request.name}的角色。
+{request.description}
+
+性格特征：
+{request.personality}
+
+兴趣爱好：
+{request.interests}
+
+生活习惯：
+{request.lifestyle}
+
+价值观：
+{request.values}
+
+请按照以上设定与用户进行对话。""")
+            
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": f"成功更新角色 {request.name}"
+            }
+        )
+    except Exception as e:
+        print(f"更新自定义角色失败: {e}")
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": f"更新角色失败: {str(e)}"
+            }
+        )
+
+@app.delete("/api/delete_custom_agent/{agent_id}")
+async def delete_custom_agent(agent_id: str):
+    """删除自定义角色
+    
+    Args:
+        agent_id: 角色ID
+        
+    Returns:
+        dict: 包含删除结果的响应
+    """
+    try:
+        # 检查是否是自定义角色
+        if not agent_id.startswith("custom_"):
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": "只能删除自定义角色"
+                }
+            )
+            
+        # 删除配置文件
+        config_path = os.path.join(CUSTOM_AGENTS_DIR, f"{agent_id}.json")
+        if os.path.exists(config_path):
+            os.remove(config_path)
+            
+        # 删除提示词文件
+        prompt_path = os.path.join(CUSTOM_AGENTS_DIR, f"{agent_id}.txt")
+        if os.path.exists(prompt_path):
+            os.remove(prompt_path)
+            
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": f"成功删除角色 {agent_id}"
+            }
+        )
+    except Exception as e:
+        print(f"删除自定义角色失败: {e}")
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": f"删除角色失败: {str(e)}"
+            }
+        )
 
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
