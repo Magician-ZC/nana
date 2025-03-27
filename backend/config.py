@@ -21,6 +21,22 @@ class Config:
     ENABLE_TTS = False  # 默认不启用普通TTS功能
     ENABLE_SUPER_TTS = False  # 默认不启用超拟人TTS功能
     
+    # 普通TTS可用音色列表
+    TTS_VOICE_LIST = [
+        {"name": "小燕", "value": "xiaoyan"},
+        {"name": "许久", "value": "aisjiuxu"},
+        {"name": "小萍", "value": "aisxping"},
+        {"name": "小婧", "value": "aisjinger"},
+        {"name": "许小宝", "value": "aisbabyxu"},
+    ]
+    
+    # 超拟人TTS可用音色列表
+    SUPER_TTS_VOICE_LIST = [
+        {"name": "聆飞逸", "value": "x4_lingfeiyi_oral"},
+        {"name": "聆小璇", "value": "x4_lingxiaoxuan_oral"},
+        {"name": "聆玉言", "value": "x4_lingyuyan_oral"},
+    ]
+    
     # 普通TTS音频格式配置
     TTS_AUE = "lame"  # 音频编码，可选值：raw(未压缩)、lame(mp3)、speex(speex格式压缩)、speex-wb(speex格式压缩)
     TTS_AUF = "audio/L16;rate=16000"  # 音频采样率，可选值：audio/L16;rate=8000、audio/L16;rate=16000

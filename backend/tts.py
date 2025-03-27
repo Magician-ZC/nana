@@ -14,10 +14,11 @@ from typing import Optional
 from config import Config
 
 class TTSService:
-    def __init__(self):
+    def __init__(self, voice=None):
         self.app_id = Config.XFYUN_APP_ID
         self.api_key = Config.XFYUN_API_KEY
         self.api_secret = Config.XFYUN_API_SECRET
+        self.voice = voice or Config.TTS_VCN  # 如果没有提供音色，使用默认配置
     
     def generate_audio(self, text: str) -> bytes:
         """
@@ -62,7 +63,7 @@ class TTSService:
     def _create_ws_param(self, text):
         """创建WebSocket参数对象"""
         class WsParam:
-            def __init__(self, app_id, api_key, api_secret, text):
+            def __init__(self, app_id, api_key, api_secret, text, voice):
                 self.APPID = app_id
                 self.APIKey = api_key
                 self.APISecret = api_secret
@@ -74,7 +75,7 @@ class TTSService:
                 self.BusinessArgs = {
                     "aue": Config.TTS_AUE,  # 音频编码
                     "auf": Config.TTS_AUF,  # 音频采样率
-                    "vcn": Config.TTS_VCN,  # 发音人
+                    "vcn": voice,  # 使用传入的音色
                     "tte": Config.TTS_TTE,  # 文本编码
                     "speed": Config.TTS_SPEED,  # 语速
                     "volume": Config.TTS_VOLUME,  # 音量
@@ -110,7 +111,7 @@ class TTSService:
                 url = url + '?' + urlencode(v)
                 return url
                 
-        return WsParam(self.app_id, self.api_key, self.api_secret, text)
+        return WsParam(self.app_id, self.api_key, self.api_secret, text, self.voice)
     
     def _run_tts_websocket(self, ws_param):
         """运行TTS WebSocket连接并获取结果"""

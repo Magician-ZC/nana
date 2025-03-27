@@ -13,7 +13,22 @@
             />
             启用普通语音
           </label>
+          
+          <!-- 普通语音音色选择 -->
+          <div class="voice-select" v-if="enableTTS">
+            <label class="voice-label">音色：</label>
+            <select v-model="ttsVoice" class="voice-dropdown">
+              <option 
+                v-for="voice in ttsVoiceList" 
+                :key="voice.value" 
+                :value="voice.value"
+              >
+                {{ voice.name }}
+              </option>
+            </select>
+          </div>
         </div>
+        
         <div class="setting-item">
           <label>
             <input 
@@ -24,6 +39,21 @@
             />
             启用超拟人语音
           </label>
+          
+          <!-- 超拟人语音音色选择 -->
+          <div class="voice-select" v-if="enableSuperTTS">
+            <label class="voice-label">音色：</label>
+            <select v-model="superTtsVoice" class="voice-dropdown">
+              <option 
+                v-for="voice in superTtsVoiceList" 
+                :key="voice.value" 
+                :value="voice.value"
+              >
+                {{ voice.name }}
+              </option>
+            </select>
+          </div>
+          
           <div class="settings-note" v-if="enableSuperTTS">
             超拟人语音支持更自然的语气、语调变化和口语化表达
           </div>
@@ -31,9 +61,13 @@
       </div>
       
       <div class="settings-actions">
-        <button class="apply-button" @click="saveSettings">应用</button>
+        <button class="apply-button" @click="saveSettings" :disabled="isSaving">
+          {{ isSaving ? '保存中...' : '应用' }}
+        </button>
         <button class="close-button" @click="$emit('close')">关闭</button>
       </div>
+      
+      <div v-if="error" class="error-message">{{ error }}</div>
     </div>
   </div>
 </template>
@@ -53,6 +87,10 @@ const emit = defineEmits(['close', 'settings-changed'])
 // 设置状态
 const enableTTS = ref(false)
 const enableSuperTTS = ref(false)
+const ttsVoice = ref('xiaoyan')
+const superTtsVoice = ref('x4_lingfeiyi_oral')
+const ttsVoiceList = ref([])
+const superTtsVoiceList = ref([])
 const isSaving = ref(false)
 const error = ref('')
 
@@ -76,6 +114,10 @@ async function loadSettings() {
     
     enableTTS.value = data.enable_tts
     enableSuperTTS.value = data.enable_super_tts
+    ttsVoice.value = data.tts_voice || 'xiaoyan'
+    superTtsVoice.value = data.super_tts_voice || 'x4_lingfeiyi_oral'
+    ttsVoiceList.value = data.tts_voice_list || []
+    superTtsVoiceList.value = data.super_tts_voice_list || []
     
   } catch (error) {
     console.error('加载设置失败:', error)
@@ -109,7 +151,9 @@ async function saveSettings() {
       },
       body: JSON.stringify({
         enable_tts: enableTTS.value,
-        enable_super_tts: enableSuperTTS.value
+        enable_super_tts: enableSuperTTS.value,
+        tts_voice: ttsVoice.value,
+        super_tts_voice: superTtsVoice.value
       })
     })
     
@@ -119,7 +163,9 @@ async function saveSettings() {
       // 通知父组件设置已更改
       emit('settings-changed', {
         enableTTS: enableTTS.value,
-        enableSuperTTS: enableSuperTTS.value
+        enableSuperTTS: enableSuperTTS.value,
+        ttsVoice: ttsVoice.value,
+        superTtsVoice: superTtsVoice.value
       })
       
       // 关闭设置面板
@@ -191,6 +237,41 @@ input[type="checkbox"] {
   cursor: pointer;
 }
 
+.voice-select {
+  margin-top: 8px;
+  margin-left: 24px;
+  display: flex;
+  align-items: center;
+}
+
+.voice-label {
+  margin-right: 10px;
+  font-size: 14px;
+  color: #ddd;
+}
+
+.voice-dropdown {
+  flex: 1;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background-color: rgba(60, 60, 60, 0.7);
+  border: 1px solid rgba(120, 120, 120, 0.3);
+  color: white;
+  font-size: 14px;
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 16px;
+}
+
+.voice-dropdown:hover, .voice-dropdown:focus {
+  background-color: rgba(80, 80, 80, 0.7);
+  border-color: rgba(150, 150, 150, 0.5);
+  outline: none;
+}
+
 .settings-note {
   margin-top: 4px;
   font-size: 12px;
@@ -219,8 +300,14 @@ input[type="checkbox"] {
   color: white;
 }
 
-.apply-button:hover {
+.apply-button:hover:not(:disabled) {
   background-color: #3a9a9c;
+}
+
+.apply-button:disabled {
+  background-color: #1a4a4c;
+  color: #aaa;
+  cursor: not-allowed;
 }
 
 .close-button {
@@ -236,5 +323,6 @@ input[type="checkbox"] {
   color: #ff6b6b;
   margin-top: 10px;
   font-size: 14px;
+  text-align: center;
 }
 </style> 

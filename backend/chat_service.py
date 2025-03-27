@@ -14,8 +14,7 @@ class ChatService:
         self.llm_service = LLMService(Config.LLM_API_KEY, Config.LLM_API_URL)
         
         # 初始化TTS服务（根据配置决定是否创建实例）
-        self.tts_service = TTSService() if Config.is_tts_enabled() else None
-        self.super_tts_service = SuperTTSService() if Config.is_super_tts_enabled() else None
+        self._refresh_tts_services()
          
         # 初始化对话历史和主Agent
         self.conversation_history = ConversationHistory(max_turns=Config.MAX_TURNS)
@@ -24,6 +23,13 @@ class ChatService:
         # 自定义agent目录
         self.custom_agents_dir = "save/custom_agents"
         os.makedirs(self.custom_agents_dir, exist_ok=True)
+
+    def _refresh_tts_services(self):
+        """根据当前配置刷新TTS服务实例"""
+        # 普通TTS服务
+        self.tts_service = TTSService(Config.TTS_VCN) if Config.is_tts_enabled() else None
+        # 超拟人TTS服务
+        self.super_tts_service = SuperTTSService(Config.SUPER_TTS_VCN) if Config.is_super_tts_enabled() else None
 
     def change_agent(self, agent_name: str, session_id: str) -> bool:
         """
@@ -70,6 +76,9 @@ class ChatService:
         :return: (回复文本, 语音数据, 表情, 引导决策消息)
         """
         try:
+            # 确保TTS服务使用最新的配置
+            self._refresh_tts_services()
+            
             # 如果收到新的agent_type，先切换智能体
             if agent_type:
                 self.change_agent(agent_type, session_id)

@@ -14,11 +14,12 @@ from wsgiref.handlers import format_date_time
 from config import Config
 
 class SuperTTSService:
-    def __init__(self):
+    def __init__(self, voice=None):
         self.app_id = Config.XFYUN_APP_ID
         self.api_key = Config.XFYUN_API_KEY
         self.api_secret = Config.XFYUN_API_SECRET
         self.url = Config.SUPER_TTS_URL
+        self.voice = voice or Config.SUPER_TTS_VCN  # 如果没有提供音色，使用默认配置
     
     def generate_audio(self, text: str) -> bytes:
         """
@@ -175,7 +176,7 @@ class SuperTTSService:
                             "remain": Config.SUPER_TTS_REMAIN
                         },
                         "tts": {
-                            "vcn": Config.SUPER_TTS_VCN,
+                            "vcn": self.voice,  # 使用实例的音色设置
                             "speed": Config.TTS_SPEED,
                             "volume": Config.TTS_VOLUME,
                             "pitch": Config.TTS_PITCH,

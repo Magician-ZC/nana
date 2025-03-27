@@ -32,7 +32,13 @@ function closeSettings() {
 
 function handleSettingsChanged(settings) {
   console.log('设置已更改:', settings)
-  // 这里可以添加更多处理逻辑
+  if (settings.enableTTS) {
+    console.log('已启用普通语音，选择音色:', settings.ttsVoice)
+  } else if (settings.enableSuperTTS) {
+    console.log('已启用超拟人语音，选择音色:', settings.superTtsVoice)
+  } else {
+    console.log('已禁用所有语音')
+  }
 }
 </script>
 

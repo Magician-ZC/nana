@@ -52,10 +52,16 @@ class CustomAgentRequest(BaseModel):
 class TTSSettingsRequest(BaseModel):
     enable_tts: bool
     enable_super_tts: bool
+    tts_voice: Optional[str] = None
+    super_tts_voice: Optional[str] = None
 
 class TTSSettings(BaseModel):
     enable_tts: bool
     enable_super_tts: bool
+    tts_voice: str
+    super_tts_voice: str
+    tts_voice_list: list
+    super_tts_voice_list: list
 
 chat_service = ChatService()
 tts_service = TTSService()
@@ -728,7 +734,11 @@ async def get_tts_settings():
     return JSONResponse(
         content={
             "enable_tts": Config.ENABLE_TTS,
-            "enable_super_tts": Config.ENABLE_SUPER_TTS
+            "enable_super_tts": Config.ENABLE_SUPER_TTS,
+            "tts_voice": Config.TTS_VCN,
+            "super_tts_voice": Config.SUPER_TTS_VCN,
+            "tts_voice_list": Config.TTS_VOICE_LIST,
+            "super_tts_voice_list": Config.SUPER_TTS_VOICE_LIST
         }
     )
 
@@ -756,23 +766,28 @@ async def update_tts_settings(settings: TTSSettingsRequest):
         Config.ENABLE_TTS = settings.enable_tts
         Config.ENABLE_SUPER_TTS = settings.enable_super_tts
         
-        # 更新ChatService中的TTS服务实例
-        if settings.enable_tts and chat_service.tts_service is None:
-            chat_service.tts_service = TTSService()
-        elif not settings.enable_tts:
-            chat_service.tts_service = None
-            
-        if settings.enable_super_tts and chat_service.super_tts_service is None:
-            chat_service.super_tts_service = SuperTTSService()
-        elif not settings.enable_super_tts:
-            chat_service.super_tts_service = None
+        # 更新音色配置
+        if settings.tts_voice:
+            # 验证音色是否在列表中
+            if any(voice["value"] == settings.tts_voice for voice in Config.TTS_VOICE_LIST):
+                Config.TTS_VCN = settings.tts_voice
+        
+        if settings.super_tts_voice:
+            # 验证音色是否在列表中
+            if any(voice["value"] == settings.super_tts_voice for voice in Config.SUPER_TTS_VOICE_LIST):
+                Config.SUPER_TTS_VCN = settings.super_tts_voice
+        
+        # 使用刷新服务方法，确保使用最新的音色配置
+        chat_service._refresh_tts_services()
             
         return JSONResponse(
             content={
                 "success": True,
                 "message": "TTS设置已更新",
                 "enable_tts": Config.ENABLE_TTS,
-                "enable_super_tts": Config.ENABLE_SUPER_TTS
+                "enable_super_tts": Config.ENABLE_SUPER_TTS,
+                "tts_voice": Config.TTS_VCN,
+                "super_tts_voice": Config.SUPER_TTS_VCN
             }
         )
     except Exception as e:
