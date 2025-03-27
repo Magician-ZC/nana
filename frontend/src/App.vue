@@ -1,47 +1,70 @@
 <template>
   <div class="app" :class="{ 'dark': isDarkMode }">
-    <!-- 深色模式切换按钮 -->
-    <button 
-      @click="toggleDarkMode" 
-      class="theme-toggle-btn"
-      :title="isDarkMode ? '切换到浅色模式' : '切换到深色模式'"
-    >
-      <i :class="isDarkMode ? 'fa-solid fa-sun' : 'fa-solid fa-moon'"></i>
-    </button>
-    
-    <!-- 添加情绪评估和心理评估按钮 -->
-    <AssessmentButtons />
-    
-    <TimeWeather />
-    
-    <div class="live2d-main">
+    <div class="app-container">
+      <Settings v-if="showSettings" @close="showSettings = false" />
+      <AssessmentButtons />
+      
+      <TimeWeather />
       <QuickQuestions />
       <Live2DModel ref="live2dRef" :modelId="chatStore.currentModel" />
       <div class="controls-container">
         <AgentSelector @agent-change="handleAgentChange" :currentModel="chatStore.currentAgent" />
         <SettingsButton class="settings-button" />
       </div>
-      <ChatPanel />
+      <!-- 桌面端显示普通聊天面板 -->
+      <ChatPanel ref="chatPanelRef" :is-mobile="isMobile" />
     </div>
     
+    <!-- 移动端显示气泡样式聊天面板 -->
+    <MobileChatBubbles v-if="isMobile" />
     
+    <!-- 移动端单独显示输入区域 -->
+    <div v-if="isMobile" class="mobile-input-area">
+      <ChatInputArea ref="mobileInputAreaRef" :is-mobile="true" />
+    </div>
+
+    <!-- 添加模式切换按钮，在所有平台都显示 -->
+    <button class="theme-toggle-btn" @click="toggleDarkMode">
+      <svg v-if="isDarkMode" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="5"></circle>
+        <line x1="12" y1="1" x2="12" y2="3"></line>
+        <line x1="12" y1="21" x2="12" y2="23"></line>
+        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+        <line x1="1" y1="12" x2="3" y2="12"></line>
+        <line x1="21" y1="12" x2="23" y2="12"></line>
+        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+      </svg>
+      <svg v-else xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+      </svg>
+    </button>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useChatStore } from './stores/chat'
+import { getApiBaseUrl } from './stores/chat'
 import Live2DModel from './components/Live2DModel.vue'
 import AgentSelector from './components/AgentSelector.vue'
 import ChatPanel from './components/ChatPanel.vue'
-import TimeWeather from './components/TimeWeather.vue'
+import Settings from './components/Settings.vue'
 import QuickQuestions from './components/QuickQuestions.vue'
+import TimeWeather from './components/TimeWeather.vue'
 import SettingsButton from './components/SettingsButton.vue'
 import AssessmentButtons from './components/AssessmentButtons.vue'
+import MobileChatBubbles from './components/MobileChatBubbles.vue'
+import ChatInputArea from './components/ChatInputArea.vue'
 
 const chatStore = useChatStore()
+const showSettings = ref(false)
 const live2dRef = ref(null)
 const isDarkMode = ref(false)
+const chatPanelRef = ref(null)
+const mobileInputAreaRef = ref(null) // 添加移动端输入区域引用
+const isMobile = ref(false) // 添加移动设备检测变量
 
 // 初始化音频上下文
 function initAudioContext() {
@@ -116,7 +139,7 @@ function requestWelcomeAudio() {
     }
     
     // 直接请求欢迎语音频
-    fetch('http://localhost:8666/api/welcome_tts', {
+    fetch(`${getApiBaseUrl()}/api/welcome_tts`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -252,29 +275,87 @@ const handleKeyPress = (e) => {
   }
 }
 
-onMounted(() => {
-  window.addEventListener('keydown', handleKeyPress)
-  // 加载自定义角色列表
-  chatStore.loadCustomAgents()
-  
-  // 检查并应用主题设置
-  checkSystemPreference()
-  
-  // 初始化音频上下文
-  initAudioContext()
-  
-  // 监听系统主题变化
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
-    // 只有当用户没有手动设置过主题时，才跟随系统变化
-    if (localStorage.getItem('darkMode') === null) {
-      isDarkMode.value = e.matches
-      updateTheme()
+// 检测设备类型函数
+const checkMobileView = () => {
+  try {
+    // 如果是移动设备，始终使用移动视图
+    if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
+      isMobile.value = true
+      return
     }
-  })
+    
+    // 如果是桌面设备，根据窗口宽度判断
+    isMobile.value = window.innerWidth <= 768
+    console.log("App - 设备检测:", isMobile.value ? "移动设备" : "桌面设备")
+  } catch (error) {
+    console.error("设备类型检测出错:", error)
+    // 失败时默认为非移动设备
+    isMobile.value = false
+  }
+}
+
+// 保存函数引用，便于移除事件监听
+checkMobileView.handler = checkMobileView
+handleKeyPress.handler = handleKeyPress
+
+onMounted(() => {
+  try {
+    // 键盘事件监听
+    window.addEventListener('keydown', handleKeyPress.handler)
+    
+    // 加载自定义角色列表
+    chatStore.loadCustomAgents()
+    
+    // 检查并应用主题设置
+    checkSystemPreference()
+    
+    // 初始化音频上下文
+    initAudioContext()
+    
+    // 初始检测设备类型
+    checkMobileView()
+    
+    // 监听窗口大小变化
+    window.addEventListener('resize', checkMobileView.handler)
+    
+    // 监听系统主题变化
+    const darkModeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+    const handleDarkModeChange = (e) => {
+      // 只有当用户没有手动设置过主题时，才跟随系统变化
+      if (localStorage.getItem('darkMode') === null) {
+        isDarkMode.value = e.matches
+        updateTheme()
+      }
+    }
+    
+    // 保存事件处理函数引用
+    darkModeMediaQuery.addEventListener('change', handleDarkModeChange)
+    
+    // 保存引用以便清理
+    window.darkModeChangeHandler = handleDarkModeChange
+    window.darkModeMediaQuery = darkModeMediaQuery
+    
+    console.log("App组件已挂载完成")
+  } catch (error) {
+    console.error("App挂载过程中出错:", error)
+  }
 })
 
 onUnmounted(() => {
-  window.removeEventListener('keydown', handleKeyPress)
+  try {
+    // 移除事件监听器
+    window.removeEventListener('keydown', handleKeyPress.handler)
+    window.removeEventListener('resize', checkMobileView.handler)
+    
+    // 移除主题变化监听
+    if (window.darkModeMediaQuery && window.darkModeChangeHandler) {
+      window.darkModeMediaQuery.removeEventListener('change', window.darkModeChangeHandler)
+    }
+    
+    console.log("App组件已卸载")
+  } catch (error) {
+    console.error("App卸载过程中出错:", error)
+  }
 })
 </script>
 
@@ -312,7 +393,7 @@ body {
   background: linear-gradient(90deg, #d4c1ec 0%, #a6c1f4 100%);
 }
 
-.live2d-main {
+.app-container {
   position: absolute;
   top: 0;
   left: 0;
@@ -373,6 +454,11 @@ body {
     top: 15px;
     right: 15px;
   }
+  
+  /* 移动端隐藏Live2D模型，让消息气泡占据更多空间 */
+  .app-container {
+    z-index: 5; 
+  }
 }
 
 /* 深色模式切换按钮 */
@@ -380,6 +466,7 @@ body {
   position: fixed;
   top: 20px;
   left: 20px;
+  right: 20px;
   z-index: 100;
   width: 40px;
   height: 40px;
@@ -406,5 +493,22 @@ body {
 
 .dark .theme-toggle-btn:hover {
   background-color: rgba(255, 255, 255, 0.3);
+}
+
+/* 移动端输入区域样式 */
+.mobile-input-area {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 999;
+}
+
+@media (max-width: 768px) {
+  .mobile-input-area {
+    background-color: rgba(0, 0, 0, 0.2);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
 }
 </style> 

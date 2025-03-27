@@ -91,6 +91,19 @@ class MainAgent:
         if not message:
             return True
             
+        # 常见有意义的短句（特别是对上下文回复），这些不应该被视为无意义输入
+        meaningful_short_replies = [
+            "好的", "同意", "拒绝", "接受", "不同意", "是的", "不是", "行", "不行",
+            "可以", "不可以", "明白", "不明白", "懂了", "不懂", "要", "不要", "谢谢",
+            "继续", "停止", "不要", "算了", "ok", "yes", "no", "再见", "会", "不会",
+            "你好", "早上好", "下午好", "晚上好", "嗨", "嘿", "hi", "hello", "hey", 
+            "问好", "打招呼", "见到你很高兴", "见到你真好", "好久不见", "欢迎"
+        ]
+        
+        # 如果是这些有意义的短回复，直接认为有意义
+        if message.lower() in meaningful_short_replies:
+            return False
+            
         # 检查是否过短(少于3个字符)
         if len(message) < 3:
             return True
@@ -110,12 +123,21 @@ class MainAgent:
         
         # 常见的中文虚词和连词，这些词通常会出现在有意义的中文句子中
         chinese_common_words = ["的", "是", "了", "在", "我", "有", "和", "就", "不", "人", "都", 
-                               "一", "一个", "上", "也", "很", "到", "说", "要", "这", "你", "会", 
-                               "着", "没有", "看", "好", "自己", "那", "么", "她", "他", "们"]
+                              "一", "一个", "上", "也", "很", "到", "说", "要", "这", "你", "会", 
+                              "着", "没有", "看", "好", "自己", "那", "么", "她", "他", "们"]
+        
+        # 常见有意义的短中文词
+        chinese_meaningful_words = [
+            "拒绝", "同意", "接受", "明白", "懂了", "谢谢", "喜欢", "讨厌", 
+            "开心", "难过", "生气", "害怕", "想要", "需要", "知道", "承认"
+        ]
         
         if has_chinese:
+            # 检查短句中是否包含有意义词语
+            if any(word in message for word in chinese_meaningful_words):
+                has_meaningful_text = True
             # 检查是否包含常见中文虚词
-            if any(word in message for word in chinese_common_words):
+            elif any(word in message for word in chinese_common_words):
                 has_meaningful_text = True
             else:
                 # 中文消息中至少要有2个连续的中文字符
@@ -135,7 +157,7 @@ class MainAgent:
                         
                         char_counts = Counter(message)
                         entropy = -sum((count / len(message)) * math.log(count / len(message), 2) 
-                                    for count in char_counts.values())
+                                   for count in char_counts.values())
                         
                         # 熵值高意味着字符组合更随机
                         if entropy > 2.0:  # 熵阈值设为2.0，可根据需要调整
@@ -148,9 +170,9 @@ class MainAgent:
             # 1. 首先检查是否与常见英文单词相似
             # 常见的1000个英文单词的前缀（为了便于匹配，只使用常见单词的前3-4个字母作为前缀检查）
             common_word_prefixes = ["the", "and", "for", "are", "but", "not", "you", "all", "any", "can", "had", "her", "was", "one", 
-                                   "our", "out", "day", "get", "has", "him", "his", "how", "man", "new", "now", "old", "see", "two", 
-                                   "way", "who", "boy", "did", "its", "let", "put", "say", "she", "too", "use", "that", "with", "have", 
-                                   "this", "will", "your", "from", "they", "know", "want", "been", "good", "much", "some", "time"]
+                                  "our", "out", "day", "get", "has", "him", "his", "how", "man", "new", "now", "old", "see", "two", 
+                                  "way", "who", "boy", "did", "its", "let", "put", "say", "she", "too", "use", "that", "with", "have", 
+                                  "this", "will", "your", "from", "they", "know", "want", "been", "good", "much", "some", "time"]
             
             # 检查输入是否与任何常见单词前缀匹配
             input_lower = message.lower()
@@ -218,11 +240,16 @@ class MainAgent:
                             has_repetitive_pattern = True
                             break
             
-            # 综合判断是否是有意义的文本：
-            # 1. 与常见单词前缀匹配，且有合理的元音辅音分布
-            # 2. 没有不自然的辅音/元音连续模式
-            # 3. 没有明显的重复模式
-            has_meaningful_text = (prefix_match or natural_vowel_ratio) and not (unnatural_consonant_pattern or unnatural_vowel_pattern or has_repetitive_pattern)
+            # 英文中常见的一些有意义的短词
+            english_meaningful_words = ["yes", "no", "ok", "hi", "hey", "bye", "good", "bad", "fine", "sad"]
+            if input_lower in english_meaningful_words:
+                has_meaningful_text = True
+            else:
+                # 综合判断是否是有意义的文本：
+                # 1. 与常见单词前缀匹配，且有合理的元音辅音分布
+                # 2. 没有不自然的辅音/元音连续模式
+                # 3. 没有明显的重复模式
+                has_meaningful_text = (prefix_match or natural_vowel_ratio) and not (unnatural_consonant_pattern or unnatural_vowel_pattern or has_repetitive_pattern)
             
             # 额外的安全检查：如果是常见的无意义输入模式如"asdasd"，"qwerty"，直接判定为无意义
             common_random_inputs = ["asdf", "qwer", "zxcv", "hjkl", "wasd", "qwerty", "asdasd", "dfdfdf", "jkjk", "ghgh", "sdfsd", "asdasdasd", "qwerty"]

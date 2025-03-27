@@ -1,8 +1,13 @@
 <template>
   <div class="time-weather-container">
     <div class="weather-row">
-      <span class="date">{{ currentDate }} {{ weekDay }}</span>
-      <span class="divider">|</span>
+      <!-- 桌面端显示完整信息 -->
+      <template v-if="!isMobile">
+        <span class="date">{{ currentDate }} {{ weekDay }}</span>
+        <span class="divider">|</span>
+      </template>
+      
+      <!-- 所有端都显示地区和天气 -->
       <span class="location">{{ weather.city }}</span>
       <span class="weather-icon">
         <svg v-if="weather.condition === 'sunny'" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -37,12 +42,18 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 
 const currentDate = ref('')
 const weekDay = ref('')
+const isMobile = ref(false)
 const weather = ref({
   temperature: 25,
   condition: 'sunny', // 可选值: sunny, cloudy, rainy
   conditionText: '晴朗',
   city: '北京'
 })
+
+// 检测是否为移动设备
+const checkMobileDevice = () => {
+  isMobile.value = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth <= 768;
+};
 
 // 星期对照表
 const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六']
@@ -94,6 +105,12 @@ const fetchWeather = async () => {
 let timeInterval = null
 
 onMounted(() => {
+  // 检测移动设备
+  checkMobileDevice();
+  
+  // 监听窗口大小变化
+  window.addEventListener('resize', checkMobileDevice);
+  
   // 立即更新一次时间和日期
   updateDateTime()
   
@@ -109,6 +126,9 @@ onBeforeUnmount(() => {
   if (timeInterval) {
     clearInterval(timeInterval)
   }
+  
+  // 移除窗口大小变化监听
+  window.removeEventListener('resize', checkMobileDevice);
 })
 </script>
 
@@ -126,6 +146,23 @@ onBeforeUnmount(() => {
   backdrop-filter: blur(5px);
   z-index: 100;
   font-size: 0.9rem;
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+  .time-weather-container {
+    top: 10px; /* 置顶 */
+    bottom: auto; /* 取消旧的底部定位 */
+    padding: 6px 12px;
+    font-size: 0.8rem;
+    width: auto;
+    max-width: 90%;
+  }
+  
+  .weather-row {
+    justify-content: center;
+    flex-wrap: nowrap;
+  }
 }
 
 .weather-row {

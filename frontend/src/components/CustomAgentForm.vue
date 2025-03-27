@@ -226,7 +226,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
+import { getApiBaseUrl } from '../stores/chat'
 
 const props = defineProps({
   editAgent: {
@@ -377,7 +378,7 @@ const handleFileUpload = async (event) => {
       }
     }, 200)
     
-    const response = await fetch('http://localhost:8666/api/extract_agent_info', {
+    const response = await fetch(`${getApiBaseUrl()}/api/extract_agent_info`, {
       method: 'POST',
       body: formData,
     })

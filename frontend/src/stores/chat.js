@@ -27,6 +27,15 @@ function formatTime() {
   }
 }
 
+// 添加获取当前API基础URL的函数
+export function getApiBaseUrl() {
+  // 获取当前主机地址和协议
+  const protocol = window.location.protocol;
+  const hostname = window.location.hostname;
+  // 使用固定的后端端口8666
+  return `${protocol}//${hostname}:8666`;
+}
+
 export const useChatStore = defineStore('chat', () => {
   // 状态
   const messages = ref([])
@@ -248,7 +257,7 @@ export const useChatStore = defineStore('chat', () => {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 30000) // 30秒超时
       
-      const response = await fetch('http://localhost:8666/api/stream_chat', {
+      const response = await fetch(`${getApiBaseUrl()}/api/stream_chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -430,6 +439,37 @@ export const useChatStore = defineStore('chat', () => {
                     playAudio(data.audio)
                   }
                 }
+                else if (data.type === 'clear_previous') {
+                  // 处理清除之前消息的指令
+                  console.log('收到清除之前消息的指令');
+                  
+                  // 检查是否为强制清除
+                  const forceClean = data.force_clear === true;
+                  
+                  if (assistantMessageIndex < messages.value.length) {
+                    if (forceClean) {
+                      // 强制清除 - 完全清空消息内容
+                      console.log('执行强制清除操作');
+                      messages.value[assistantMessageIndex].content = '';
+                    } else {
+                      // 普通清除 - 可能仅标记为需要清除
+                      console.log('执行普通清除操作');
+                      messages.value[assistantMessageIndex].shouldClear = true;
+                    }
+                  }
+                }
+                else if (data.type === 'reset_content') {
+                  // 完全重置消息内容，准备接收新内容
+                  console.log('收到重置消息内容的指令');
+                  
+                  if (assistantMessageIndex < messages.value.length) {
+                    // 重置消息内容
+                    fullResponse = '';
+                    messages.value[assistantMessageIndex].content = '';
+                    // 标记为重新开始流式传输
+                    messages.value[assistantMessageIndex].isStreaming = true;
+                  }
+                }
               } catch (e) {
                 console.error('解析流数据时出错:', e, line.substring(0, 100) + '...');
                 // 尝试进行修复 - 检查是否是完整的JSON对象被截断
@@ -598,7 +638,7 @@ export const useChatStore = defineStore('chat', () => {
         "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"
       ].includes(message)
       
-      const response = await fetch('http://localhost:8666/api/chat', {
+      const response = await fetch(`${getApiBaseUrl()}/api/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -695,7 +735,7 @@ export const useChatStore = defineStore('chat', () => {
       hasShownWelcome.value[agentId] = true
       
       // 为欢迎语请求TTS音频
-      fetch('http://localhost:8666/api/welcome_tts', {
+      fetch(`${getApiBaseUrl()}/api/welcome_tts`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

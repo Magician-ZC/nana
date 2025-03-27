@@ -8,6 +8,9 @@ from conversation import ConversationHistory
 import os
 import json
 import asyncio
+from embedding import EmbeddingService
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 
 class ChatService:
     def __init__(self):
@@ -24,6 +27,44 @@ class ChatService:
         # 自定义agent目录
         self.custom_agents_dir = "save/custom_agents"
         os.makedirs(self.custom_agents_dir, exist_ok=True)
+        
+        # 初始化向量服务用于快速回复
+        self.embedding_service = EmbeddingService(
+            Config.EMBEDDING_API_KEY,  # 使用专门的Embedding API密钥
+            Config.EMBEDDING_API_URL,
+            Config.EMBEDDING_MODEL,
+            Config.EMBEDDING_DIMENSION
+        )
+        
+        # 加载向量数据库 (如果存在)
+        self.vector_db = self._load_vector_db()
+
+    def _load_vector_db(self):
+        """加载向量数据库，如果不存在则返回空数据库"""
+        vector_db_path = "save/vector_db.json"
+        if os.path.exists(vector_db_path):
+            try:
+                with open(vector_db_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"加载向量数据库失败: {e}")
+        return {"questions": [], "embeddings": [], "answers": []}
+
+    def _is_user_info_related(self, message: str) -> bool:
+        """判断用户消息是否与个人信息相关"""
+        personal_keywords = [
+            "我的", "我是", "我们", "我想", "我要", "我有", "我感觉", "我觉得", 
+            "我喜欢", "我讨厌", "我的家", "我的工作", "我的学习", "我的健康",
+            "我的朋友", "我的家人", "我的情感", "我最近", "我今天", "我昨天",
+            "你记得我", "你知道我", "还记得我", "帮我", "告诉我", "我多大",
+            "你认识我", "我们见过", "我们聊过", "你了解我", "名字", "年龄", 
+            "性别", "专业", "学校", "工作", "家庭", "爱好", "能力", "性格"
+        ]
+        
+        for keyword in personal_keywords:
+            if keyword in message:
+                return True
+        return False
 
     def _refresh_tts_services(self):
         """根据当前配置刷新TTS服务实例"""
@@ -65,6 +106,60 @@ class ChatService:
                 print(f"自定义角色文件不存在: {agent_name}")
                 return False
         return False
+        
+    async def fast_reply(self, message: str) -> Tuple[str, str]:
+        """
+        使用向量检索快速生成回复，不涉及用户信息处理
+        
+        Args:
+            message: 用户消息
+            
+        Returns:
+            Tuple[str, str]: (回复文本, 表情)
+        """
+        try:
+            # 首先检查向量数据库是否为空
+            if not self.vector_db or not self.vector_db.get("embeddings") or len(self.vector_db["embeddings"]) == 0:
+                print("向量数据库为空，无法使用快速回复")
+                return None, None
+                
+            # 获取消息的向量表示
+            try:
+                embedding = self.embedding_service.get_embedding(message)
+                if not embedding:
+                    print("无法获取消息的向量表示，跳过快速回复")
+                    return None, None
+            except Exception as e:
+                print(f"获取向量表示时出错: {e}")
+                return None, None
+                
+            # 计算与所有已知问题的相似度
+            try:
+                similarities = []
+                for stored_embedding in self.vector_db["embeddings"]:
+                    similarity = cosine_similarity([embedding], [stored_embedding])[0][0]
+                    similarities.append(similarity)
+                    
+                # 找到最相似的问题
+                max_similarity_index = np.argmax(similarities)
+                max_similarity = similarities[max_similarity_index]
+                
+                # 如果相似度超过阈值，返回对应回答
+                if max_similarity > 0.85:  # 设置一个相对严格的阈值
+                    answer = self.vector_db["answers"][max_similarity_index]
+                    # 随机选择一个适合的表情
+                    expression = "开心"  # 默认表情
+                    
+                    print(f"使用向量检索快速回复，相似度: {max_similarity:.4f}")
+                    return answer, expression
+            except Exception as e:
+                print(f"计算相似度时出错: {e}")
+                return None, None
+                
+        except Exception as e:
+            print(f"快速回复处理出错: {e}")
+            
+        return None, None
 
     async def generate_reply(self, message: str, session_id: str, agent_type: Optional[str] = None, personality: Optional[str] = None, is_category: bool = False) -> Tuple[str, Optional[bytes], str, Optional[str]]:
         """
@@ -88,15 +183,26 @@ class ChatService:
             if agent_type:
                 self.change_agent(agent_type, session_id)
             
-            # 使用 MainAgent 生成回复和表情，传入性格描述和快捷提问标志
-            reply, expression = await self.main_agent.reply(message, personality=personality, is_category=is_category)
+            # 对于非分类问题，尝试快速回复
+            reply = None
+            expression = None
+            guidance_message = None
+            
+            if not is_category and not self._is_user_info_related(message):
+                # 尝试使用向量检索进行快速回复
+                print("尝试使用向量检索进行快速回复...")
+                reply, expression = await self.fast_reply(message)
+            
+            # 如果快速回复未成功，使用完整流程
+            if not reply:
+                # 使用 MainAgent 生成回复和表情，传入性格描述和快捷提问标志
+                reply, expression = await self.main_agent.reply(message, personality=personality, is_category=is_category)
             
             # 确保回复不为空
             if not reply:
                 return "抱歉，我现在无法回答您的问题，请稍后再试。", None, "生气", None
             
             # 检查是否有引导决策消息
-            guidance_message = None
             if is_category:
                 # 查看最近一次对话是否是系统引导
                 if (len(self.main_agent.conversation_history.turns) >= 2 and 
@@ -110,7 +216,7 @@ class ChatService:
             super_tts_error = None
             tts_error = None
             
-            # 优先使用超拟人TTS，如果启用
+            # 异步处理TTS生成
             if reply and self.super_tts_service:
                 try:
                     print("尝试使用超拟人TTS生成语音...")

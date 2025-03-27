@@ -1,51 +1,133 @@
 <template>
-  <div class="assessment-buttons-container">
-    <!-- 情绪评估按钮 -->
+  <div class="assessment-container">
+    <!-- 情绪评估按钮，只在桌面端显示 -->
     <button 
+      v-if="!isMobile" 
       @click="openEmotionalAssessment" 
-      class="assessment-btn emotional-btn"
+      class="assessment-btn px-3 py-2 rounded-lg bg-white dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 transition-all duration-200 font-medium border border-neutral-200 dark:border-neutral-700 shadow-sm flex items-center"
       title="情绪评估"
     >
+      <i class="fa-solid fa-face-smile mr-2 text-blue-500"></i>
       情绪评估
     </button>
     
-    <!-- 心理评估按钮 -->
+    <!-- 心理评估按钮，所有端都显示 -->
     <button 
       @click="openPsychologicalAssessment" 
-      class="assessment-btn psychological-btn"
-      :class="{ 'disabled': !psychAssessmentReady }"
+      class="assessment-btn px-3 py-2 rounded-lg bg-white dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 transition-all duration-200 font-medium border border-neutral-200 dark:border-neutral-700 shadow-sm flex items-center"
+      :class="{ 'opacity-60 cursor-not-allowed': !psychAssessmentReady }"
       :title="psychAssessmentReady ? '心理评估' : '需要20轮有效对话'"
     >
-      {{ psychAssessmentReady ? '心理评估（评估完成）' : '心理评估（评估中）' }}
+      <i class="fa-solid fa-brain mr-2 text-purple-500"></i>
+      {{ psychAssessmentReady ? '心理评估' : '评估中' }}
+      <span v-if="psychAssessmentReady" class="ml-1 text-xs px-1.5 py-0.5 bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-300 rounded-full">就绪</span>
     </button>
     
     <!-- 情绪评估上传弹窗 -->
-    <div class="modal" v-if="showEmotionalModal">
-      <div class="modal-content">
-        <span class="close-btn" @click="showEmotionalModal = false">&times;</span>
-        <h2>情绪评估</h2>
-        <p>请上传检测报告文件进行情绪评估</p>
-        <p class="supported-formats">支持格式：PDF、图片(PNG/JPG)、TXT文本</p>
-        <input type="file" ref="fileInput" accept=".pdf,.png,.jpg,.jpeg,.txt,.doc,.docx" @change="handleFileUpload" />
-        <div class="upload-status" v-if="uploadStatus">{{ uploadStatus }}</div>
-        <div class="button-group">
-          <button @click="uploadFile" :disabled="!selectedFile || isUploading" class="upload-btn">
-            {{ isUploading ? '上传中...' : '上传' }}
+    <div v-if="showEmotionalModal" class="fixed inset-0 bg-neutral-900/70 backdrop-blur-sm z-50 flex items-center justify-center transition-all duration-300 ease-in-out" @click="showEmotionalModal = false">
+      <div class="w-full max-w-xl max-h-[90vh] overflow-y-auto bg-white dark:bg-neutral-800 rounded-xl shadow-2xl transition-all duration-300 ease-in-out transform animate-fade-in" @click.stop>
+        <!-- 顶部标题栏 -->
+        <div class="flex items-center justify-between p-5 border-b border-neutral-200 dark:border-neutral-700">
+          <h3 class="text-xl font-semibold text-neutral-800 dark:text-white">情绪评估</h3>
+          <button 
+            @click="showEmotionalModal = false" 
+            class="w-8 h-8 flex items-center justify-center rounded-full bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-700 dark:hover:bg-neutral-600 text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-white transition-all duration-200 hover:scale-110"
+          >
+            <span class="text-lg">&times;</span>
           </button>
-          <button @click="parseFile" :disabled="!selectedFile || isUploading" class="parse-btn">
+        </div>
+        
+        <!-- 内容区域 -->
+        <div class="p-6 space-y-4">
+          <p class="text-neutral-700 dark:text-neutral-300">请上传检测报告文件进行情绪评估分析</p>
+          <p class="text-sm text-neutral-500 dark:text-neutral-400">支持格式：PDF、图片(PNG/JPG)、TXT文本</p>
+          
+          <!-- 文件上传区 -->
+          <div class="mt-4 p-4 border-2 border-dashed border-neutral-300 dark:border-neutral-600 rounded-lg text-center">
+            <input type="file" ref="fileInput" accept=".pdf,.png,.jpg,.jpeg,.txt,.doc,.docx" @change="handleFileUpload" class="hidden" id="file-upload"/>
+            <label for="file-upload" class="block w-full cursor-pointer">
+              <div class="flex flex-col items-center justify-center py-4">
+                <svg class="mx-auto h-12 w-12 text-neutral-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
+                  <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                <p class="mt-2 text-sm text-neutral-600 dark:text-neutral-400">
+                  {{ selectedFile ? selectedFile.name : '点击选择文件或拖拽文件到此区域' }}
+                </p>
+              </div>
+            </label>
+          </div>
+          
+          <!-- 状态提示 -->
+          <div v-if="uploadStatus" class="mt-3 text-center text-sm p-2 rounded-md" :class="isUploading ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'">
+            {{ uploadStatus }}
+          </div>
+        </div>
+        
+        <!-- 底部按钮 -->
+        <div class="flex items-center justify-end p-5 border-t border-neutral-200 dark:border-neutral-700 gap-3">
+          <button 
+            @click="showEmotionalModal = false" 
+            class="px-4 py-2 rounded-lg bg-neutral-100 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-600 transition-all duration-200 font-medium"
+          >
+            取消
+          </button>
+          <button 
+            @click="parseFile" 
+            :disabled="!selectedFile || isUploading"
+            class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-all duration-200 font-medium flex items-center disabled:opacity-50 disabled:pointer-events-none"
+          >
+            <i class="fa-solid fa-file-lines mr-2"></i>
             查看解析文本
+          </button>
+          <button 
+            @click="uploadFile" 
+            :disabled="!selectedFile || isUploading"
+            class="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white transition-all duration-200 font-medium flex items-center disabled:opacity-50 disabled:pointer-events-none"
+          >
+            <i class="fa-solid fa-upload mr-2"></i>
+            {{ isUploading ? '上传中...' : '上传分析' }}
           </button>
         </div>
       </div>
     </div>
     
     <!-- 解析结果弹窗 -->
-    <div class="modal" v-if="showParseModal">
-      <div class="modal-content parse-content">
-        <span class="close-btn" @click="showParseModal = false">&times;</span>
-        <h2>文档解析结果</h2>
-        <div class="parse-result-container">
-          <pre class="parse-result">{{ parseResult }}</pre>
+    <div v-if="showParseModal" class="fixed inset-0 bg-neutral-900/70 backdrop-blur-sm z-50 flex items-center justify-center transition-all duration-300 ease-in-out" @click="showParseModal = false">
+      <div class="w-full max-w-4xl max-h-[90vh] overflow-hidden bg-white dark:bg-neutral-800 rounded-xl shadow-2xl transition-all duration-300 ease-in-out transform animate-fade-in" @click.stop>
+        <!-- 顶部标题栏 -->
+        <div class="flex items-center justify-between p-5 border-b border-neutral-200 dark:border-neutral-700">
+          <h3 class="text-xl font-semibold text-neutral-800 dark:text-white">文档解析结果</h3>
+          <button 
+            @click="showParseModal = false" 
+            class="w-8 h-8 flex items-center justify-center rounded-full bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-700 dark:hover:bg-neutral-600 text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-white transition-all duration-200 hover:scale-110"
+          >
+            <span class="text-lg">&times;</span>
+          </button>
+        </div>
+        
+        <!-- 解析内容区域 -->
+        <div class="p-4 max-h-[calc(90vh-120px)] overflow-y-auto">
+          <div class="bg-neutral-50 dark:bg-neutral-900 rounded-lg p-4 font-mono text-sm whitespace-pre-wrap border border-neutral-200 dark:border-neutral-700">
+            {{ parseResult }}
+          </div>
+        </div>
+        
+        <!-- 底部按钮 -->
+        <div class="flex items-center justify-end p-5 border-t border-neutral-200 dark:border-neutral-700 gap-3">
+          <button 
+            @click="showParseModal = false" 
+            class="px-4 py-2 rounded-lg bg-neutral-100 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-600 transition-all duration-200 font-medium"
+          >
+            关闭
+          </button>
+          <button 
+            @click="uploadFile" 
+            :disabled="isUploading"
+            class="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white transition-all duration-200 font-medium flex items-center disabled:opacity-50 disabled:pointer-events-none"
+          >
+            <i class="fa-solid fa-upload mr-2"></i>
+            {{ isUploading ? '上传中...' : '直接上传分析' }}
+          </button>
         </div>
       </div>
     </div>
@@ -53,7 +135,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, onMounted, onBeforeUnmount } from 'vue';
+import { getApiBaseUrl } from '../stores/chat';
 
 const psychAssessmentReady = ref(false);
 const showEmotionalModal = ref(false);
@@ -63,11 +146,28 @@ const selectedFile = ref(null);
 const isUploading = ref(false);
 const uploadStatus = ref('');
 const parseResult = ref('');
+// 初始值设为true，确保首次加载时情绪评估按钮不显示在移动端
+const isMobile = ref(window.innerWidth <= 768 || /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent));
 
 // 打开情绪评估弹窗
 const openEmotionalAssessment = () => {
   showEmotionalModal.value = true;
 };
+
+// 检测是否为移动设备
+const checkMobileDevice = () => {
+  try {
+    isMobile.value = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth <= 768;
+    console.log("情绪评估按钮 - 移动设备检测:", isMobile.value ? "是移动设备" : "非移动设备");
+  } catch (error) {
+    console.error("移动设备检测出错:", error);
+    // 出错时默认为移动设备，确保按钮不显示
+    isMobile.value = true;
+  }
+};
+
+// 将函数引用保存到函数本身，方便移除监听器
+checkMobileDevice.handler = checkMobileDevice;
 
 // 打开心理评估
 const openPsychologicalAssessment = async () => {
@@ -80,7 +180,7 @@ const openPsychologicalAssessment = async () => {
     uploadStatus.value = '正在生成心理评估报告...';
     
     // 发送请求以生成和下载报告
-    const response = await fetch('http://localhost:8666/api/psychological_assessment', {
+    const response = await fetch(`${getApiBaseUrl()}/api/psychological_assessment`, {
       method: 'GET',
     });
     
@@ -130,7 +230,7 @@ const uploadFile = async () => {
     isUploading.value = true;
     uploadStatus.value = '上传中...';
     
-    const response = await fetch('http://localhost:8666/api/emotional_assessment', {
+    const response = await fetch(`${getApiBaseUrl()}/api/emotional_assessment`, {
       method: 'POST',
       body: formData,
     });
@@ -172,7 +272,7 @@ const parseFile = async () => {
     isUploading.value = true;
     uploadStatus.value = '解析中...';
     
-    const response = await fetch('http://localhost:8666/api/parse_document', {
+    const response = await fetch(`${getApiBaseUrl()}/api/parse_document`, {
       method: 'POST',
       body: formData,
     });
@@ -197,7 +297,7 @@ const parseFile = async () => {
 // 获取对话轮数和评估状态
 const checkAssessmentStatus = async () => {
   try {
-    const response = await fetch('http://localhost:8666/api/assessment_status');
+    const response = await fetch(`${getApiBaseUrl()}/api/assessment_status`);
     const data = await response.json();
     
     if (data.success) {
@@ -212,176 +312,67 @@ const checkAssessmentStatus = async () => {
 let checkInterval = null;
 
 onMounted(() => {
-  // 初始检查
-  checkAssessmentStatus();
-  
-  // 每5分钟检查一次
-  checkInterval = setInterval(checkAssessmentStatus, 5 * 60 * 1000);
+  try {
+    // 立即检测移动设备
+    checkMobileDevice();
+    
+    // 监听窗口大小变化
+    window.addEventListener('resize', checkMobileDevice.handler);
+    
+    // 每5分钟检查一次
+    checkInterval = setInterval(checkAssessmentStatus, 5 * 60 * 1000);
+    
+    console.log("情绪评估按钮组件已挂载");
+  } catch (error) {
+    console.error("情绪评估按钮挂载时出错:", error);
+  }
 });
 
-onUnmounted(() => {
-  // 清理定时器
-  if (checkInterval) {
-    clearInterval(checkInterval);
+onBeforeUnmount(() => {
+  try {
+    // 确保清理所有事件监听器
+    if (checkInterval) {
+      clearInterval(checkInterval);
+    }
+    window.removeEventListener('resize', checkMobileDevice.handler);
+    console.log("情绪评估按钮组件卸载前清理完成");
+  } catch (error) {
+    console.error("情绪评估按钮清理时出错:", error);
   }
 });
 </script>
 
 <style scoped>
-.assessment-buttons-container {
-  position: absolute;
-  top: 20px;
-  left: 60px;
-  z-index: 100;
-  display: flex;
-  gap: 10px;
-}
-
-.assessment-btn {
-  padding: 5px 10px;
-  border-radius: 4px;
-  font-size: 14px;
-  cursor: pointer;
-  transition: all 0.3s;
-  border: 1px solid #ccc;
-  background-color: white;
-  color: #333;
-}
-
-:global(.dark) .assessment-btn {
-  background-color: #333;
-  color: #f0f0f0;
-  border-color: #555;
-}
-
-.assessment-btn.disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-/* 弹窗样式 */
-.modal {
+.assessment-container {
   position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  background-color: rgba(0, 0, 0, 0.5);
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  z-index: 1000;
-}
-
-.modal-content {
-  background-color: white;
-  padding: 20px;
-  border-radius: 8px;
-  min-width: 300px;
-  position: relative;
-}
-
-:global(.dark) .modal-content {
-  background-color: #333;
-  color: #f0f0f0;
-}
-
-.close-btn {
-  position: absolute;
-  right: 10px;
-  top: 10px;
-  font-size: 20px;
-  cursor: pointer;
-}
-
-.upload-btn {
-  margin-top: 15px;
-  padding: 8px 16px;
-  background-color: #4CAF50;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.upload-btn:disabled {
-  background-color: #cccccc;
-  cursor: not-allowed;
-}
-
-.button-group {
-  display: flex;
-  gap: 10px;
-  margin-top: 10px;
-}
-
-.upload-status {
-  margin: 10px 0;
-  color: #ff6b6b;
-}
-
-:global(.dark) .upload-status {
-  color: #ffaaaa;
-}
-
-.supported-formats {
-  font-size: 12px;
-  color: #666;
-  margin-bottom: 8px;
-}
-
-:global(.dark) .supported-formats {
-  color: #aaa;
-}
-
-.parse-btn {
-  padding: 8px 16px;
-  background-color: #2196F3;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.parse-btn:disabled {
-  background-color: #cccccc;
-  cursor: not-allowed;
-}
-
-.parse-content {
-  max-width: 90%;
-  width: 900px;
-  max-height: 80vh;
-  overflow-y: hidden;
+  bottom: 30px;
+  left: 25px;
   display: flex;
   flex-direction: column;
+  gap: 15px;
+  z-index: 100;
 }
 
-.parse-result-container {
-  flex: 1;
-  max-height: calc(80vh - 80px);
-  overflow-y: auto;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  padding: 10px;
-  margin-top: 10px;
-  background-color: #f9f9f9;
+/* 添加移动端样式，修改位置 */
+@media (max-width: 768px) {
+  .assessment-container {
+    bottom: 85px; /* 确保在输入区域上方 */
+    left: 15px;
+    gap: 10px;
+  }
+  
+  .assessment-btn {
+    transform: scale(0.9);
+  }
 }
 
-.parse-result {
-  white-space: pre-wrap;
-  font-family: 'Courier New', monospace;
-  font-size: 14px;
-  line-height: 1.5;
+/* 淡入动画 */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
-:global(.dark) .parse-result-container {
-  background-color: #333;
-  border-color: #444;
-  color: #f0f0f0;
-}
-
-:global(.dark) .parse-btn {
-  background-color: #0d47a1;
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out forwards;
 }
 </style> 

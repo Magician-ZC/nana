@@ -223,7 +223,7 @@
 
 <script setup>
 import { ref, onMounted, watch, computed, onUnmounted } from 'vue'
-import { useChatStore } from '../stores/chat'
+import { useChatStore, getApiBaseUrl } from '../stores/chat'
 
 const props = defineProps({
   isOpen: {
@@ -290,7 +290,7 @@ watch(() => props.isOpen, async (newValue) => {
 // 加载当前设置
 async function loadSettings() {
   try {
-    const response = await fetch('http://localhost:8666/api/tts_settings')
+    const response = await fetch(`${getApiBaseUrl()}/api/tts_settings`)
     const data = await response.json()
     
     enableTTS.value = data.enable_tts
@@ -335,7 +335,7 @@ async function saveSettings() {
     // 更新打字机效果设置
     chatStore.useStreamResponse = useTypewriterEffect.value
     
-    const response = await fetch('http://localhost:8666/api/tts_settings', {
+    const response = await fetch(`${getApiBaseUrl()}/api/tts_settings`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'

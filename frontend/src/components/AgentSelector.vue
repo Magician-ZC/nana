@@ -46,8 +46,8 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { useChatStore } from '../stores/chat'
+import { ref, computed, onMounted, watch } from 'vue'
+import { useChatStore, getApiBaseUrl } from '../stores/chat'
 import CustomAgentForm from './CustomAgentForm.vue'
 
 const props = defineProps({
@@ -90,7 +90,7 @@ const handleAgentSelect = async (agentId) => {
       ? selectedAgentData.model // 使用自定义agent的model字段
       : agentId                 // 对于内置agent，直接使用id
 
-    const response = await fetch('http://localhost:8666/api/change_agent', {
+    const response = await fetch(`${getApiBaseUrl()}/api/change_agent`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -148,7 +148,7 @@ const handleDeleteAgent = async (agentId) => {
   }
   
   try {
-    const response = await fetch(`http://localhost:8666/api/delete_custom_agent/${agentId}`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/delete_custom_agent/${agentId}`, {
       method: 'DELETE'
     })
     
@@ -177,7 +177,7 @@ const handleCustomAgentSave = async (customAgent) => {
     
     if (editingAgent.value) {
       // 更新现有角色
-      response = await fetch(`http://localhost:8666/api/update_custom_agent/${editingAgent.value.id}`, {
+      response = await fetch(`${getApiBaseUrl()}/api/update_custom_agent/${editingAgent.value.id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -187,7 +187,7 @@ const handleCustomAgentSave = async (customAgent) => {
       savedAgentId = editingAgent.value.id
     } else {
       // 创建新角色
-      response = await fetch('http://localhost:8666/api/create_custom_agent', {
+      response = await fetch(`${getApiBaseUrl()}/api/create_custom_agent`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -254,7 +254,7 @@ const handleCustomAgentSave = async (customAgent) => {
 // 组件挂载时加载自定义角色列表
 onMounted(async () => {
   try {
-    const response = await fetch('http://localhost:8666/api/list_custom_agents')
+    const response = await fetch(`${getApiBaseUrl()}/api/list_custom_agents`)
     const data = await response.json()
     
     if (data.success && data.agents) {
@@ -265,6 +265,13 @@ onMounted(async () => {
     }
   } catch (error) {
     console.error('加载自定义角色列表失败:', error)
+  }
+})
+
+// 在CustomAgentForm组件打开时自动关闭下拉菜单
+watch(() => showCustomForm.value, (newVal) => {
+  if (newVal === true) {
+    isOpen.value = false
   }
 })
 </script>
@@ -286,7 +293,7 @@ onMounted(async () => {
   font-size: 14px;
   font-weight: 500;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
-  min-width: 100px;
+  width: fit-content;
   text-align: center;
   transition: all 0.3s ease;
   pointer-events: all; /* 确保按钮可以接收所有鼠标事件 */
@@ -427,5 +434,19 @@ onMounted(async () => {
 /* 移除旧的自定义agent样式 */
 .custom-agent {
   display: none;
+}
+
+@media (max-width: 768px) {
+  .agent-selector {
+    position: fixed;
+    top: 70px; /* 放在深色模式切换按钮下方 */
+    left: 20px;
+    z-index: 100;
+  }
+  
+  .agent-dropdown-container {
+    left: 0;
+    right: auto;
+  }
 }
 </style> 

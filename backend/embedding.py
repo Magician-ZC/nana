@@ -18,15 +18,18 @@ class EmbeddingService:
     ) -> Optional[List[float]]:
         # 如果输入为空，直接返回 None
         if not text or not text.strip():
+            print("输入文本为空，无法获取向量表示")
             return None
             
         retry_count = 0
         
         # 清理输入文本
         clean_text = text.replace('\r\n', '\n').replace('\r', '\n')
+        print(f"开始获取文本的向量表示，文本长度: {len(clean_text)}字符")
         
         while retry_count <= max_retries:
             try:
+                print(f"使用模型 {self.model} 请求嵌入API...")
                 with httpx.Client(verify=False, timeout=30.0) as client:
                     headers = {
                         "Content-Type": "application/json",
@@ -38,6 +41,7 @@ class EmbeddingService:
                         "input": clean_text
                     }
                     
+                    print(f"发送请求到 {self.api_url}...")
                     response = client.post(
                         self.api_url,
                         json=data,
@@ -45,14 +49,15 @@ class EmbeddingService:
                     )
                     
                     if response.status_code != 200:
-                        raise Exception(f"Embedding API error: {response.status_code}")
+                        raise Exception(f"Embedding API error: {response.status_code}, Response: {response.text}")
                     
+                    print("收到API响应，开始解析...")
                     response_data = response.json()
                     if "data" not in response_data or not response_data["data"]:
-                        raise Exception("Invalid API response format")
+                        raise Exception(f"Invalid API response format: {response_data}")
                         
                     embedding = response_data["data"][0]["embedding"]
-                    print("embedding size:", len(embedding), "embedding:", embedding[0:10])
+                    print(f"向量表示获取成功，维度: {len(embedding)}, 预期维度: {self.dimension}")
                     return embedding
                     
             except Exception as e:
@@ -61,5 +66,5 @@ class EmbeddingService:
                     return None
                     
                 retry_count += 1
-                print(f"Embedding API调用失败，{retry_delay}秒后进行第{retry_count}次重试...")
+                print(f"Embedding API调用失败，{retry_delay}秒后进行第{retry_count}次重试..., 错误: {str(e)}")
                 time.sleep(retry_delay) 

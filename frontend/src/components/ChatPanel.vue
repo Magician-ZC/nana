@@ -1,7 +1,7 @@
 <template>
   <div class="chat-panel" ref="chatPanelRef">
-    <!-- 消息列表区域 -->
-    <div class="chat-messages" ref="chatMessagesRef" @scroll="handleScroll">
+    <!-- 消息列表区域，仅在非移动端显示 -->
+    <div v-if="!isMobile" class="chat-messages" ref="chatMessagesRef" @scroll="handleScroll">
       <template v-if="chatStore.messages.length === 0">
         <!-- 空消息提示 -->
         <div class="empty-chat">
@@ -12,7 +12,7 @@
         <!-- 渲染消息列表 -->
         <div 
           v-for="(message, index) in sortedMessages" 
-          :key="index" 
+          :key="index"
         >
           <!-- 消息时间戳，独立于消息之外，在消息上方显示 -->
           <div v-if="shouldShowTimestamp(message, index)" class="message-timestamp">
@@ -42,8 +42,12 @@
               </div>
               
               <!-- 消息气泡 -->
-              <div v-if="message.content || message.isStreaming" :class="['message-bubble', { 'typing': message.isStreaming }]">
-                {{ message.content || '' }}
+              <div v-if="message.content || message.isStreaming" 
+                   :class="['message-bubble', { 
+                     'typing': message.isStreaming,
+                     'cleared': message.shouldClear 
+                   }]">
+                {{ message.shouldClear ? '' : (message.content || '') }}
               </div>
             </div>
             
@@ -79,7 +83,7 @@
       </div>
       
       <!-- 录音状态显示 -->
-      <div v-if="isRecording && recordingText">
+      <div v-if="chatInputAreaRef && chatInputAreaRef.isRecording && chatInputAreaRef.recordingText">
         <!-- 时间戳 -->
         <div class="message-timestamp">
           {{ formatDisplayTime(formatTime()) }}
@@ -88,7 +92,7 @@
         <div class="message user recognizing">
           <div class="message-content">
             <div class="message-bubble">
-              {{ recordingText }}
+              {{ chatInputAreaRef.recordingText }}
             </div>
           </div>
           <div class="avatar">
@@ -101,84 +105,40 @@
       <div ref="messagesEndRef" />
     </div>
     
-    <!-- 输入区域 -->
-    <div class="chat-input-area">
-      <div :class="['input-container', { recording: isRecording }]">
-        <template v-if="isRecording">
-          <!-- 录音波形动画 -->
-          <div class="voice-wave">
-            <div class="wave"></div>
-            <div class="wave"></div>
-            <div class="wave"></div>
-            <div class="wave"></div>
-            <div class="wave"></div>
-          </div>
-        </template>
-        <template v-else>
-          <!-- 文本输入框 -->
-          <textarea 
-            v-model="text" 
-            @keydown="handleKeyDown" 
-            placeholder="输入消息或按住语音按钮说话..." 
-            rows="1"
-          ></textarea>
-          
-          <!-- 发送按钮 -->
-          <button 
-            class="send-button" 
-            @click="handleSendText" 
-            :disabled="!text.trim() || chatStore.loading"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="22" y1="2" x2="11" y2="13"></line>
-              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-            </svg>
-          </button>
-        </template>
-      </div>
-      
-      <!-- 语音按钮 -->
-      <button 
-        class="voice-button" 
-        @mousedown="handleVoiceButtonDown" 
-        @mouseup="handleVoiceButtonUp" 
-        @mouseleave="handleVoiceButtonUp"
-        :class="{ pressed: voiceButtonPressed }"
-        :disabled="chatStore.loading"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
-          <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-          <line x1="12" y1="19" x2="12" y2="23"></line>
-          <line x1="8" y1="23" x2="16" y2="23"></line>
-        </svg>
-      </button>
-    </div>
+    <!-- 使用新的输入区域组件 -->
+    <ChatInputArea ref="chatInputAreaRef" :is-mobile="isMobile" />
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick, watch, computed } from 'vue'
 import { useChatStore } from '../stores/chat'
+import ChatInputArea from './ChatInputArea.vue'
+
+const props = defineProps({
+  isMobile: {
+    type: Boolean,
+    default: false
+  }
+})
 
 const chatStore = useChatStore()
 
-// 文本输入状态
-const text = ref('')
-// 录音状态
-const isRecording = ref(false)
-// 录音提示文本
-const recordingText = ref('')
-// 消息列表底部引用，用于自动滚动
+// 检测设备类型
+// const isMobile = ref(/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent))
+const isIOS = ref(/iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream)
+const isAndroid = ref(/Android/.test(navigator.userAgent))
+const isSecureContext = ref(window.isSecureContext)
+
+// 保留消息列表底部引用，用于自动滚动
 const messagesEndRef = ref(null)
 // 聊天面板引用
 const chatPanelRef = ref(null)
 // 消息容器引用
 const chatMessagesRef = ref(null)
-// 媒体录制器
-let mediaRecorder = null
-// 语音按钮按压状态
-const voiceButtonPressed = ref(false)
+
+// 引用ChatInputArea组件
+const chatInputAreaRef = ref(null)
 
 // 添加formatTime函数
 function formatTime() {
@@ -288,201 +248,6 @@ function shouldShowTimestamp(message, index) {
   return diffMinutes > 5
 }
 
-// 处理键盘事件
-function handleKeyDown(e) {
-  // 按下Enter键发送消息，除非同时按下Shift键
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault()
-    handleSendText()
-  }
-}
-
-// 处理发送文本消息
-function handleSendText() {
-  const trimmedText = text.value.trim()
-  if (!trimmedText || chatStore.loading) return
-  
-  // 发送消息到store
-  chatStore.sendMessage(trimmedText)
-  
-  // 清空输入框
-  text.value = ''
-  
-  // 滚动到底部
-  nextTick(() => {
-    if (messagesEndRef.value) {
-      messagesEndRef.value.scrollIntoView({ behavior: 'smooth' })
-    }
-  })
-}
-
-// 语音按钮按下事件
-function handleVoiceButtonDown() {
-  if (chatStore.loading) return
-  
-  voiceButtonPressed.value = true
-  startRecording().catch(error => {
-    // 额外的错误处理，以防startRecording的catch块没有捕获所有错误
-    console.error('录音启动异常:', error)
-    voiceButtonPressed.value = false
-  })
-}
-
-// 语音按钮释放事件
-function handleVoiceButtonUp() {
-  if (!voiceButtonPressed.value) return
-  
-  voiceButtonPressed.value = false
-  stopRecording()
-}
-
-// 开始录音
-async function startRecording() {
-  try {
-    // 检查浏览器是否支持mediaDevices API
-    if (!navigator.mediaDevices) {
-      throw new Error('您的浏览器不支持媒体设备API');
-    }
-
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    
-    // 创建媒体录制器
-    mediaRecorder = new MediaRecorder(stream)
-    const audioChunks = []
-    
-    // 收集录音数据
-    mediaRecorder.addEventListener('dataavailable', event => {
-      audioChunks.push(event.data)
-    })
-    
-    // 录音结束后处理
-    mediaRecorder.addEventListener('stop', async () => {
-      // 关闭所有音轨
-      stream.getTracks().forEach(track => track.stop())
-      
-      // 如果没有录音数据或录音太短，忽略
-      if (audioChunks.length === 0 || recordingText.value.trim() === '') {
-        isRecording.value = false
-        recordingText.value = ''
-        return
-      }
-      
-      // 发送语音消息到store
-      const message = recordingText.value.trim()
-      chatStore.sendMessage(message)
-      
-      // 重置录音状态
-      isRecording.value = false
-      recordingText.value = ''
-      
-      // 滚动到底部
-      nextTick(() => {
-        if (messagesEndRef.value) {
-          messagesEndRef.value.scrollIntoView({ behavior: 'smooth' })
-        }
-      })
-    })
-    
-    // 开始录音
-    mediaRecorder.start()
-    isRecording.value = true
-    
-    // 开始语音识别
-    startSpeechRecognition()
-  } catch (error) {
-    console.error('录音失败:', error)
-    // 重置按钮状态
-    voiceButtonPressed.value = false
-    isRecording.value = false
-    alert('无法访问麦克风，请检查浏览器权限设置。' + error.message)
-  }
-}
-
-// 停止录音
-function stopRecording() {
-  try {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      mediaRecorder.stop()
-    }
-  } catch (error) {
-    console.error('停止录音失败:', error)
-  } finally {
-    // 无论如何都停止语音识别
-    stopSpeechRecognition()
-    // 确保状态被重置
-    setTimeout(() => {
-      // 使用setTimeout确保状态重置在UI更新循环中
-      isRecording.value = false
-      voiceButtonPressed.value = false
-    }, 0)
-  }
-}
-
-// 语音识别实例
-let recognition = null
-
-// 开始语音识别
-function startSpeechRecognition() {
-  // 检查浏览器是否支持语音识别
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-  if (!SpeechRecognition) {
-    console.error('浏览器不支持语音识别')
-    // 继续录音过程，但不启动识别
-    return
-  }
-  
-  try {
-    // 创建识别实例
-    recognition = new SpeechRecognition()
-    recognition.lang = 'zh-CN'
-    recognition.continuous = true
-    recognition.interimResults = true
-    
-    // 处理识别结果
-    recognition.onresult = (event) => {
-      let interimTranscript = ''
-      let finalTranscript = ''
-      
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        const transcript = event.results[i][0].transcript
-        if (event.results[i].isFinal) {
-          finalTranscript += transcript
-        } else {
-          interimTranscript += transcript
-        }
-      }
-      
-      // 更新显示文本
-      recordingText.value = finalTranscript || interimTranscript
-    }
-    
-    // 处理错误
-    recognition.onerror = (event) => {
-      console.error('语音识别错误:', event.error)
-      // 继续录音过程，识别错误不影响录音本身
-    }
-    
-    // 开始识别
-    recognition.start()
-  } catch (error) {
-    console.error('启动语音识别失败:', error)
-    // 继续录音过程，识别失败不影响录音本身
-  }
-}
-
-// 停止语音识别
-function stopSpeechRecognition() {
-  try {
-    if (recognition) {
-      recognition.stop()
-      recognition = null
-    }
-  } catch (error) {
-    console.error('停止语音识别失败:', error)
-    recognition = null
-  }
-}
-
 // 处理消息容器滚动事件，实现消息透明度渐变效果
 function handleScroll() {
   if (!chatMessagesRef.value) return;
@@ -575,6 +340,42 @@ watch(
   }
 );
 
+// 组件挂载时检测麦克风支持
+async function checkMicrophoneSupport() {
+  try {
+    // 检查是否支持mediaDevices API
+    if (!navigator.mediaDevices && !navigator.getUserMedia && !navigator.webkitGetUserMedia && 
+        !navigator.mozGetUserMedia && !navigator.msGetUserMedia) {
+      microphoneSupported.value = false;
+      return;
+    }
+    
+    // 检查MediaRecorder是否可用
+    if (typeof MediaRecorder === 'undefined') {
+      microphoneSupported.value = false;
+      return;
+    }
+    
+    // 在iOS上检查AudioContext支持
+    if (isIOS.value && typeof (window.AudioContext || window.webkitAudioContext) === 'undefined') {
+      microphoneSupported.value = false;
+      return;
+    }
+    
+    // 如果不是安全上下文且不是localhost，麦克风将不可用
+    if (!isSecureContext.value && window.location.hostname !== 'localhost') {
+      microphoneSupported.value = false;
+      return;
+    }
+    
+    // 一切正常
+    microphoneSupported.value = true;
+  } catch (error) {
+    console.warn('检测麦克风支持失败:', error);
+    microphoneSupported.value = false;
+  }
+}
+
 onMounted(() => {
   // 在组件挂载后显示欢迎消息
   chatStore.showWelcomeMessage()
@@ -588,14 +389,24 @@ onMounted(() => {
   nextTick(() => {
     handleScroll();
   });
+  
+  // 添加消息发送事件监听器，用于滚动到底部
+  document.addEventListener('message-sent', handleMessageSent);
 })
 
 onUnmounted(() => {
-  // 确保在组件卸载时停止录音
-  if (isRecording.value) {
-    stopRecording()
-  }
+  // 移除事件监听器
+  document.removeEventListener('message-sent', handleMessageSent);
 })
+
+// 处理消息发送事件
+function handleMessageSent() {
+  nextTick(() => {
+    if (messagesEndRef.value) {
+      messagesEndRef.value.scrollIntoView({ behavior: 'smooth' });
+    }
+  });
+}
 </script>
 
 <style scoped>
@@ -615,6 +426,23 @@ onUnmounted(() => {
   bottom: 30px;
   z-index: 10; /* 从1000降低到10，放置在底层 */
   pointer-events: none; /* 整个面板默认不捕获事件 */
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+  .chat-panel {
+    width: 100%;
+    right: 0;
+    left: 0;
+    bottom: 70px; /* 放在发送区域上方 */
+    max-height: 60vh; /* 调整最大高度 */
+    padding: 0 10px;
+  }
+  
+  .chat-messages {
+    mask-image: linear-gradient(to top, rgba(0, 0, 0, 1) 85%, rgba(0, 0, 0, 0) 100%);
+    -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 1) 85%, rgba(0, 0, 0, 0) 100%);
+  }
 }
 
 /* 移除之前添加的before伪元素 */
@@ -732,6 +560,15 @@ onUnmounted(() => {
   height: 16px;
 }
 
+/* 已清除消息的样式 */
+.message-bubble.cleared {
+  min-height: 20px;
+  min-width: 20px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
 .user .message-bubble.typing::after {
   color: #000;
 }
@@ -795,121 +632,7 @@ onUnmounted(() => {
   background-color: rgba(149, 236, 105, 0.7);
 }
 
-.chat-input-area {
-  padding: 10px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  position: relative;
-  z-index: 15;
-  border-radius: 0;
-  pointer-events: auto; /* 输入区域可以捕获事件 */
-}
-
-.input-container {
-  flex: 1;
-  position: relative;
-  border-radius: 24px;
-  -webkit-border-radius: 24px;
-  -moz-border-radius: 24px;
-  background-color: rgba(60, 60, 60, 0.7);
-  display: flex;
-  align-items: center;
-  overflow: hidden;
-  -webkit-mask-image: -webkit-radial-gradient(white, black);
-  z-index: 15;
-  pointer-events: auto; /* 确保可交互 */
-}
-
-.input-container::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  border-radius: 24px;
-  pointer-events: none; /* 确保不阻止交互 */
-}
-
-.input-container.recording {
-  background-color: rgba(80, 40, 40, 0.7);
-  padding: 12px 15px;
-  justify-content: center;
-}
-
-textarea {
-  width: 100%;
-  height: auto;
-  border: none;
-  background-color: transparent;
-  padding: 12px 50px 12px 15px;
-  color: white;
-  resize: none;
-  border-radius: 0; /* 移除textarea的圆角，让容器控制圆角 */
-  outline: none;
-  max-height: 120px;
-  font-family: inherit;
-  font-size: 14px;
-  line-height: 1.4;
-}
-
-.send-button {
-  position: absolute;
-  right: 8px; /* 稍微调整位置，避免太靠近边缘 */
-  width: 36px; /* 略微减小尺寸 */
-  height: 36px;
-  border-radius: 50%;
-  border: none;
-  background-color: #2c7c7e;
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: background-color 0.3s;
-  z-index: 20; /* 确保在最上层且可交互 */
-}
-
-.send-button:hover {
-  background-color: #3a9a9c;
-}
-
-.send-button:disabled {
-  background-color: #444;
-  cursor: not-allowed;
-}
-
-.voice-button {
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  border: none;
-  background-color: #4a6fa5;
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: all 0.3s;
-  z-index: 20; /* 确保可交互 */
-}
-
-.voice-button:hover {
-  background-color: #5788cc;
-}
-
-.voice-button.pressed {
-  background-color: #953e3e;
-  transform: scale(1.1);
-}
-
-.voice-button:disabled {
-  background-color: #444;
-  cursor: not-allowed;
-}
-
+/* 添加打字指示器样式 */
 .typing-indicator {
   display: flex;
   align-items: center;
@@ -944,50 +667,8 @@ textarea {
   }
 }
 
-.voice-wave {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
-  height: 16px;
-}
-
-.voice-wave .wave {
-  display: block;
-  width: 2px;
-  height: 16px;
-  background-color: rgba(255, 255, 255, 0.6);
-  animation: wave 1s infinite ease-in-out;
-  border-radius: 2px;
-}
-
-.voice-wave .wave:nth-child(2) {
-  animation-delay: 0.2s;
-}
-
-.voice-wave .wave:nth-child(3) {
-  animation-delay: 0.4s;
-}
-
-.voice-wave .wave:nth-child(4) {
-  animation-delay: 0.6s;
-}
-
-.voice-wave .wave:nth-child(5) {
-  animation-delay: 0.8s;
-}
-
-@keyframes wave {
-  0%, 100% {
-    height: 5px;
-  }
-  50% {
-    height: 20px;
-  }
-}
-
-/* 确保按钮可交互 */
-.send-button, .voice-button, textarea, .message, .message-bubble {
+/* 确保所有消息元素可交互 */
+.message, .message-bubble {
   pointer-events: auto;
 }
 </style> 

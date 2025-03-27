@@ -1,8 +1,8 @@
-from fastapi import FastAPI, WebSocket, UploadFile, File, Body
+from fastapi import FastAPI, WebSocket, UploadFile, File, Body, Request, Depends, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
-from typing import Optional, List
+from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any, Union
 import base64
 from chat_service import ChatService
 from tts import TTSService
@@ -25,13 +25,13 @@ import assessment_api  # 导入评估API模块
 
 app = FastAPI()
 
-# CORS设置
+# 添加CORS中间件，允许所有源
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # 允许所有源的请求
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # 允许所有方法
+    allow_headers=["*"],  # 允许所有头部
 )
 
 class ChatRequest(BaseModel):
@@ -317,29 +317,36 @@ def extract_text_from_file(file_path, file_extension):
 
 # 添加无意义输入判断函数
 def is_meaningless_input(message: str) -> bool:
-    """判断输入是否无意义（过短或过于简单）
+    """检测输入是否为无意义内容"""
+    # 去除空白字符
+    message = message.strip()
     
-    Args:
-        message: 用户输入消息
+    # 检查是否为空消息
+    if not message:
+        return True
         
-    Returns:
-        bool: 是否无意义
-    """
-    # 如果消息太短，可能没有实际意义
-    if len(message.strip()) < 2:
+    # 常见有意义的短句和问候语，这些不应该被视为无意义输入
+    meaningful_short_replies = [
+        "好的", "同意", "拒绝", "接受", "不同意", "是的", "不是", "行", "不行",
+        "可以", "不可以", "明白", "不明白", "懂了", "不懂", "要", "不要", "谢谢",
+        "继续", "停止", "不要", "算了", "ok", "yes", "no", "再见", "会", "不会",
+        "你好", "早上好", "下午好", "晚上好", "嗨", "嘿", "hi", "hello", "hey", 
+        "问好", "打招呼", "见到你很高兴", "见到你真好", "好久不见", "欢迎"
+    ]
+    
+    # 如果是这些有意义的短回复，直接认为有意义
+    if message.lower() in meaningful_short_replies:
+        return False
+        
+    # 检查是否过短(少于2个字符)
+    if len(message) < 2:
         return True
         
     # 常见无意义输入
-    meaningless_inputs = [
-        "你好", "hi", "hello", "嗨", "哈喽", "在吗", "在？", "测试", "test",
-        "。", "，", "?", "？", "!", "！", "emmm", "hmm", "啊", "哦", "嗯",
-        "666", "233", "haha", "哈哈", "呵呵"
-    ]
-    
-    # 检查是否是这些无意义输入
-    if message.strip().lower() in meaningless_inputs:
+    meaningless_inputs = ["123", "abc", "test", "666", "233", "111", "222", "333", "啊啊啊", "哈哈哈", "哦哦哦"]
+    if message.lower() in meaningless_inputs:
         return True
-    
+        
     return False
 
 # 初始化评估API路由
@@ -874,7 +881,8 @@ async def chat(request: ChatRequest):
 
 @app.post("/api/stream_chat")
 async def stream_chat(request: ChatRequest):
-    """流式聊天API，支持打字机式回复
+    """
+    流式聊天API
     
     Args:
         request: 聊天请求
@@ -934,15 +942,73 @@ async def stream_chat(request: ChatRequest):
                 }) + "\n"
                 
                 return
-            
-            # 生成回复
-            reply, audio_data, expression, guidance_message = await chat_service.generate_reply(
-                request.message, 
-                request.session_id,
-                agent_type=request.agent_type,
-                personality=request.personality,
-                is_category=request.is_category
+                
+            # 创建任务以异步生成回复文本
+            response_task = asyncio.create_task(
+                chat_service.generate_reply(
+                    request.message, 
+                    request.session_id,
+                    agent_type=request.agent_type,
+                    personality=request.personality,
+                    is_category=request.is_category
+                )
             )
+            
+            # 等待任务完成或超时（最多等待2秒钟）
+            done, pending = await asyncio.wait([response_task], timeout=2.0)
+            
+            if response_task in done:
+                # 任务已完成，获取结果
+                reply, audio_data, expression, guidance_message = response_task.result()
+            else:
+                # 任务仍在进行，但我们可以发送部分内容
+                # 继续等待任务完成，但先传输元数据和启动文本流
+                
+                # 先发送表情和消息ID的元数据
+                initial_metadata = {
+                    "type": "metadata",
+                    "expression": "思考",  # 临时表情，表示正在思考
+                    "message_id": int(time.time() * 1000),
+                    "partial": True  # 标记为部分响应
+                }
+                yield json.dumps(initial_metadata) + "\n"
+                
+                # 发送等待消息
+                waiting_message = "正在思考中..."
+                for char in waiting_message:
+                    yield json.dumps({
+                        "type": "chunk",
+                        "content": char
+                    }) + "\n"
+                    await asyncio.sleep(0.01)
+                
+                # 等待任务最终完成
+                reply, audio_data, expression, guidance_message = await response_task
+                
+                # 发送明确的清除指令，确保前端完全清除之前的临时消息
+                yield json.dumps({
+                    "type": "clear_previous",
+                    "force_clear": True  # 添加强制清除标志
+                }) + "\n"
+                
+                # 发送更新的元数据（包含正确的表情）
+                updated_metadata = {
+                    "type": "metadata",
+                    "expression": expression,
+                    "message_id": int(time.time() * 1000),
+                    "replace_previous": True,  # 告诉前端替换之前的消息
+                    "new_message": True  # 添加新消息标志
+                }
+                
+                if guidance_message:
+                    updated_metadata["guidance_message"] = guidance_message
+                
+                yield json.dumps(updated_metadata) + "\n"
+                
+                # 确保前端知道我们将发送全新的内容
+                yield json.dumps({
+                    "type": "reset_content",
+                }) + "\n"
             
             # 用于调试输出
             print("-- /api/stream_chat --")
@@ -966,12 +1032,37 @@ async def stream_chat(request: ChatRequest):
                     "content": "抱歉，我现在无法回答。请稍后再试。"
                 }) + "\n"
                 return
+                
+            # 设置音频处理标志
+            audio_processing_complete = False
+            audio_processed = False
+            first_audio_chunk_sent = False
             
-            # 先发送表情和引导消息的元数据
+            # 创建音频处理任务（如果有长回复需要TTS）
+            if request.is_category or len(reply) > 100:
+                # 创建音频处理任务
+                audio_processing_task = None
+                
+                if audio_data and len(audio_data) > 100:
+                    # 已经有音频数据，直接设置为完成
+                    audio_processing_complete = True
+                    audio_processed = True
+                else:
+                    # 创建异步任务来生成音频
+                    audio_processing_task = asyncio.create_task(
+                        generate_audio_async(reply, Config.is_super_tts_enabled())
+                    )
+            else:
+                # 短回复可以跳过音频处理
+                audio_processing_complete = True
+                audio_processed = True
+                
+            # 先发送表情和引导消息的元数据（不包含音频数据，因为可能还在生成）
             metadata = {
                 "type": "metadata",
                 "expression": expression,
-                "message_id": int(time.time() * 1000)  # 添加唯一消息ID
+                "message_id": int(time.time() * 1000),
+                "audio_pending": not audio_processing_complete and (request.is_category or len(reply) > 100)  # 通知前端音频正在生成
             }
             
             if guidance_message:
@@ -989,127 +1080,216 @@ async def stream_chat(request: ChatRequest):
             
             yield json.dumps(metadata) + "\n"
             
-            # 如果有音频数据，处理后发送
-            if audio_data and len(audio_data) > 100:  # 确保音频数据长度合理
-                # 对于大型音频数据进行分片处理
-                MAX_CHUNK_SIZE = 32 * 1024  # 32KB 分片大小，避免JSON解析问题
-                base64_audio = base64.b64encode(audio_data).decode('ascii')
-                
-                # 检查音频数据大小
-                audio_size = len(base64_audio)
-                print(f"Base64编码后的音频大小: {audio_size} 字符")
-                
-                if audio_size > MAX_CHUNK_SIZE:
-                    # 如果音频过大，分片发送
-                    chunks = []
-                    for i in range(0, audio_size, MAX_CHUNK_SIZE):
-                        chunks.append(base64_audio[i:i+MAX_CHUNK_SIZE])
+            # 如果已有音频数据，直接处理
+            if audio_processed and audio_data and len(audio_data) > 100:
+                # 处理音频数据
+                for audio_chunk in process_audio_data(audio_data):
+                    yield audio_chunk
+                first_audio_chunk_sent = True
+            
+            # 开始分段发送回复文本
+            # 把回复文本分成多个段落，便于控制显示速度
+            paragraphs = reply.split('\n\n')
+            if len(paragraphs) == 1:  # 如果没有段落分隔，尝试按句子分割
+                paragraphs = re.split(r'(?<=[.!?。！？])\s+', reply)
+            
+            # 遍历每个段落，每个段落发送一次
+            for i, paragraph in enumerate(paragraphs):
+                if not paragraph.strip():
+                    continue
                     
-                    print(f"音频数据过大，分为 {len(chunks)} 个片段发送")
-                    
-                    # 发送第一个分片作为开始
-                    first_chunk = {
-                        "type": "audio_start",
-                        "total_chunks": len(chunks),
-                        "chunk_index": 0,
-                        "audio_chunk": chunks[0]
+                # 如果这是第一段并且还没发送过音频块，并且音频处理任务存在，尝试获取音频数据
+                if i == 0 and not first_audio_chunk_sent and 'audio_processing_task' in locals() and audio_processing_task:
+                    # 检查音频处理任务是否已完成
+                    if audio_processing_task.done():
+                        try:
+                            processed_audio = audio_processing_task.result()
+                            if processed_audio and len(processed_audio) > 100:
+                                # 处理音频数据
+                                for audio_chunk in process_audio_data(processed_audio):
+                                    yield audio_chunk
+                                first_audio_chunk_sent = True
+                                audio_processed = True
+                        except Exception as e:
+                            print(f"获取音频处理任务结果出错: {e}")
+                
+                # 逐字发送段落内容
+                for char in paragraph:
+                    chunk = {
+                        "type": "chunk",
+                        "content": char
                     }
-                    yield json.dumps(first_chunk) + "\n"
+                    yield json.dumps(chunk) + "\n"
                     
-                    # 发送中间分片
-                    for i in range(1, len(chunks) - 1):
-                        chunk = {
-                            "type": "audio_chunk",
-                            "chunk_index": i,
-                            "audio_chunk": chunks[i]
-                        }
-                        yield json.dumps(chunk) + "\n"
-                    
-                    # 发送最后一个分片
-                    if len(chunks) > 1:
-                        last_chunk = {
-                            "type": "audio_end",
-                            "chunk_index": len(chunks) - 1,
-                            "audio_chunk": chunks[-1]
-                        }
-                        yield json.dumps(last_chunk) + "\n"
-                    
-                    print("音频分片发送完成")
-                else:
-                    # 音频数据不大，一次性发送
+                    # 使用配置中的打字速度，转换为秒，添加错误处理
                     try:
-                        audio_message = {
-                            "type": "audio",
-                            "audio": base64_audio
-                        }
-                        yield json.dumps(audio_message) + "\n"
-                        print("完整音频数据发送成功")
-                    except Exception as audio_error:
-                        print(f"发送音频数据时出错: {audio_error}")
-            elif not audio_data:
-                # 如果没有音频数据，记录这个情况
-                print("没有收到音频数据，跳过音频发送")
-            
-            # 逐字发送回复内容，确保每个字符都是有效的
-            for char in reply:
-                chunk = {
-                    "type": "chunk",
-                    "content": char
-                }
-                yield json.dumps(chunk) + "\n"
+                        typing_speed = Config.TYPING_SPEED
+                        # 确保打字速度在合理范围内
+                        if not isinstance(typing_speed, int) or typing_speed < 10:
+                            typing_speed = 38  # 使用默认值
+                        elif typing_speed > 200:
+                            typing_speed = 200
+                            
+                        typing_delay = typing_speed / 1000.0
+                        # 确保延迟时间不会太长
+                        if typing_delay > 0.2:
+                            print(f"打字延迟过长 ({typing_delay}秒)，限制为0.2秒")
+                            typing_delay = 0.2
+                            
+                        await asyncio.sleep(typing_delay)
+                    except Exception as e:
+                        print(f"处理打字延迟时出错: {e}")
+                        # 使用默认延迟
+                        await asyncio.sleep(0.04)
                 
-                # 使用配置中的打字速度，转换为秒，添加错误处理
+                # 段落之间添加换行符
+                if i < len(paragraphs) - 1:
+                    yield json.dumps({
+                        "type": "chunk",
+                        "content": "\n\n"
+                    }) + "\n"
+                    
+                    # 段落之间添加额外延迟，便于阅读
+                    await asyncio.sleep(0.5)
+                    
+                # 在发送第一段后，如果音频仍在处理中，再次检查
+                if i == 0 and not first_audio_chunk_sent and 'audio_processing_task' in locals() and audio_processing_task:
+                    if not audio_processing_task.done():
+                        # 如果音频仍在处理中，继续发送文本
+                        print("第一段文本已发送，音频仍在处理中...")
+                    else:
+                        # 音频处理已完成，发送音频
+                        try:
+                            processed_audio = audio_processing_task.result()
+                            if processed_audio and len(processed_audio) > 100:
+                                # 处理音频数据
+                                for audio_chunk in process_audio_data(processed_audio):
+                                    yield audio_chunk
+                                first_audio_chunk_sent = True
+                                audio_processed = True
+                        except Exception as e:
+                            print(f"获取音频处理任务结果出错: {e}")
+                
+            # 文本发送完成后，如果音频处理任务还没完成，等待它完成
+            if 'audio_processing_task' in locals() and audio_processing_task and not audio_processed:
                 try:
-                    typing_speed = Config.TYPING_SPEED
-                    # 确保打字速度在合理范围内
-                    if not isinstance(typing_speed, int) or typing_speed < 10:
-                        typing_speed = 38  # 使用默认值
-                    elif typing_speed > 200:
-                        typing_speed = 200
-                        
-                    typing_delay = typing_speed / 1000.0
-                    # 确保延迟时间不会太长
-                    if typing_delay > 0.2:
-                        print(f"打字延迟过长 ({typing_delay}秒)，限制为0.2秒")
-                        typing_delay = 0.2
-                        
-                    await asyncio.sleep(typing_delay)
+                    # 等待音频处理任务完成
+                    processed_audio = await audio_processing_task
+                    
+                    # 如果获取到有效的音频数据，发送
+                    if processed_audio and len(processed_audio) > 100:
+                        # 处理音频数据
+                        for audio_chunk in process_audio_data(processed_audio):
+                            yield audio_chunk
                 except Exception as e:
-                    print(f"处理打字延迟时出错: {e}")
-                    # 使用默认延迟
-                    await asyncio.sleep(0.038)
+                    print(f"等待音频处理任务时出错: {e}")
             
-            # 发送完成标记
-            complete = {
-                "type": "complete"
-            }
-            
-            yield json.dumps(complete) + "\n"
-            
-        except asyncio.CancelledError:
-            # 处理客户端取消请求
-            print("客户端取消了请求")
-            raise
-        except Exception as e:
-            # 处理所有其他异常
-            print(f"流式聊天生成出错: {str(e)}")
-            error_metadata = {
-                "type": "metadata",
-                "expression": "生气",
-                "error": "服务器处理错误"
-            }
-            yield json.dumps(error_metadata) + "\n"
-            
-            error_message = {
+            # 发送完成信号
+            yield json.dumps({
                 "type": "complete",
-                "content": "抱歉，处理您的请求时出现了错误。请稍后再试。"
-            }
-            yield json.dumps(error_message) + "\n"
+                "content": reply
+            }) + "\n"
+            
+        except Exception as e:
+            error_message = f"处理流式聊天时出错: {str(e)}"
+            print(error_message)
+            import traceback
+            traceback.print_exc()
+            
+            # 发送错误信息
+            yield json.dumps({
+                "type": "error",
+                "message": error_message
+            }) + "\n"
     
-    return StreamingResponse(
-        generate_stream_response(),
-        media_type="application/x-ndjson"
-    )
+    # 使用StreamingResponse返回生成器
+    return StreamingResponse(generate_stream_response(), media_type="text/event-stream")
+
+def process_audio_data(audio_data):
+    """处理音频数据并返回JSON字符串列表"""
+    if not audio_data or len(audio_data) < 100:
+        return []
+        
+    result = []
+    # 对于大型音频数据进行分片处理
+    MAX_CHUNK_SIZE = 32 * 1024  # 32KB 分片大小，避免JSON解析问题
+    base64_audio = base64.b64encode(audio_data).decode('ascii')
+    
+    # 检查音频数据大小
+    audio_size = len(base64_audio)
+    print(f"Base64编码后的音频大小: {audio_size} 字符")
+    
+    if audio_size > MAX_CHUNK_SIZE:
+        # 如果音频过大，分片发送
+        chunks = []
+        for i in range(0, audio_size, MAX_CHUNK_SIZE):
+            chunks.append(base64_audio[i:i+MAX_CHUNK_SIZE])
+        
+        print(f"音频数据过大，分为 {len(chunks)} 个片段发送")
+        
+        # 发送第一个分片作为开始
+        first_chunk = {
+            "type": "audio_start",
+            "total_chunks": len(chunks),
+            "chunk_index": 0,
+            "audio_chunk": chunks[0]
+        }
+        result.append(json.dumps(first_chunk) + "\n")
+        
+        # 发送中间分片
+        for i in range(1, len(chunks) - 1):
+            chunk = {
+                "type": "audio_chunk",
+                "chunk_index": i,
+                "audio_chunk": chunks[i]
+            }
+            result.append(json.dumps(chunk) + "\n")
+        
+        # 发送最后一个分片
+        if len(chunks) > 1:
+            last_chunk = {
+                "type": "audio_end",
+                "chunk_index": len(chunks) - 1,
+                "audio_chunk": chunks[-1]
+            }
+            result.append(json.dumps(last_chunk) + "\n")
+        
+        print("音频分片发送完成")
+    else:
+        # 音频数据不大，一次性发送
+        try:
+            audio_message = {
+                "type": "audio",
+                "audio": base64_audio
+            }
+            result.append(json.dumps(audio_message) + "\n")
+            print("完整音频数据发送成功")
+        except Exception as audio_error:
+            print(f"发送音频数据时出错: {audio_error}")
+    
+    return result
+
+async def generate_audio_async(text, is_super_tts=True):
+    """异步生成音频数据"""
+    try:
+        loop = asyncio.get_running_loop()
+        if is_super_tts and Config.is_super_tts_enabled():
+            # 使用超拟人TTS
+            return await loop.run_in_executor(
+                None,
+                lambda: super_tts_service.generate_audio(text)
+            )
+        elif Config.is_tts_enabled():
+            # 使用普通TTS
+            return await loop.run_in_executor(
+                None,
+                lambda: tts_service.generate_audio(text)
+            )
+        else:
+            return None
+    except Exception as e:
+        print(f"异步生成音频时出错: {e}")
+        return None
 
 @app.post("/api/change_agent")
 async def change_agent(request: AgentRequest):
