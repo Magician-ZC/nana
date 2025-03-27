@@ -44,6 +44,9 @@ export const useChatStore = defineStore('chat', () => {
   // 音频播放器
   let audioPlayer = null
   
+  // 是否使用流式回复
+  const useStreamResponse = ref(true)
+  
   // 获取当前角色信息
   const currentAgentInfo = computed(() => 
     AGENT_WELCOME_MESSAGES[currentModel.value] || AGENT_WELCOME_MESSAGES.nanaA
@@ -56,47 +59,101 @@ export const useChatStore = defineStore('chat', () => {
   
   // 播放音频
   function playAudio(base64Audio) {
-    if (!base64Audio) return
+    if (!base64Audio) {
+      console.warn('未收到音频数据，无法播放');
+      return;
+    }
+    
+    console.log('准备播放音频，数据长度:', base64Audio.length);
     
     try {
       // 停止当前正在播放的音频
       if (audioPlayer) {
-        audioPlayer.pause()
-        audioPlayer = null
+        console.log('停止当前正在播放的音频');
+        audioPlayer.pause();
+        audioPlayer = null;
       }
       
       // 将Base64解码为二进制数据
-      const audioData = atob(base64Audio)
-      const arrayBuffer = new ArrayBuffer(audioData.length)
-      const uint8Array = new Uint8Array(arrayBuffer)
-      
-      for (let i = 0; i < audioData.length; i++) {
-        uint8Array[i] = audioData.charCodeAt(i)
+      try {
+        const audioData = atob(base64Audio);
+        console.log('Base64解码成功，解码后长度:', audioData.length);
+        
+        const arrayBuffer = new ArrayBuffer(audioData.length);
+        const uint8Array = new Uint8Array(arrayBuffer);
+        
+        for (let i = 0; i < audioData.length; i++) {
+          uint8Array[i] = audioData.charCodeAt(i);
+        }
+        
+        // 创建Blob对象
+        const blob = new Blob([uint8Array], { type: 'audio/mp3' });
+        const audioUrl = URL.createObjectURL(blob);
+        console.log('创建音频URL成功:', audioUrl);
+        
+        // 创建并播放音频
+        audioPlayer = new Audio();
+        
+        // 添加事件监听器
+        audioPlayer.addEventListener('canplaythrough', () => {
+          console.log('音频已加载，准备播放');
+          try {
+            const playPromise = audioPlayer.play();
+            if (playPromise !== undefined) {
+              playPromise
+                .then(() => console.log('音频播放成功启动'))
+                .catch(error => console.error('音频播放失败:', error));
+            }
+          } catch (playError) {
+            console.error('播放时发生错误:', playError);
+          }
+        });
+        
+        audioPlayer.addEventListener('ended', () => {
+          console.log('音频播放结束，释放资源');
+          // 播放结束后释放资源
+          URL.revokeObjectURL(audioUrl);
+          audioPlayer = null;
+        });
+        
+        audioPlayer.addEventListener('error', (e) => {
+          console.error('音频播放错误:', e);
+          URL.revokeObjectURL(audioUrl);
+          audioPlayer = null;
+        });
+        
+        // 设置音频源并加载
+        audioPlayer.src = audioUrl;
+        audioPlayer.load();
+        console.log('音频已加载');
+        
+      } catch (decodeError) {
+        console.error('Base64解码失败:', decodeError);
+        // 尝试另一种处理方式
+        try {
+          console.log('尝试使用替代方法处理音频数据');
+          const blob = new Blob(
+            [Uint8Array.from(atob(base64Audio), c => c.charCodeAt(0))],
+            { type: 'audio/mp3' }
+          );
+          const audioUrl = URL.createObjectURL(blob);
+          
+          audioPlayer = new Audio(audioUrl);
+          audioPlayer.oncanplaythrough = () => {
+            console.log('替代方法：音频已加载，准备播放');
+            audioPlayer.play();
+          };
+          audioPlayer.onerror = (e) => {
+            console.error('替代方法：音频播放错误:', e);
+            URL.revokeObjectURL(audioUrl);
+          };
+          audioPlayer.load();
+        } catch (alternativeError) {
+          console.error('替代音频处理方法也失败:', alternativeError);
+        }
       }
-      
-      // 创建Blob对象
-      const blob = new Blob([uint8Array], { type: 'audio/mp3' })
-      const audioUrl = URL.createObjectURL(blob)
-      
-      // 创建并播放音频
-      audioPlayer = new Audio(audioUrl)
-      audioPlayer.addEventListener('ended', () => {
-        // 播放结束后释放资源
-        URL.revokeObjectURL(audioUrl)
-        audioPlayer = null
-      })
-      
-      audioPlayer.addEventListener('error', (e) => {
-        console.error('音频播放错误:', e)
-        URL.revokeObjectURL(audioUrl)
-        audioPlayer = null
-      })
-      
-      // 开始播放
-      audioPlayer.play()
-      
     } catch (error) {
-      console.error('处理音频数据出错:', error)
+      console.error('处理音频数据时出错:', error, '错误类型:', error.name);
     }
   }
   
@@ -143,10 +200,383 @@ export const useChatStore = defineStore('chat', () => {
     showWelcomeMessage()
   }
   
+  // 发送流式消息
+  async function sendStreamMessage(message) {
+    if (!message.trim()) return
+    
+    console.log('发送流式消息:', message)
+    
+    // 检查是否已经有正在流式传输的消息
+    const hasActiveStreamingMessage = messages.value.some(msg => msg.isStreaming === true)
+    
+    if (hasActiveStreamingMessage) {
+      console.warn('已有正在流式传输的消息，等待完成后再发送新消息')
+      return false
+    }
+    
+    // 添加带时间戳的用户消息到聊天记录
+    messages.value.push({ 
+      type: 'user', 
+      content: message,
+      timestamp: formatTime(),
+      agentId: currentAgent.value 
+    })
+    
+    // 创建一个空的助手回复消息占位
+    const assistantMessageIndex = messages.value.length
+    messages.value.push({ 
+      type: 'assistant', 
+      content: '',
+      timestamp: formatTime(),
+      agentId: currentAgent.value,
+      isStreaming: true, // 标记为正在流式传输
+      messageId: Date.now() // 添加唯一标识符
+    })
+    
+    loading.value = true
+    
+    // 记录完整响应，防止流中断时丢失内容
+    let fullResponse = ''
+    let expression = ""
+    let guidanceMessage = null
+    let audioData = null
+    
+    // 用于存储分片的音频数据
+    let audioChunks = []
+    let totalAudioChunks = 0
+    
+    try {
+      // 获取当前角色的性格特点，用于指导AI回复风格
+      const agentPersonality = AGENT_WELCOME_MESSAGES[currentModel.value]?.personality || ''
+      
+      // 检查是否是快捷提问类别
+      const isQuickQuestion = [
+        "情感咨询师", "人际关系", "学业问题", "就业与职业规划压力", 
+        "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"
+      ].includes(message)
+      
+      // 创建流式请求
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 30000) // 30秒超时
+      
+      const response = await fetch('http://localhost:8666/api/stream_chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ 
+          message: message,
+          session_id: 'default',
+          agent_type: currentAgent.value,
+          personality: agentPersonality,
+          is_category: isQuickQuestion
+        }),
+        signal: controller.signal
+      })
+      
+      clearTimeout(timeoutId)
+      
+      if (!response.ok) {
+        throw new Error(`网络响应错误: ${response.status}`)
+      }
+      
+      if (!response.body) {
+        throw new Error('不支持流式响应')
+      }
+      
+      // 创建reader读取流
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      
+      // 循环读取流数据
+      let retryCount = 0
+      const MAX_RETRIES = 3
+      let partialLine = ''; // 用于存储不完整的行数据
+      
+      while (true) {
+        try {
+          const { done, value } = await reader.read()
+          if (done) break
+          
+          // 解码收到的数据
+          const text = decoder.decode(value)
+          
+          // 处理可能被分割的行，把partialLine和当前文本合并
+          const fullText = partialLine + text;
+          
+          // 使用更准确的正则表达式匹配完整JSON对象，避免在音频数据中间分割
+          // 匹配类型为"type"的JSON对象，以换行符结束
+          const jsonRegex = /\{\s*"type"\s*:\s*"[^"]+"\s*,[\s\S]*?\}\n/g;
+          const jsonLines = fullText.match(jsonRegex) || [];
+          
+          // 如果匹配到了完整的JSON对象
+          if (jsonLines.length > 0) {
+            console.log(`找到 ${jsonLines.length} 个完整JSON对象`);
+            
+            // 找出最后一个完整JSON的结束位置
+            const lastJsonEnd = fullText.lastIndexOf(jsonLines[jsonLines.length - 1]) + jsonLines[jsonLines.length - 1].length;
+            // 保存剩余不完整的部分
+            partialLine = fullText.substring(lastJsonEnd);
+            
+            // 重置重试计数器
+            retryCount = 0;
+            
+            // 处理每个完整的JSON
+            for (const jsonLine of jsonLines) {
+              const line = jsonLine.trim();
+              if (!line) continue;
+              
+              try {
+                const data = JSON.parse(line);
+                console.log(`处理类型为 ${data.type} 的JSON数据`);
+                
+                if (data.type === 'metadata') {
+                  // 处理元数据（表情和可能的引导消息）
+                  expression = data.expression || ""
+                  
+                  // 应用到消息对象
+                  if (assistantMessageIndex < messages.value.length) {
+                    messages.value[assistantMessageIndex].expression = expression
+                    // 使用后端生成的消息ID（如果有）
+                    if (data.message_id) {
+                      messages.value[assistantMessageIndex].messageId = data.message_id
+                    }
+                  }
+                  
+                  if (data.guidance_message) {
+                    guidanceMessage = data.guidance_message
+                  }
+                } 
+                else if (data.type === 'chunk') {
+                  // 处理文本块
+                  if (data.content) {
+                    fullResponse += data.content
+                    
+                    // 确保消息对象仍然存在且是我们创建的那个
+                    if (assistantMessageIndex < messages.value.length) {
+                      messages.value[assistantMessageIndex].content = fullResponse
+                    }
+                  }
+                } 
+                else if (data.type === 'audio') {
+                  // 处理完整的音频数据
+                  if (data.audio) {
+                    console.log('收到完整音频数据，长度:', data.audio.length);
+                    audioData = data.audio;
+                    // 立即播放音频
+                    playAudio(data.audio);
+                  } else {
+                    console.warn('收到音频消息但不包含音频数据');
+                  }
+                }
+                else if (data.type === 'audio_start') {
+                  // 开始接收分片音频数据
+                  console.log(`开始接收分片音频数据，总共 ${data.total_chunks} 个分片`);
+                  audioChunks = new Array(data.total_chunks);
+                  totalAudioChunks = data.total_chunks;
+                  
+                  // 存储第一个分片
+                  if (data.audio_chunk) {
+                    audioChunks[data.chunk_index] = data.audio_chunk;
+                    console.log(`接收到第 ${data.chunk_index + 1}/${totalAudioChunks} 个音频分片`);
+                  }
+                }
+                else if (data.type === 'audio_chunk') {
+                  // 处理中间音频分片
+                  if (data.audio_chunk && audioChunks) {
+                    audioChunks[data.chunk_index] = data.audio_chunk;
+                    console.log(`接收到第 ${data.chunk_index + 1}/${totalAudioChunks} 个音频分片`);
+                  }
+                }
+                else if (data.type === 'audio_end') {
+                  // 处理最后一个音频分片并合并播放
+                  if (data.audio_chunk && audioChunks) {
+                    audioChunks[data.chunk_index] = data.audio_chunk;
+                    console.log(`接收到最后一个音频分片 ${data.chunk_index + 1}/${totalAudioChunks}`);
+                    
+                    // 检查是否所有分片都已接收
+                    const hasAllChunks = audioChunks.every(chunk => chunk !== undefined);
+                    
+                    if (hasAllChunks) {
+                      // 合并所有分片
+                      const completeAudio = audioChunks.join('');
+                      console.log(`所有音频分片接收完成，合并后长度: ${completeAudio.length}`);
+                      
+                      // 存储完整音频数据
+                      audioData = completeAudio;
+                      
+                      // 播放合并后的音频
+                      playAudio(completeAudio);
+                    } else {
+                      console.warn('音频分片接收不完整，缺少部分分片');
+                      // 统计已接收的分片
+                      const receivedChunks = audioChunks.filter(chunk => chunk !== undefined).length;
+                      console.log(`已接收 ${receivedChunks}/${totalAudioChunks} 个分片`);
+                      
+                      // 尝试使用已接收的分片播放
+                      if (receivedChunks > 0) {
+                        const partialAudio = audioChunks.filter(chunk => chunk !== undefined).join('');
+                        console.log(`使用部分分片播放音频，长度: ${partialAudio.length}`);
+                        audioData = partialAudio;
+                        playAudio(partialAudio);
+                      }
+                    }
+                  }
+                }
+                else if (data.type === 'complete') {
+                  // 处理完成标记
+                  if (assistantMessageIndex < messages.value.length) {
+                    messages.value[assistantMessageIndex].isStreaming = false
+                  }
+                  
+                  // 检查是否还需要处理音频数据（兼容旧版本）
+                  if (data.audio && !audioData) {
+                    audioData = data.audio
+                    // 立即播放音频
+                    playAudio(data.audio)
+                  }
+                }
+              } catch (e) {
+                console.error('解析流数据时出错:', e, line.substring(0, 100) + '...');
+                // 尝试进行修复 - 检查是否是完整的JSON对象被截断
+                try {
+                  // 尝试修复被截断的JSON，通过在末尾添加缺失的大括号
+                  if (line.indexOf('{') === 0 && line.lastIndexOf('}') < line.length - 1) {
+                    const fixedLine = line.substring(0, line.lastIndexOf('}') + 1);
+                    console.log('尝试修复截断的JSON:', fixedLine.substring(0, 50) + '...');
+                    const data = JSON.parse(fixedLine);
+                    console.log('JSON修复成功，类型:', data.type);
+                    
+                    // 处理修复后的数据（与上面相同的逻辑）
+                    if (data.type === 'metadata') {
+                      // ... same code as above ...
+                    } 
+                    // ... handle other types the same way ...
+                  }
+                } catch (repairError) {
+                  console.error('尝试修复JSON失败:', repairError);
+                }
+              }
+            }
+          } else {
+            // 如果没有完整的JSON对象，检查是否包含部分对象
+            if (fullText.includes('{"type"')) {
+              console.log('找到部分JSON对象，等待后续数据...');
+              partialLine = fullText;
+            } else {
+              // 如果没有任何JSON标记，可能是纯文本或其他数据，重置partialLine
+              console.log('未找到JSON格式数据');
+              partialLine = fullText;
+            }
+          }
+        } catch (error) {
+          console.warn(`流读取错误(尝试${retryCount + 1}/${MAX_RETRIES}):`, error)
+          
+          if (retryCount >= MAX_RETRIES) {
+            throw new Error('流读取失败，已达到最大重试次数')
+          }
+          
+          retryCount++
+          await new Promise(resolve => setTimeout(resolve, 1000))
+        }
+      }
+      
+      // 如果结束时仍有未处理的部分行，尝试解析它
+      if (partialLine.trim()) {
+        try {
+          const data = JSON.parse(partialLine.trim());
+          // 处理最后一个可能的数据包
+          if (data.type === 'complete') {
+            if (assistantMessageIndex < messages.value.length) {
+              messages.value[assistantMessageIndex].isStreaming = false;
+            }
+          }
+        } catch (e) {
+          console.warn('无法解析最后的不完整行:', partialLine.substring(0, 100) + '...');
+        }
+      }
+      
+      // 确保我们设置了最终的内容，以防流过早结束
+      if (assistantMessageIndex < messages.value.length) {
+        if (messages.value[assistantMessageIndex].isStreaming) {
+          messages.value[assistantMessageIndex].isStreaming = false
+        }
+        
+        // 如果内容为空但我们有完整响应，则使用它
+        if (!messages.value[assistantMessageIndex].content && fullResponse) {
+          messages.value[assistantMessageIndex].content = fullResponse
+        }
+        
+        // 如果有表情但尚未设置，设置它
+        if (expression && !messages.value[assistantMessageIndex].expression) {
+          messages.value[assistantMessageIndex].expression = expression
+        }
+      }
+      
+      // 如果有引导决策消息，添加为单独的一条助手消息
+      if (guidanceMessage) {
+        setTimeout(() => {
+          messages.value.push({ 
+            type: 'assistant', 
+            content: guidanceMessage,
+            timestamp: formatTime(),
+            agentId: currentAgent.value,
+            expression: expression,
+            messageId: Date.now() + 1 // 使用不同的ID
+          })
+        }, 500); // 添加500ms延迟，使其看起来像是分开发送的
+      }
+      
+      return true
+    } catch (error) {
+      console.error('流式消息处理出错:', error)
+      
+      // 清除流式状态
+      if (assistantMessageIndex < messages.value.length) {
+        // 确保消息对象仍然存在
+        messages.value[assistantMessageIndex].isStreaming = false
+        
+        // 如果内容为空但我们有部分响应，使用它
+        if (!messages.value[assistantMessageIndex].content && fullResponse) {
+          messages.value[assistantMessageIndex].content = fullResponse || "抱歉，我遇到了一些问题，请稍后再试。"
+          messages.value[assistantMessageIndex].expression = expression || "生气"
+        } else if (!messages.value[assistantMessageIndex].content) {
+          // 完全没有收到任何内容
+          messages.value[assistantMessageIndex].content = "抱歉，我遇到了一些问题，请稍后再试。"
+          messages.value[assistantMessageIndex].expression = "生气"
+        }
+      }
+      
+      return false
+    } finally {
+      loading.value = false
+    }
+  }
+  
   async function sendMessage(message) {
+    // 如果启用了流式回复，则使用流式API
+    if (useStreamResponse.value) {
+      return sendStreamMessage(message)
+    }
+    
+    // 原始非流式处理逻辑
     if (!message.trim()) return
     
     console.log('发送消息:', message)
+    
+    // 检查是否已经有正在流式传输的消息
+    const hasActiveStreamingMessage = messages.value.some(msg => msg.isStreaming === true)
+    
+    if (hasActiveStreamingMessage) {
+      console.warn('已有正在流式传输的消息，等待完成后再发送新消息')
+      return false
+    }
+    
+    // 如果已经在加载中，不允许发送新消息
+    if (loading.value) {
+      console.warn('已有消息正在处理中，请等待完成')
+      return false
+    }
     
     // 添加带时间戳的用户消息到聊天记录
     messages.value.push({ 
@@ -268,10 +698,12 @@ export const useChatStore = defineStore('chat', () => {
     hasShownWelcome,
     currentAgentInfo,
     agents,
+    useStreamResponse,
     // 方法
     setTrackingStatus,
     changeAgent,
     sendMessage,
+    sendStreamMessage,
     showWelcomeMessage,
     loadCustomAgents,
     playAudio

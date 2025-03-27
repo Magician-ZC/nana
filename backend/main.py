@@ -1,6 +1,6 @@
 from fastapi import FastAPI, WebSocket, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List
 import base64
@@ -16,6 +16,7 @@ import os
 import uuid
 import shutil
 import tempfile
+import time
 # from llm import LLMService  # 注释掉，因为我们使用chat_service中的LLM服务
 
 app = FastAPI()
@@ -54,6 +55,8 @@ class TTSSettingsRequest(BaseModel):
     enable_super_tts: bool
     tts_voice: Optional[str] = None
     super_tts_voice: Optional[str] = None
+    tts_speed: Optional[int] = None
+    typing_speed: Optional[int] = None
 
 class TTSSettings(BaseModel):
     enable_tts: bool
@@ -62,6 +65,8 @@ class TTSSettings(BaseModel):
     super_tts_voice: str
     tts_voice_list: list
     super_tts_voice_list: list
+    tts_speed: int
+    typing_speed: int
 
 chat_service = ChatService()
 tts_service = TTSService()
@@ -637,6 +642,198 @@ async def delete_custom_agent(agent_id: str):
 async def chat(request: ChatRequest):
     return await normal_chat_flow(request)
 
+@app.post("/api/stream_chat")
+async def stream_chat(request: ChatRequest):
+    """流式聊天API，支持打字机式回复
+    
+    Args:
+        request: 聊天请求
+        
+    Returns:
+        StreamingResponse: 流式响应
+    """
+    async def generate_stream_response():
+        try:
+            # 验证请求数据
+            if not request.message or not request.message.strip():
+                yield json.dumps({
+                    "type": "metadata",
+                    "expression": "生气",
+                    "error": "消息内容不能为空"
+                }) + "\n"
+                
+                yield json.dumps({
+                    "type": "complete",
+                    "content": "请输入有效的消息内容"
+                }) + "\n"
+                return
+            
+            # 生成回复
+            reply, audio_data, expression, guidance_message = await chat_service.generate_reply(
+                request.message, 
+                request.session_id,
+                agent_type=request.agent_type,
+                personality=request.personality,
+                is_category=request.is_category
+            )
+            
+            # 用于调试输出
+            print("-- /api/stream_chat --")
+            print("agent_type:", request.agent_type)
+            print("personality:", request.personality)
+            print("is_category:", request.is_category)
+            print("reply:", reply)
+            print("expression:", expression)
+            print("audio_data 大小:", len(audio_data) if audio_data else 0, "字节")
+            
+            # 检查是否获取到有效回复
+            if not reply:
+                yield json.dumps({
+                    "type": "metadata",
+                    "expression": "生气",
+                    "error": "未能生成有效回复"
+                }) + "\n"
+                
+                yield json.dumps({
+                    "type": "complete",
+                    "content": "抱歉，我现在无法回答。请稍后再试。"
+                }) + "\n"
+                return
+            
+            # 先发送表情和引导消息的元数据
+            metadata = {
+                "type": "metadata",
+                "expression": expression,
+                "message_id": int(time.time() * 1000)  # 添加唯一消息ID
+            }
+            
+            if guidance_message:
+                metadata["guidance_message"] = guidance_message
+                
+            yield json.dumps(metadata) + "\n"
+            
+            # 如果有音频数据，处理后发送
+            if audio_data and len(audio_data) > 100:  # 确保音频数据长度合理
+                # 对于大型音频数据进行分片处理
+                MAX_CHUNK_SIZE = 32 * 1024  # 32KB 分片大小，避免JSON解析问题
+                base64_audio = base64.b64encode(audio_data).decode('ascii')
+                
+                # 检查音频数据大小
+                audio_size = len(base64_audio)
+                print(f"Base64编码后的音频大小: {audio_size} 字符")
+                
+                if audio_size > MAX_CHUNK_SIZE:
+                    # 如果音频过大，分片发送
+                    chunks = []
+                    for i in range(0, audio_size, MAX_CHUNK_SIZE):
+                        chunks.append(base64_audio[i:i+MAX_CHUNK_SIZE])
+                    
+                    print(f"音频数据过大，分为 {len(chunks)} 个片段发送")
+                    
+                    # 发送第一个分片作为开始
+                    first_chunk = {
+                        "type": "audio_start",
+                        "total_chunks": len(chunks),
+                        "chunk_index": 0,
+                        "audio_chunk": chunks[0]
+                    }
+                    yield json.dumps(first_chunk) + "\n"
+                    
+                    # 发送中间分片
+                    for i in range(1, len(chunks) - 1):
+                        chunk = {
+                            "type": "audio_chunk",
+                            "chunk_index": i,
+                            "audio_chunk": chunks[i]
+                        }
+                        yield json.dumps(chunk) + "\n"
+                    
+                    # 发送最后一个分片
+                    if len(chunks) > 1:
+                        last_chunk = {
+                            "type": "audio_end",
+                            "chunk_index": len(chunks) - 1,
+                            "audio_chunk": chunks[-1]
+                        }
+                        yield json.dumps(last_chunk) + "\n"
+                    
+                    print("音频分片发送完成")
+                else:
+                    # 音频数据不大，一次性发送
+                    try:
+                        audio_message = {
+                            "type": "audio",
+                            "audio": base64_audio
+                        }
+                        yield json.dumps(audio_message) + "\n"
+                        print("完整音频数据发送成功")
+                    except Exception as audio_error:
+                        print(f"发送音频数据时出错: {audio_error}")
+            elif not audio_data:
+                # 如果没有音频数据，记录这个情况
+                print("没有收到音频数据，跳过音频发送")
+            
+            # 逐字发送回复内容，确保每个字符都是有效的
+            for char in reply:
+                chunk = {
+                    "type": "chunk",
+                    "content": char
+                }
+                yield json.dumps(chunk) + "\n"
+                
+                # 使用配置中的打字速度，转换为秒，添加错误处理
+                try:
+                    typing_speed = Config.TYPING_SPEED
+                    # 确保打字速度在合理范围内
+                    if not isinstance(typing_speed, int) or typing_speed < 10:
+                        typing_speed = 38  # 使用默认值
+                    elif typing_speed > 200:
+                        typing_speed = 200
+                        
+                    typing_delay = typing_speed / 1000.0
+                    # 确保延迟时间不会太长
+                    if typing_delay > 0.2:
+                        print(f"打字延迟过长 ({typing_delay}秒)，限制为0.2秒")
+                        typing_delay = 0.2
+                        
+                    await asyncio.sleep(typing_delay)
+                except Exception as e:
+                    print(f"处理打字延迟时出错: {e}")
+                    # 使用默认延迟
+                    await asyncio.sleep(0.038)
+            
+            # 发送完成标记
+            complete = {
+                "type": "complete"
+            }
+            
+            yield json.dumps(complete) + "\n"
+            
+        except asyncio.CancelledError:
+            # 处理客户端取消请求
+            print("客户端取消了请求")
+            raise
+        except Exception as e:
+            # 处理所有其他异常
+            print(f"流式聊天生成出错: {str(e)}")
+            error_metadata = {
+                "type": "metadata",
+                "expression": "生气",
+                "error": "服务器处理错误"
+            }
+            yield json.dumps(error_metadata) + "\n"
+            
+            error_message = {
+                "type": "complete",
+                "content": "抱歉，处理您的请求时出现了错误。请稍后再试。"
+            }
+            yield json.dumps(error_message) + "\n"
+    
+    return StreamingResponse(
+        generate_stream_response(),
+        media_type="application/x-ndjson"
+    )
+
 @app.post("/api/change_agent")
 async def change_agent(request: AgentRequest):
     success = chat_service.change_agent(request.agent_name, request.session_id)
@@ -738,7 +935,9 @@ async def get_tts_settings():
             "tts_voice": Config.TTS_VCN,
             "super_tts_voice": Config.SUPER_TTS_VCN,
             "tts_voice_list": Config.TTS_VOICE_LIST,
-            "super_tts_voice_list": Config.SUPER_TTS_VOICE_LIST
+            "super_tts_voice_list": Config.SUPER_TTS_VOICE_LIST,
+            "tts_speed": Config.TTS_SPEED,
+            "typing_speed": Config.TYPING_SPEED
         }
     )
 
@@ -777,8 +976,42 @@ async def update_tts_settings(settings: TTSSettingsRequest):
             if any(voice["value"] == settings.super_tts_voice for voice in Config.SUPER_TTS_VOICE_LIST):
                 Config.SUPER_TTS_VCN = settings.super_tts_voice
         
+        # 更新语速设置
+        if settings.tts_speed is not None:
+            try:
+                # 确保值是整数类型
+                speed_value = int(settings.tts_speed)
+                # 验证语速值是否在有效范围内
+                if 0 <= speed_value <= 100:
+                    Config.TTS_SPEED = speed_value
+                else:
+                    print(f"语速值超出范围(0-100): {speed_value}")
+                    Config.TTS_SPEED = max(0, min(100, speed_value))  # 限制在有效范围内
+            except (ValueError, TypeError) as e:
+                print(f"语速值类型错误: {e}")
+                # 如果转换失败，使用默认值
+                Config.TTS_SPEED = 50
+        
+        # 更新打字速度设置
+        if settings.typing_speed is not None:
+            try:
+                # 确保值是整数类型
+                typing_value = int(settings.typing_speed)
+                # 验证打字速度值是否在有效范围内 (10-200ms)
+                if 10 <= typing_value <= 200:
+                    Config.TYPING_SPEED = typing_value
+                else:
+                    print(f"打字速度值超出范围(10-200): {typing_value}")
+                    Config.TYPING_SPEED = max(10, min(200, typing_value))  # 限制在有效范围内
+            except (ValueError, TypeError) as e:
+                print(f"打字速度值类型错误: {e}")
+                # 如果转换失败，使用默认值
+                Config.TYPING_SPEED = 38
+        
         # 使用刷新服务方法，确保使用最新的音色配置
         chat_service._refresh_tts_services()
+            
+        print(f"设置已更新: TTS={Config.ENABLE_TTS}, SuperTTS={Config.ENABLE_SUPER_TTS}, 语速={Config.TTS_SPEED}, 打字速度={Config.TYPING_SPEED}")
             
         return JSONResponse(
             content={
@@ -787,7 +1020,9 @@ async def update_tts_settings(settings: TTSSettingsRequest):
                 "enable_tts": Config.ENABLE_TTS,
                 "enable_super_tts": Config.ENABLE_SUPER_TTS,
                 "tts_voice": Config.TTS_VCN,
-                "super_tts_voice": Config.SUPER_TTS_VCN
+                "super_tts_voice": Config.SUPER_TTS_VCN,
+                "tts_speed": Config.TTS_SPEED,
+                "typing_speed": Config.TYPING_SPEED
             }
         )
     except Exception as e:

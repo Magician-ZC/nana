@@ -120,6 +120,19 @@ class MainAgent:
             # 确保先添加当前对话
             await self.conversation_history.add_dialog(message, reply_content, self.user_info_processor)
             
+            # 触发归档并获取总结 - 使用异步方式在后台处理，不阻塞主流程
+            import asyncio
+            asyncio.create_task(self._process_dialog_summary(turns_count))
+        
+        return reply_content, expression
+
+    async def _process_dialog_summary(self, turns_count):
+        """异步处理对话总结任务，避免阻塞主回复流程
+        
+        Args:
+            turns_count: 当前对话轮数
+        """
+        try:
             # 触发归档并获取总结
             summary_profile = await self.conversation_history._auto_archive(self.user_info_processor)
             
@@ -137,8 +150,8 @@ class MainAgent:
                     None)
                 
                 print("对话总结已添加到对话历史，将在用户下一次提问后显示")
-        
-        return reply_content, expression
+        except Exception as e:
+            print(f"处理对话总结时发生错误: {e}")
 
     async def _generate_reply(self, message: str, memory_text: str = "无补充信息", personality: str = None, is_category: bool = False) -> Tuple[str, str]:
         """生成回复的核心方法
@@ -394,7 +407,17 @@ class MainAgent:
             # 注意：这里不触发归档，所以不传递user_info_processor
             await self.conversation_history.add_dialog(message="SYSTEM_GUIDANCE", reply=guidance_message)
         
-        # 尝试将对话归纳总结同步到用户信息
+        # 启动异步任务处理用户信息同步
+        import asyncio
+        asyncio.create_task(self._process_user_info_sync(message, is_user_decision))
+
+    async def _process_user_info_sync(self, message, is_user_decision):
+        """异步处理用户信息同步，不阻塞主回复流程
+        
+        Args:
+            message: 用户消息
+            is_user_decision: 是否是用户决策
+        """
         try:
             # 检查是否有用户做出决策，如果有则强制同步
             force_update = is_user_decision

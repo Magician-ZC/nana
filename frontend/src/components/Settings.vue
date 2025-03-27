@@ -1,79 +1,195 @@
 <template>
-  <div :class="['settings-panel', { 'open': isOpen }]">
-    <div class="settings-content">
-      <h3>语音设置</h3>
-      <div class="settings-section">
-        <div class="setting-item">
-          <label>
-            <input 
-              type="checkbox" 
-              v-model="enableTTS" 
-              @change="handleTTSChange" 
-              :disabled="enableSuperTTS"
-            />
-            启用普通语音
-          </label>
+  <!-- 遮罩层 -->
+  <div v-if="isOpen" class="fixed inset-0 bg-neutral-900/70 backdrop-blur-sm z-50 flex items-center justify-center transition-all duration-300 ease-in-out" @click="$emit('close')">
+    <!-- 主内容区 -->
+    <div class="w-full max-w-xl max-h-[90vh] overflow-y-auto bg-white dark:bg-neutral-800 rounded-xl shadow-2xl transition-all duration-300 ease-in-out transform animate-fade-in" @click.stop>
+      <!-- 顶部标题栏 -->
+      <div class="flex items-center justify-between p-5 border-b border-neutral-200 dark:border-neutral-700">
+        <h3 class="text-xl font-semibold text-neutral-800 dark:text-white">系统设置</h3>
+        <button 
+          @click="$emit('close')" 
+          class="w-8 h-8 flex items-center justify-center rounded-full bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-700 dark:hover:bg-neutral-600 text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-white transition-all duration-200 hover:scale-110"
+        >
+          <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+      </div>
+
+      <!-- 内容区 -->
+      <div class="p-6 space-y-6">
+        <!-- 聊天效果设置 -->
+        <div class="space-y-4">
+          <h4 class="text-lg font-medium text-neutral-800 dark:text-neutral-200 border-b border-neutral-200 dark:border-neutral-700 pb-2">聊天效果</h4>
           
-          <!-- 普通语音音色选择 -->
-          <div class="voice-select" v-if="enableTTS">
-            <label class="voice-label">音色：</label>
-            <select v-model="ttsVoice" class="voice-dropdown">
-              <option 
-                v-for="voice in ttsVoiceList" 
-                :key="voice.value" 
-                :value="voice.value"
-              >
-                {{ voice.name }}
-              </option>
-            </select>
+          <div class="space-y-4">
+            <!-- 打字机效果设置 -->
+            <div class="flex items-start">
+              <div class="flex h-5 items-center">
+                <input 
+                  id="typewriter-effect"
+                  type="checkbox" 
+                  v-model="useTypewriterEffect" 
+                  @change="handleTypewriterChange"
+                  class="h-4 w-4 rounded border-neutral-300 text-primary-600 focus:ring-primary-500 dark:border-neutral-600 dark:bg-neutral-700"
+                />
+              </div>
+              <div class="ml-3 text-sm">
+                <label for="typewriter-effect" class="font-medium text-neutral-700 dark:text-neutral-300">启用打字机效果</label>
+                <p class="text-neutral-500 dark:text-neutral-400">启用后AI回复将逐字显示，模拟打字机效果</p>
+              </div>
+            </div>
+
+            <!-- 打字速度控制 -->
+            <div v-if="useTypewriterEffect" class="pl-7 space-y-2">
+              <div class="flex justify-between items-center">
+                <label for="typing-speed" class="text-sm font-medium text-neutral-700 dark:text-neutral-300">打字速度</label>
+                <span class="text-sm text-neutral-500 dark:text-neutral-400">{{ typingSpeed }}ms/字</span>
+              </div>
+              <div class="flex items-center space-x-2">
+                <span class="text-xs text-neutral-500 dark:text-neutral-400">快</span>
+                <input 
+                  id="typing-speed"
+                  type="range" 
+                  v-model="typingSpeed" 
+                  min="10" 
+                  max="200" 
+                  step="5"
+                  class="w-full h-2 bg-neutral-200 rounded-lg appearance-none cursor-pointer dark:bg-neutral-700" 
+                />
+                <span class="text-xs text-neutral-500 dark:text-neutral-400">慢</span>
+              </div>
+            </div>
           </div>
         </div>
-        
-        <div class="setting-item">
-          <label>
-            <input 
-              type="checkbox" 
-              v-model="enableSuperTTS" 
-              @change="handleSuperTTSChange" 
-              :disabled="enableTTS"
-            />
-            启用超拟人语音
-          </label>
+
+        <!-- 语音设置 -->
+        <div class="space-y-4">
+          <h4 class="text-lg font-medium text-neutral-800 dark:text-neutral-200 border-b border-neutral-200 dark:border-neutral-700 pb-2">语音设置</h4>
           
-          <!-- 超拟人语音音色选择 -->
-          <div class="voice-select" v-if="enableSuperTTS">
-            <label class="voice-label">音色：</label>
-            <select v-model="superTtsVoice" class="voice-dropdown">
-              <option 
-                v-for="voice in superTtsVoiceList" 
-                :key="voice.value" 
-                :value="voice.value"
+          <div class="space-y-4">
+            <!-- 普通语音设置 -->
+            <div class="flex items-start">
+              <div class="flex h-5 items-center">
+                <input 
+                  id="normal-tts"
+                  type="checkbox" 
+                  v-model="enableTTS" 
+                  @change="handleTTSChange" 
+                  :disabled="enableSuperTTS"
+                  class="h-4 w-4 rounded border-neutral-300 text-primary-600 focus:ring-primary-500 dark:border-neutral-600 dark:bg-neutral-700"
+                />
+              </div>
+              <div class="ml-3 text-sm">
+                <label for="normal-tts" class="font-medium text-neutral-700 dark:text-neutral-300">启用普通语音</label>
+              </div>
+            </div>
+
+            <!-- 普通语音音色选择 -->
+            <div v-if="enableTTS" class="pl-7 space-y-2">
+              <label for="tts-voice" class="block text-sm font-medium text-neutral-700 dark:text-neutral-300">音色选择</label>
+              <select 
+                id="tts-voice"
+                v-model="ttsVoice" 
+                class="mt-1 block w-full rounded-md border-neutral-300 py-2 pl-3 pr-10 text-base focus:border-primary-500 focus:outline-none focus:ring-primary-500 dark:border-neutral-600 dark:bg-neutral-700 dark:text-white sm:text-sm"
               >
-                {{ voice.name }}
-              </option>
-            </select>
-          </div>
-          
-          <div class="settings-note" v-if="enableSuperTTS">
-            超拟人语音支持更自然的语气、语调变化和口语化表达
+                <option 
+                  v-for="voice in ttsVoiceList" 
+                  :key="voice.value" 
+                  :value="voice.value"
+                >
+                  {{ voice.name }}
+                </option>
+              </select>
+            </div>
+
+            <!-- 超拟人语音设置 -->
+            <div class="flex items-start">
+              <div class="flex h-5 items-center">
+                <input 
+                  id="super-tts"
+                  type="checkbox" 
+                  v-model="enableSuperTTS" 
+                  @change="handleSuperTTSChange" 
+                  :disabled="enableTTS"
+                  class="h-4 w-4 rounded border-neutral-300 text-primary-600 focus:ring-primary-500 dark:border-neutral-600 dark:bg-neutral-700"
+                />
+              </div>
+              <div class="ml-3 text-sm">
+                <label for="super-tts" class="font-medium text-neutral-700 dark:text-neutral-300">启用超拟人语音</label>
+                <p v-if="enableSuperTTS" class="text-neutral-500 dark:text-neutral-400">超拟人语音支持更自然的语气、语调变化和口语化表达</p>
+              </div>
+            </div>
+
+            <!-- 超拟人语音音色选择 -->
+            <div v-if="enableSuperTTS" class="pl-7 space-y-2">
+              <label for="super-tts-voice" class="block text-sm font-medium text-neutral-700 dark:text-neutral-300">音色选择</label>
+              <select 
+                id="super-tts-voice"
+                v-model="superTtsVoice" 
+                class="mt-1 block w-full rounded-md border-neutral-300 py-2 pl-3 pr-10 text-base focus:border-primary-500 focus:outline-none focus:ring-primary-500 dark:border-neutral-600 dark:bg-neutral-700 dark:text-white sm:text-sm"
+              >
+                <option 
+                  v-for="voice in superTtsVoiceList" 
+                  :key="voice.value" 
+                  :value="voice.value"
+                >
+                  {{ voice.name }}
+                </option>
+              </select>
+            </div>
+
+            <!-- 语速控制 -->
+            <div v-if="enableTTS || enableSuperTTS" class="pl-7 space-y-2">
+              <div class="flex justify-between items-center">
+                <label for="tts-speed" class="text-sm font-medium text-neutral-700 dark:text-neutral-300">语速</label>
+                <span class="text-sm text-neutral-500 dark:text-neutral-400">{{ ttsSpeed }}</span>
+              </div>
+              <div class="flex items-center space-x-2">
+                <span class="text-xs text-neutral-500 dark:text-neutral-400">慢</span>
+                <input 
+                  id="tts-speed"
+                  type="range" 
+                  v-model="ttsSpeed" 
+                  min="0" 
+                  max="100" 
+                  step="5"
+                  class="w-full h-2 bg-neutral-200 rounded-lg appearance-none cursor-pointer dark:bg-neutral-700" 
+                />
+                <span class="text-xs text-neutral-500 dark:text-neutral-400">快</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
-      
-      <div class="settings-actions">
-        <button class="apply-button" @click="saveSettings" :disabled="isSaving">
+
+      <!-- 底部按钮栏 -->
+      <div class="flex items-center justify-end p-5 border-t border-neutral-200 dark:border-neutral-700 gap-3">
+        <button 
+          @click="$emit('close')" 
+          class="px-4 py-2 rounded-lg bg-neutral-100 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-600 transition-all duration-200 font-medium"
+        >
+          取消
+        </button>
+        <button 
+          @click="saveSettings" 
+          :disabled="isSaving"
+          class="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white transition-all duration-200 font-medium flex items-center disabled:opacity-50 disabled:pointer-events-none"
+        >
+          <i class="fa-solid fa-save mr-2"></i>
           {{ isSaving ? '保存中...' : '应用' }}
         </button>
-        <button class="close-button" @click="$emit('close')">关闭</button>
       </div>
-      
-      <div v-if="error" class="error-message">{{ error }}</div>
+
+      <!-- 错误提示 -->
+      <div v-if="error" class="p-3 mb-4 mx-5 bg-red-100 border border-red-200 text-red-700 rounded-md dark:bg-red-900/30 dark:border-red-800 dark:text-red-300">
+        {{ error }}
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, watch } from 'vue'
+import { useChatStore } from '../stores/chat'
 
 const props = defineProps({
   isOpen: {
@@ -83,6 +199,11 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['close', 'settings-changed'])
+const chatStore = useChatStore()
+
+// 打字机效果设置
+const useTypewriterEffect = ref(true)
+const typingSpeed = ref(38) // 打字速度，默认38ms/字
 
 // 设置状态
 const enableTTS = ref(false)
@@ -91,18 +212,23 @@ const ttsVoice = ref('xiaoyan')
 const superTtsVoice = ref('x4_lingfeiyi_oral')
 const ttsVoiceList = ref([])
 const superTtsVoiceList = ref([])
+const ttsSpeed = ref(50) // 语速，默认50
 const isSaving = ref(false)
 const error = ref('')
 
 // 加载设置
 onMounted(async () => {
   await loadSettings()
+  // 初始化打字机效果设置
+  useTypewriterEffect.value = chatStore.useStreamResponse
 })
 
 // 监听打开状态变化，打开时重新加载设置
 watch(() => props.isOpen, async (newValue) => {
   if (newValue) {
     await loadSettings()
+    // 重新同步打字机效果设置
+    useTypewriterEffect.value = chatStore.useStreamResponse
   }
 })
 
@@ -118,6 +244,8 @@ async function loadSettings() {
     superTtsVoice.value = data.super_tts_voice || 'x4_lingfeiyi_oral'
     ttsVoiceList.value = data.tts_voice_list || []
     superTtsVoiceList.value = data.super_tts_voice_list || []
+    ttsSpeed.value = data.tts_speed || 50
+    typingSpeed.value = data.typing_speed || 38
     
   } catch (error) {
     console.error('加载设置失败:', error)
@@ -138,12 +266,20 @@ function handleSuperTTSChange() {
   }
 }
 
+// 处理打字机效果切换
+function handleTypewriterChange() {
+  chatStore.useStreamResponse = useTypewriterEffect.value
+}
+
 // 保存设置
 async function saveSettings() {
   isSaving.value = true
   error.value = ''
   
   try {
+    // 更新打字机效果设置
+    chatStore.useStreamResponse = useTypewriterEffect.value
+    
     const response = await fetch('http://localhost:8666/api/tts_settings', {
       method: 'POST',
       headers: {
@@ -153,7 +289,9 @@ async function saveSettings() {
         enable_tts: enableTTS.value,
         enable_super_tts: enableSuperTTS.value,
         tts_voice: ttsVoice.value,
-        super_tts_voice: superTtsVoice.value
+        super_tts_voice: superTtsVoice.value,
+        tts_speed: ttsSpeed.value,
+        typing_speed: typingSpeed.value
       })
     })
     
@@ -165,164 +303,79 @@ async function saveSettings() {
         enableTTS: enableTTS.value,
         enableSuperTTS: enableSuperTTS.value,
         ttsVoice: ttsVoice.value,
-        superTtsVoice: superTtsVoice.value
+        superTtsVoice: superTtsVoice.value,
+        ttsSpeed: ttsSpeed.value,
+        typingSpeed: typingSpeed.value,
+        useTypewriterEffect: useTypewriterEffect.value
       })
       
       // 关闭设置面板
       emit('close')
+      
+      // 显示成功消息
+      showToast('设置已保存', 'success')
     } else {
       error.value = result.message || '保存设置失败'
     }
     
-  } catch (error) {
-    console.error('保存设置失败:', error)
+  } catch (err) {
+    console.error('保存设置失败:', err)
     error.value = '保存设置时发生错误'
   } finally {
     isSaving.value = false
   }
 }
+
+// 显示消息通知
+function showToast(message, type = 'success') {
+  const toastEl = document.createElement('div')
+  toastEl.className = `fixed bottom-4 right-4 ${type === 'success' ? 'bg-green-500' : 'bg-red-500'} text-white px-6 py-3 rounded-lg shadow-lg z-50 animate-fade-in`
+  toastEl.textContent = message
+  document.body.appendChild(toastEl)
+  
+  setTimeout(() => {
+    toastEl.remove()
+  }, 3000)
+}
 </script>
 
 <style scoped>
-.settings-panel {
-  position: fixed;
-  top: 0;
-  right: -350px;
-  width: 300px;
-  height: 100vh;
-  background-color: rgba(30, 30, 30, 0.9);
-  box-shadow: -2px 0 10px rgba(0, 0, 0, 0.3);
-  z-index: 1000;
-  transition: right 0.3s ease;
-  backdrop-filter: blur(10px);
-  color: #fff;
-  overflow-y: auto;
+/* 淡入动画 */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
-.settings-panel.open {
-  right: 0;
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out forwards;
 }
 
-.settings-content {
-  padding: 20px;
-}
-
-h3 {
-  margin-top: 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
-  padding-bottom: 10px;
-  margin-bottom: 15px;
-}
-
-.settings-section {
-  margin-bottom: 20px;
-}
-
-.setting-item {
-  margin-bottom: 12px;
-  display: flex;
-  flex-direction: column;
-}
-
-label {
-  display: flex;
-  align-items: center;
-  cursor: pointer;
-}
-
-input[type="checkbox"] {
-  margin-right: 8px;
+/* 修改range滑块的默认样式 */
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
   width: 16px;
   height: 16px;
+  border-radius: 50%;
+  background: #2c7c7e;
   cursor: pointer;
-}
-
-.voice-select {
-  margin-top: 8px;
-  margin-left: 24px;
-  display: flex;
-  align-items: center;
-}
-
-.voice-label {
-  margin-right: 10px;
-  font-size: 14px;
-  color: #ddd;
-}
-
-.voice-dropdown {
-  flex: 1;
-  padding: 6px 10px;
-  border-radius: 4px;
-  background-color: rgba(60, 60, 60, 0.7);
-  border: 1px solid rgba(120, 120, 120, 0.3);
-  color: white;
-  font-size: 14px;
-  cursor: pointer;
-  appearance: none;
-  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
-  background-repeat: no-repeat;
-  background-position: right 8px center;
-  background-size: 16px;
-}
-
-.voice-dropdown:hover, .voice-dropdown:focus {
-  background-color: rgba(80, 80, 80, 0.7);
-  border-color: rgba(150, 150, 150, 0.5);
-  outline: none;
-}
-
-.settings-note {
-  margin-top: 4px;
-  font-size: 12px;
-  color: #aaa;
-  margin-left: 24px;
-}
-
-.settings-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 20px;
-}
-
-.apply-button, .close-button {
-  padding: 8px 15px;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 14px;
   transition: background-color 0.2s;
 }
 
-.apply-button {
-  background-color: #2c7c7e;
-  color: white;
+input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #2c7c7e;
+  cursor: pointer;
+  transition: background-color 0.2s;
 }
 
-.apply-button:hover:not(:disabled) {
-  background-color: #3a9a9c;
+:deep(.dark) input[type="range"]::-webkit-slider-thumb {
+  background: #4a9a9c;
 }
 
-.apply-button:disabled {
-  background-color: #1a4a4c;
-  color: #aaa;
-  cursor: not-allowed;
-}
-
-.close-button {
-  background-color: #444;
-  color: white;
-}
-
-.close-button:hover {
-  background-color: #555;
-}
-
-.error-message {
-  color: #ff6b6b;
-  margin-top: 10px;
-  font-size: 14px;
-  text-align: center;
+:deep(.dark) input[type="range"]::-moz-range-thumb {
+  background: #4a9a9c;
 }
 </style> 

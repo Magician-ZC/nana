@@ -76,6 +76,10 @@ class ChatService:
         :return: (回复文本, 语音数据, 表情, 引导决策消息)
         """
         try:
+            # 确保消息非空
+            if not message or not message.strip():
+                return "请输入有效的消息内容", None, "生气", None
+            
             # 确保TTS服务使用最新的配置
             self._refresh_tts_services()
             
@@ -85,6 +89,10 @@ class ChatService:
             
             # 使用 MainAgent 生成回复和表情，传入性格描述和快捷提问标志
             reply, expression = await self.main_agent.reply(message, personality=personality, is_category=is_category)
+            
+            # 确保回复不为空
+            if not reply:
+                return "抱歉，我现在无法回答您的问题，请稍后再试。", None, "生气", None
             
             # 检查是否有引导决策消息
             guidance_message = None
@@ -96,22 +104,66 @@ class ChatService:
             
             # 生成语音 (如果语音服务已启用)
             audio_data = None  
+            super_tts_error = None
+            tts_error = None
             
             # 优先使用超拟人TTS，如果启用
             if reply and self.super_tts_service:
                 try:
+                    print("尝试使用超拟人TTS生成语音...")
                     audio_data = self.super_tts_service.generate_audio(reply)
+                    if audio_data and len(audio_data) > 100:  # 确保生成的音频数据有效
+                        print(f"超拟人TTS生成成功，音频大小: {len(audio_data)} 字节")
+                    else:
+                        super_tts_error = "生成的音频数据无效或过小"
+                        print(f"超拟人TTS生成失败: {super_tts_error}")
                 except Exception as e:
+                    super_tts_error = str(e)
                     print(f"生成超拟人语音时出错: {e}")
-            # 如果没有超拟人TTS或生成失败，尝试使用普通TTS
-            elif reply and self.tts_service:
+            
+            # 如果超拟人TTS失败或未启用，尝试使用普通TTS
+            if (not audio_data or len(audio_data) < 100) and self.tts_service:
                 try:
+                    print("尝试使用普通TTS生成语音...")
                     audio_data = self.tts_service.generate_audio(reply)
+                    if audio_data and len(audio_data) > 100:
+                        print(f"普通TTS生成成功，音频大小: {len(audio_data)} 字节")
+                    else:
+                        tts_error = "生成的音频数据无效或过小"
+                        print(f"普通TTS生成失败: {tts_error}")
                 except Exception as e:
+                    tts_error = str(e)
                     print(f"生成普通语音时出错: {e}")
+            
+            # 如果两种TTS都失败了，记录详细错误
+            if (not audio_data or len(audio_data) < 100) and (super_tts_error or tts_error):
+                print("所有TTS服务都失败了:")
+                if super_tts_error:
+                    print(f"- 超拟人TTS错误: {super_tts_error}")
+                if tts_error:
+                    print(f"- 普通TTS错误: {tts_error}")
+                
+                # 尝试对回复进行截断处理，再次生成语音
+                if len(reply) > 50:  # 如果回复较长，尝试只处理前50个字符
+                    short_reply = reply[:50] + "..."
+                    print(f"尝试使用截断回复生成语音: {short_reply}")
+                    
+                    try:
+                        if self.tts_service:
+                            audio_data = self.tts_service.generate_audio(short_reply)
+                            if audio_data and len(audio_data) > 100:
+                                print(f"使用截断回复生成语音成功，音频大小: {len(audio_data)} 字节")
+                    except Exception as e:
+                        print(f"使用截断回复生成语音也失败了: {e}")
             
             return reply, audio_data, expression, guidance_message
             
         except Exception as e:
             print(f"生成回复时出错: {e}")
-            return "对不起，我现在有点累了，能稍后再聊吗？", None, "生气", None
+            error_message = "对不起，我现在有点累了，能稍后再聊吗？"
+            
+            # 记录详细错误信息供调试
+            import traceback
+            print(f"详细错误: {traceback.format_exc()}")
+            
+            return error_message, None, "生气", None

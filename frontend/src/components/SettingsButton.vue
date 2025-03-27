@@ -39,6 +39,10 @@ function handleSettingsChanged(settings) {
   } else {
     console.log('已禁用所有语音')
   }
+  
+  if (settings.useTypewriterEffect !== undefined) {
+    console.log('打字机效果:', settings.useTypewriterEffect ? '已启用' : '已禁用')
+  }
 }
 </script>
 

@@ -25,7 +25,7 @@
           </div>
           
           <div :class="['message', message.type, { 
-            'short-message': message.content.length <= 10,
+            'short-message': message.content && message.content.length <= 10,
             'current-agent': message.agentId === chatStore.currentAgent,
             'other-agent': message.agentId && message.agentId !== chatStore.currentAgent
           }]">
@@ -42,8 +42,8 @@
               </div>
               
               <!-- 消息气泡 -->
-              <div class="message-bubble">
-                {{ message.content }}
+              <div v-if="message.content || message.isStreaming" :class="['message-bubble', { 'typing': message.isStreaming }]">
+                {{ message.content || '' }}
               </div>
             </div>
             
@@ -56,7 +56,7 @@
       </template>
       
       <!-- 加载状态显示 -->
-      <div v-if="chatStore.loading">
+      <div v-if="chatStore.loading && !hasStreamingMessage">
         <!-- 时间戳 -->
         <div class="message-timestamp">
           {{ formatDisplayTime(formatTime()) }}
@@ -381,14 +381,30 @@ function shouldShowTimestamp(message, index) {
 
 // 添加计算属性来对消息进行排序
 const sortedMessages = computed(() => {
-  return [...chatStore.messages].sort((a, b) => {
+  // 先创建一个用于检测重复消息的Map
+  const uniqueMessages = new Map();
+  
+  // 对原始消息进行遍历，只保留每个类型+时间戳的最新消息
+  chatStore.messages.forEach(msg => {
+    const key = `${msg.type}-${msg.timestamp?.time || Date.now()}-${msg.messageId || ''}`;
+    // 始终使用最新的消息替换旧消息
+    uniqueMessages.set(key, msg);
+  });
+  
+  // 提取唯一消息并按时间排序
+  return Array.from(uniqueMessages.values()).sort((a, b) => {
     // 首先按时间戳排序
     if (a.timestamp && b.timestamp) {
-      return new Date(a.timestamp) - new Date(b.timestamp)
+      return new Date(a.timestamp.time) - new Date(b.timestamp.time);
     }
-    // 如果没有时间戳，则按索引排序
-    return chatStore.messages.indexOf(a) - chatStore.messages.indexOf(b)
-  })
+    // 如果没有时间戳，按原始顺序排序
+    return chatStore.messages.indexOf(a) - chatStore.messages.indexOf(b);
+  });
+})
+
+// 检查是否有正在流式传输的消息
+const hasStreamingMessage = computed(() => {
+  return chatStore.messages.some(message => message.isStreaming === true);
 })
 
 onMounted(() => {
@@ -424,6 +440,7 @@ onUnmounted(() => {
   position: fixed;
   right: 30px;
   bottom: 30px;
+  z-index: 1000;
 }
 
 .chat-messages {
@@ -449,7 +466,7 @@ onUnmounted(() => {
   display: flex;
   margin-bottom: 16px;
   position: relative;
-  align-items: flex-end;
+  align-items: flex-start;
 }
 
 .message.user {
@@ -469,6 +486,16 @@ onUnmounted(() => {
   overflow: hidden;
   margin: 0 8px;
   flex-shrink: 0;
+  position: relative;
+  top: 0;
+}
+
+.message.assistant .avatar {
+  margin-top: 0;
+}
+
+.message.user .avatar {
+  margin-top: 0;
 }
 
 .avatar img {
@@ -500,6 +527,32 @@ onUnmounted(() => {
   word-break: break-word;
   line-height: 1.5;
   font-size: 15px;
+}
+
+/* 添加打字机光标效果 */
+.message-bubble.typing::after {
+  content: "|";
+  animation: blink 0.7s infinite;
+  font-weight: bold;
+  margin-left: 1px;
+  display: inline-block;
+  vertical-align: middle;
+  line-height: 1;
+  font-size: 16px;
+  height: 16px;
+}
+
+.user .message-bubble.typing::after {
+  color: #000;
+}
+
+.assistant .message-bubble.typing::after {
+  color: #000;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
 }
 
 .user .message-bubble {

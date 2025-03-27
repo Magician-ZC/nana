@@ -37,6 +37,55 @@ const chatStore = useChatStore()
 const live2dRef = ref(null)
 const isDarkMode = ref(false)
 
+// 初始化音频上下文
+function initAudioContext() {
+  console.log('初始化音频上下文...');
+  try {
+    // 创建音频上下文
+    window.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    console.log('音频上下文创建成功:', window.audioContext.state);
+    
+    // 预先创建一个空的音频元素
+    const silentAudio = new Audio();
+    silentAudio.autoplay = false;
+    
+    // 为初始用户交互设置事件
+    const resumeAudioContext = () => {
+      console.log('用户交互，恢复音频上下文');
+      if (window.audioContext && window.audioContext.state === 'suspended') {
+        window.audioContext.resume().then(() => {
+          console.log('音频上下文已恢复到:', window.audioContext.state);
+        });
+      }
+      
+      // 尝试播放一个静音音频来解锁移动设备的音频
+      try {
+        const silentBuffer = window.audioContext.createBuffer(1, 1, 22050);
+        const source = window.audioContext.createBufferSource();
+        source.buffer = silentBuffer;
+        source.connect(window.audioContext.destination);
+        source.start(0);
+        console.log('播放静音音频成功');
+      } catch (e) {
+        console.warn('播放静音音频失败:', e);
+      }
+      
+      // 移除事件监听器
+      document.removeEventListener('click', resumeAudioContext);
+      document.removeEventListener('touchstart', resumeAudioContext);
+      document.removeEventListener('keydown', resumeAudioContext);
+    };
+    
+    // 添加事件监听器
+    document.addEventListener('click', resumeAudioContext);
+    document.addEventListener('touchstart', resumeAudioContext);
+    document.addEventListener('keydown', resumeAudioContext);
+    
+  } catch (e) {
+    console.error('初始化音频上下文失败:', e);
+  }
+}
+
 // 切换深色/浅色模式
 const toggleDarkMode = () => {
   isDarkMode.value = !isDarkMode.value
@@ -133,6 +182,9 @@ onMounted(() => {
   
   // 检查并应用主题设置
   checkSystemPreference()
+  
+  // 初始化音频上下文
+  initAudioContext()
   
   // 监听系统主题变化
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
