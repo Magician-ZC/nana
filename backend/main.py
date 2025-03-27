@@ -49,7 +49,7 @@ class CustomAgentRequest(BaseModel):
     values: str
 
 chat_service = ChatService()
-tts_service = TTSService(Config.FISH_API_KEY, Config.FISH_REFERENCE_ID)
+tts_service = TTSService()
 speech_service = SpeechService()
 # llm_service = LLMService(Config.LLM_API_KEY, Config.LLM_API_URL)  # 注释掉，使用chat_service中的LLM服务
 
@@ -708,4 +708,4 @@ async def normal_chat_flow(request: ChatRequest):
     return JSONResponse(content=response_data)
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8666, reload=True)

@@ -297,7 +297,7 @@ const startRecording = async () => {
       
       try {
         // 发送到后端进行语音识别
-        const response = await fetch('http://localhost:8000/speech-to-text', {
+        const response = await fetch('http://localhost:8666/speech-to-text', {
           method: 'POST',
           body: formData
         })

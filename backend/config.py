@@ -10,19 +10,27 @@ class Config:
     EMBEDDING_DIMENSION = 768
     
     ''' 科大讯飞语音识别配置 '''
-    XFYUN_APP_ID = ""  # 填入你的APP_ID
-    XFYUN_API_KEY = ""  # 填入你的API_KEY
-    XFYUN_API_SECRET = ""  # 填入你的API_SECRET
+    XFYUN_APP_ID = "890910a0"  # 填入你的APP_ID
+    XFYUN_API_KEY = "b2bdf08862cf3ac0e5cbdc81a8066456"  # 填入你的API_KEY
+    XFYUN_API_SECRET = "NTMyZDI1OWQzNWI4ZDcwODYzYzA0YzIz"  # 填入你的API_SECRET
     
     ''' 
-        TTS服务配置
-        TTS使用了Fish Audio的API，需要注册账号并获取API Key
-        https://fish.audio/zh-CN/
-        如果不想使用TTS，可以把FISH_API_KEY设置为空字符串
+        TTS服务配置（科大讯飞）
     '''
-    #FISH_API_KEY = "fa1462cceb7c4f298ccb09369a29df30"
-    FISH_API_KEY = ""
-    FISH_REFERENCE_ID = "de00397ed7f6477a8763a0d436ece815" #芙宁娜
+    # 是否启用TTS功能
+    ENABLE_TTS = True  # 设置为False可以禁用TTS功能 
+    
+    # TTS音频格式配置
+    TTS_AUE = "lame"  # 音频编码，可选值：raw(未压缩)、lame(mp3)、speex(speex格式压缩)、speex-wb(speex格式压缩)
+    TTS_AUF = "audio/L16;rate=16000"  # 音频采样率，可选值：audio/L16;rate=8000、audio/L16;rate=16000
+    TTS_VCN = "xiaoyan"  # 发音人，可选值：详见科大讯飞文档中的发音人列表
+    TTS_TTE = "utf8"  # 文本编码格式，可选值：GB2312、GBK、BIG5、UNICODE、GB18030、UTF8
+    TTS_TEXT_LENGTH_LIMIT = 2000  # 单次合成文本长度限制（汉字）
+    
+    # TTS高级参数
+    TTS_SPEED = 50  # 语速，取值范围：[0,100]，默认为50
+    TTS_VOLUME = 50  # 音量，取值范围：[0,100]，默认为50
+    TTS_PITCH = 50  # 音高，取值范围：[0,100]，默认为50
     
     ''' 对话历史配置 '''
     MAX_TURNS = 20  # 最多保存20轮对话，超过后自动归档一半
@@ -30,4 +38,4 @@ class Config:
     @classmethod
     def is_tts_enabled(cls) -> bool:
         """判断是否启用TTS功能"""
-        return bool(cls.FISH_API_KEY and cls.FISH_API_KEY.strip())
+        return cls.ENABLE_TTS and cls.XFYUN_APP_ID and cls.XFYUN_API_KEY and cls.XFYUN_API_SECRET

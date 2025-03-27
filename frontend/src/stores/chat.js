@@ -41,6 +41,9 @@ export const useChatStore = defineStore('chat', () => {
     { id: 'nanaC', name: '娜娜C', description: '元气少女' }
   ])
   
+  // 音频播放器
+  let audioPlayer = null
+  
   // 获取当前角色信息
   const currentAgentInfo = computed(() => 
     AGENT_WELCOME_MESSAGES[currentModel.value] || AGENT_WELCOME_MESSAGES.nanaA
@@ -49,6 +52,52 @@ export const useChatStore = defineStore('chat', () => {
   // 方法
   function setTrackingStatus(status) {
     isTracking.value = status
+  }
+  
+  // 播放音频
+  function playAudio(base64Audio) {
+    if (!base64Audio) return
+    
+    try {
+      // 停止当前正在播放的音频
+      if (audioPlayer) {
+        audioPlayer.pause()
+        audioPlayer = null
+      }
+      
+      // 将Base64解码为二进制数据
+      const audioData = atob(base64Audio)
+      const arrayBuffer = new ArrayBuffer(audioData.length)
+      const uint8Array = new Uint8Array(arrayBuffer)
+      
+      for (let i = 0; i < audioData.length; i++) {
+        uint8Array[i] = audioData.charCodeAt(i)
+      }
+      
+      // 创建Blob对象
+      const blob = new Blob([uint8Array], { type: 'audio/mp3' })
+      const audioUrl = URL.createObjectURL(blob)
+      
+      // 创建并播放音频
+      audioPlayer = new Audio(audioUrl)
+      audioPlayer.addEventListener('ended', () => {
+        // 播放结束后释放资源
+        URL.revokeObjectURL(audioUrl)
+        audioPlayer = null
+      })
+      
+      audioPlayer.addEventListener('error', (e) => {
+        console.error('音频播放错误:', e)
+        URL.revokeObjectURL(audioUrl)
+        audioPlayer = null
+      })
+      
+      // 开始播放
+      audioPlayer.play()
+      
+    } catch (error) {
+      console.error('处理音频数据出错:', error)
+    }
   }
   
   // 加载自定义角色列表
@@ -143,6 +192,11 @@ export const useChatStore = defineStore('chat', () => {
         agentId: currentAgent.value 
       })
       
+      // 如果收到音频数据，播放它
+      if (data.audio) {
+        playAudio(data.audio)
+      }
+      
       // 如果有引导决策消息，添加为单独的一条助手消息
       if (data.guidance_message) {
         setTimeout(() => {
@@ -219,6 +273,7 @@ export const useChatStore = defineStore('chat', () => {
     changeAgent,
     sendMessage,
     showWelcomeMessage,
-    loadCustomAgents
+    loadCustomAgents,
+    playAudio
   }
 }) 
