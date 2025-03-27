@@ -72,9 +72,11 @@ class ConversationHistory:
         print(f"对话历史: 当前共有{len(self.turns)}轮对话")
         
         # 当对话数量达到10轮且不是系统引导消息时，触发自动归档
-        if len(self.turns) >= 10 and message != "SYSTEM_GUIDANCE":
-            print(f"对话数量达到{len(self.turns)}轮，触发自动归档")
-            await self._auto_archive(user_info_processor)
+        # 不再直接调用自动归档，而是在主代理类中通过异步任务处理
+        # 注释掉原始调用，由main_agent.py中的_process_dialog_summary处理
+        # if len(self.turns) >= 10 and message != "SYSTEM_GUIDANCE":
+        #     print(f"对话数量达到{len(self.turns)}轮，触发自动归档")
+        #     await self._auto_archive(user_info_processor)
             
     async def _summarize_dialog(self, turns: List[ConversationTurn]) -> str:
         """对对话进行总结，生成用户人物画像
@@ -155,9 +157,12 @@ class ConversationHistory:
         
         Args:
             user_info_processor: 可选的UserInfoProcessor实例，用于同步用户信息
+            
+        Returns:
+            dict: 对话总结配置文件，如果失败则返回None
         """
         if not self.turns:
-            return
+            return None
             
         # 计算要归档的对话数量 (降低阈值，每10次对话就进行归档)
         archive_count = min(10, len(self.turns) // 2)
@@ -168,43 +173,49 @@ class ConversationHistory:
         # 准备归档内容
         archive_turns = self.turns[:archive_count]
         
-        # 对对话进行总结
-        summary, raw_profile = await self._summarize_dialog(archive_turns)
-        
-        print("\n==== 开始对话归档 ====")
-        print(f"归档轮数: {archive_count}/{len(self.turns)}")
-        print("归档总结:")
-        print(summary)
-        print("==== 归档完成 ====\n")
-        
-        # 保存到向量数据库
-        self.collection.add(
-            documents=[summary],
-            metadatas=[{
-                "timestamp": datetime.now().isoformat(),
-                "type": "user_profile"
-            }],
-            ids=[str(uuid.uuid4())]
-        )
-        
-        # 移除已归档的对话
-        self.turns = self.turns[archive_count:]
-        
-        # 如果提供了user_info_processor，尝试同步用户信息
-        if user_info_processor and raw_profile:
+        try:
+            # 对对话进行总结
+            summary, raw_profile = await self._summarize_dialog(archive_turns)
+            
+            print("\n==== 开始对话归档 ====")
+            print(f"归档轮数: {archive_count}/{len(self.turns)}")
+            print("归档总结:")
+            print(summary)
+            print("==== 归档完成 ====\n")
+            
+            # 保存到向量数据库
             try:
-                # 将用户画像信息转换为用户信息格式
-                user_info_text = self._convert_profile_to_user_info(raw_profile, user_info_processor.user_info)
-                
-                # 判断是否有实质性变化
-                if user_info_processor.has_substantial_changes(user_info_processor.user_info, user_info_text):
-                    print("归档时检测到用户信息有实质性变化，进行同步更新")
-                    user_info_processor.save_user_info(user_info_text)
-                    return True, raw_profile
-            except Exception as e:
-                print(f"归档时同步用户信息出错: {e}")
-        
-        return raw_profile
+                self.collection.add(
+                    documents=[summary],
+                    metadatas=[{
+                        "timestamp": datetime.now().isoformat(),
+                        "type": "user_profile"
+                    }],
+                    ids=[str(uuid.uuid4())]
+                )
+            except Exception as db_error:
+                print(f"保存到向量数据库时出错: {db_error}")
+            
+            # 移除已归档的对话
+            self.turns = self.turns[archive_count:]
+            
+            # 如果提供了user_info_processor，尝试同步用户信息
+            if user_info_processor and raw_profile:
+                try:
+                    # 将用户画像信息转换为用户信息格式
+                    user_info_text = self._convert_profile_to_user_info(raw_profile, user_info_processor.user_info)
+                    
+                    # 判断是否有实质性变化
+                    if user_info_processor.has_substantial_changes(user_info_processor.user_info, user_info_text):
+                        print("归档时检测到用户信息有实质性变化，进行同步更新")
+                        user_info_processor.save_user_info(user_info_text)
+                except Exception as user_info_error:
+                    print(f"处理用户信息时出错: {user_info_error}")
+            
+            return raw_profile
+        except Exception as e:
+            print(f"归档对话时出错: {e}")
+            return None
         
     def get_context(self) -> str:
         """获取格式化后的对话上下文"""

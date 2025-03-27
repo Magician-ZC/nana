@@ -17,9 +17,10 @@
         <AgentSelector @agent-change="handleAgentChange" :currentModel="chatStore.currentAgent" />
         <SettingsButton class="settings-button" />
       </div>
+      <ChatPanel />
     </div>
     
-    <ChatPanel />
+    
   </div>
 </template>
 

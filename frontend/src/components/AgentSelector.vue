@@ -272,7 +272,9 @@ onMounted(async () => {
 <style scoped>
 .agent-selector {
   position: relative;
-  z-index: 101;
+  z-index: 1000;
+  isolation: isolate; /* 创建新的堆叠上下文 */
+  pointer-events: all; /* 确保可以接收所有鼠标事件 */
 }
 
 .agent-selector-button {
@@ -287,6 +289,7 @@ onMounted(async () => {
   min-width: 100px;
   text-align: center;
   transition: all 0.3s ease;
+  pointer-events: all; /* 确保按钮可以接收所有鼠标事件 */
 }
 
 .agent-selector-button:hover {
@@ -305,6 +308,9 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  z-index: 1001;
+  isolation: isolate; /* 创建新的堆叠上下文 */
+  pointer-events: all; /* 确保可以接收所有鼠标事件 */
 }
 
 .agent-dropdown {
@@ -312,6 +318,7 @@ onMounted(async () => {
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+  pointer-events: all; /* 确保可以接收所有鼠标事件 */
 }
 
 /* 滚动条样式 */
@@ -340,6 +347,7 @@ onMounted(async () => {
   position: relative;
   display: flex;
   flex-direction: column;
+  pointer-events: all; /* 确保可以接收所有鼠标事件 */
 }
 
 .agent-option:hover {

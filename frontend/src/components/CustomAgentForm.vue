@@ -1,5 +1,5 @@
 <template>
-  <div class="fixed inset-0 bg-neutral-900/70 backdrop-blur-sm z-50 flex items-center justify-center transition-all duration-300 ease-in-out">
+  <div class="fixed inset-0 bg-neutral-900/70 backdrop-blur-sm z-1100 flex items-center justify-center transition-all duration-300 ease-in-out" style="pointer-events: all;">
     <!-- 主内容区 -->
     <div class="w-full max-w-3xl max-h-[90vh] overflow-y-auto bg-white dark:bg-neutral-800 rounded-xl shadow-2xl transition-all duration-300 ease-in-out transform animate-fade-in">
       <!-- 顶部标题栏 -->

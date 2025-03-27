@@ -68,6 +68,169 @@ class MainAgent:
             print(f"设置自定义智能体失败: {e}")
             return False
 
+    def _is_meaningless_input(self, message: str) -> bool:
+        """检测输入是否为无意义内容
+        
+        检测标准:
+        1. 纯数字或主要由数字组成的消息
+        2. 太短的消息(1-2个字符)
+        3. 重复的字符或词组
+        4. 明显的随机字符串
+        5. 无意义的随机中文字符串
+        
+        Args:
+            message: 用户输入消息
+            
+        Returns:
+            bool: 是否为无意义内容
+        """
+        # 去除空白字符
+        message = message.strip()
+        
+        # 检查是否为空消息
+        if not message:
+            return True
+            
+        # 检查是否过短(少于3个字符)
+        if len(message) < 3:
+            return True
+            
+        # 检查是否纯数字或主要由数字组成
+        digit_count = sum(c.isdigit() for c in message)
+        if digit_count / len(message) > 0.5:  # 数字占比超过50%
+            return True
+            
+        # 检查是否有过多重复字符
+        if len(set(message)) < len(message) * 0.3:  # 不同字符占比低于30%
+            return True
+            
+        # 检查是否缺少有意义的中文或英文单词
+        has_chinese = any('\u4e00' <= c <= '\u9fff' for c in message)
+        has_meaningful_text = False
+        
+        # 常见的中文虚词和连词，这些词通常会出现在有意义的中文句子中
+        chinese_common_words = ["的", "是", "了", "在", "我", "有", "和", "就", "不", "人", "都", 
+                               "一", "一个", "上", "也", "很", "到", "说", "要", "这", "你", "会", 
+                               "着", "没有", "看", "好", "自己", "那", "么", "她", "他", "们"]
+        
+        if has_chinese:
+            # 检查是否包含常见中文虚词
+            if any(word in message for word in chinese_common_words):
+                has_meaningful_text = True
+            else:
+                # 中文消息中至少要有2个连续的中文字符
+                for i in range(len(message) - 1):
+                    if '\u4e00' <= message[i] <= '\u9fff' and '\u4e00' <= message[i+1] <= '\u9fff':
+                        has_meaningful_text = True
+                        break
+                
+                # 对于短句（3-6个字符）的随机中文，尝试增加额外的检查
+                if has_meaningful_text and 3 <= len(message) <= 6 and all('\u4e00' <= c <= '\u9fff' for c in message):
+                    # 对于全中文短句，如果没有常见词，可能是随机字符
+                    if not any(word in message for word in chinese_common_words):
+                        # 额外检查：字符的组合是否看起来随机
+                        # 计算字符熵
+                        from collections import Counter
+                        import math
+                        
+                        char_counts = Counter(message)
+                        entropy = -sum((count / len(message)) * math.log(count / len(message), 2) 
+                                    for count in char_counts.values())
+                        
+                        # 熵值高意味着字符组合更随机
+                        if entropy > 2.0:  # 熵阈值设为2.0，可根据需要调整
+                            has_meaningful_text = False
+        else:
+            # 英文消息中至少要有一个完整单词(至少3个字母)
+            import re
+            
+            # 修改检测策略：三重检查
+            # 1. 首先检查是否与常见英文单词相似
+            # 常见的1000个英文单词的前缀（为了便于匹配，只使用常见单词的前3-4个字母作为前缀检查）
+            common_word_prefixes = ["the", "and", "for", "are", "but", "not", "you", "all", "any", "can", "had", "her", "was", "one", 
+                                   "our", "out", "day", "get", "has", "him", "his", "how", "man", "new", "now", "old", "see", "two", 
+                                   "way", "who", "boy", "did", "its", "let", "put", "say", "she", "too", "use", "that", "with", "have", 
+                                   "this", "will", "your", "from", "they", "know", "want", "been", "good", "much", "some", "time"]
+            
+            # 检查输入是否与任何常见单词前缀匹配
+            input_lower = message.lower()
+            prefix_match = False
+            
+            for prefix in common_word_prefixes:
+                if input_lower.startswith(prefix) or any(word.startswith(prefix) for word in input_lower.split()):
+                    prefix_match = True
+                    break
+            
+            # 2. 检查是否含有元音字母和合理的辅音元音分布
+            vowel_pattern = re.compile(r'[aeiou]')
+            has_vowels = bool(vowel_pattern.search(input_lower))
+            
+            # 计算元音和辅音比例
+            vowel_count = sum(c in 'aeiou' for c in input_lower)
+            consonant_count = sum(c in 'bcdfghjklmnpqrstvwxyz' for c in input_lower)
+            total_letters = vowel_count + consonant_count
+            
+            # 检查字母组合是否像自然语言（元音通常占20%-60%）
+            natural_vowel_ratio = (total_letters > 0) and (0.2 <= vowel_count / total_letters <= 0.6)
+            
+            # 3. 检查特有的无意义输入模式
+            # a. 检查辅音连续超过3个或元音连续超过3个（自然英语单词中很少有这种情况）
+            max_consecutive_consonants = 0
+            max_consecutive_vowels = 0
+            current_consonants = 0
+            current_vowels = 0
+            
+            for c in input_lower:
+                if c in 'aeiou':
+                    current_vowels += 1
+                    current_consonants = 0
+                    if current_vowels > max_consecutive_vowels:
+                        max_consecutive_vowels = current_vowels
+                elif c in 'bcdfghjklmnpqrstvwxyz':
+                    current_consonants += 1
+                    current_vowels = 0
+                    if current_consonants > max_consecutive_consonants:
+                        max_consecutive_consonants = current_consonants
+                else:
+                    current_consonants = 0
+                    current_vowels = 0
+            
+            unnatural_consonant_pattern = max_consecutive_consonants > 3
+            unnatural_vowel_pattern = max_consecutive_vowels > 3
+            
+            # b. 检查是否有重复的辅音-元音模式（如"sasasa"或"dadada"）
+            has_repetitive_pattern = False
+            if len(message) >= 4:
+                # 提取2-3个字符的可能重复模式
+                for pattern_length in [2, 3]:
+                    if len(message) >= pattern_length * 2:
+                        pattern = message[:pattern_length]
+                        repetitions = 1
+                        
+                        for i in range(pattern_length, len(message), pattern_length):
+                            if i + pattern_length <= len(message) and message[i:i+pattern_length] == pattern:
+                                repetitions += 1
+                            else:
+                                break
+                        
+                        # 如果同一模式重复出现至少2次，且占据消息长度的大部分
+                        if repetitions >= 2 and (repetitions * pattern_length) / len(message) > 0.6:
+                            has_repetitive_pattern = True
+                            break
+            
+            # 综合判断是否是有意义的文本：
+            # 1. 与常见单词前缀匹配，且有合理的元音辅音分布
+            # 2. 没有不自然的辅音/元音连续模式
+            # 3. 没有明显的重复模式
+            has_meaningful_text = (prefix_match or natural_vowel_ratio) and not (unnatural_consonant_pattern or unnatural_vowel_pattern or has_repetitive_pattern)
+            
+            # 额外的安全检查：如果是常见的无意义输入模式如"asdasd"，"qwerty"，直接判定为无意义
+            common_random_inputs = ["asdf", "qwer", "zxcv", "hjkl", "wasd", "qwerty", "asdasd", "dfdfdf", "jkjk", "ghgh", "sdfsd", "asdasdasd", "qwerty"]
+            if any(rand_input in input_lower for rand_input in common_random_inputs):
+                has_meaningful_text = False
+        
+        return not has_meaningful_text
+
     def _log_conversation(self, role: str, content: str) -> None:
         """记录对话到日志文件"""
         current_date = datetime.now().strftime('%Y%m%d')
@@ -88,6 +251,18 @@ class MainAgent:
         Returns:
             Tuple[str, str]: (回复内容, 表情)
         """
+        # 过滤无意义内容
+        if not is_category and self._is_meaningless_input(message):
+            print(f"检测到无意义输入: '{message}'，返回模板回复")
+            # 根据当前智能体选择合适的模板回复
+            template_replies = {
+                "nanaA": "喵~？你在说什么呀，我听不懂...",
+                "nanaB": "抱歉，我没有理解你的意思。能请你说得更清楚一些吗？",
+                "nanaC": "咦？这是什么意思呀？再说一次好不好~"
+            }
+            reply_content = template_replies.get(self.current_agent, "我没明白你的意思，能说得更清楚些吗？")
+            return reply_content, "疑惑"
+        
         # 记录用户消息
         self._log_conversation('user', message)
         
@@ -110,19 +285,18 @@ class MainAgent:
         # 生成回复，传入性格参数
         reply_content, expression = await self._generate_reply(message, memory_text, personality, is_category)
         
-        # 处理回复
+        # 处理回复，添加到对话历史
         if reply_content:
             await self._handle_successful_reply(message, reply_content)
 
         # 检查是否需要发送对话总结 (每10轮对话)
-        if turns_count % 10 == 0 and turns_count >= 10:
+        if turns_count % 10 == 0 and turns_count >= 10 and message != "SYSTEM_GUIDANCE":
             print(f"已经进行了{turns_count}轮对话，准备发送对话总结")
-            # 确保先添加当前对话
-            await self.conversation_history.add_dialog(message, reply_content, self.user_info_processor)
             
-            # 触发归档并获取总结 - 使用异步方式在后台处理，不阻塞主流程
+            # 启动异步任务处理对话归档，不等待其完成
             import asyncio
             asyncio.create_task(self._process_dialog_summary(turns_count))
+            print("已在后台启动对话归档任务")
         
         return reply_content, expression
 
@@ -139,7 +313,7 @@ class MainAgent:
             if summary_profile:
                 # 确保更新用户信息
                 print("从归档总结更新用户信息")
-                updated_info = self.user_info_processor.get_user_info()
+                updated_info = self.user_info_processor._load_user_info()  # 使用_load_user_info代替get_user_info
                 if updated_info != self.user_info:
                     print("用户信息已更新")
                     self.user_info = updated_info

@@ -253,14 +253,14 @@ function getAgentName(agentId) {
 function getAgentAvatar(agentId) {
   if (!agentId) return '/avatars/nanaA.png'
   
-  if (agentId === 'nanaA') return '/avatars/agent.png'
-  if (agentId === 'nanaB') return '/avatars/agent.png'
-  if (agentId === 'nanaC') return '/avatars/agent.png'
+  if (agentId === 'nanaA') return '/avatars/nanaA.png'
+  if (agentId === 'nanaB') return '/avatars/nanaB.png'
+  if (agentId === 'nanaC') return '/avatars/nanaC.png'
   
   // 对于自定义agent，从store中获取头像
   if (agentId?.startsWith('custom_')) {
     const customAgent = chatStore.agents?.find(agent => agent.id === agentId)
-    return customAgent?.avatar || '/avatars/agent.png'
+    return customAgent?.avatar || '/avatars/default.png'
   }
   
   return '/avatars/default.png'
@@ -303,7 +303,7 @@ function handleSendText() {
   if (!trimmedText || chatStore.loading) return
   
   // 发送消息到store
-  chatStore.sendMessage(trimmedText)
+  chatStore.sendUserMessage(trimmedText, formatTime())
   
   // 清空输入框
   text.value = ''
@@ -321,16 +321,12 @@ function handleVoiceButtonDown() {
   if (chatStore.loading) return
   
   voiceButtonPressed.value = true
-  startRecording().catch(error => {
-    // 额外的错误处理，以防startRecording的catch块没有捕获所有错误
-    console.error('录音启动异常:', error)
-    voiceButtonPressed.value = false
-  })
+  startRecording()
 }
 
 // 语音按钮释放事件
 function handleVoiceButtonUp() {
-  if (!voiceButtonPressed.value) return
+  if (!isRecording.value) return
   
   voiceButtonPressed.value = false
   stopRecording()
@@ -339,11 +335,6 @@ function handleVoiceButtonUp() {
 // 开始录音
 async function startRecording() {
   try {
-    // 检查浏览器是否支持mediaDevices API
-    if (!navigator.mediaDevices) {
-      throw new Error('您的浏览器不支持媒体设备API');
-    }
-
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     
     // 创建媒体录制器
@@ -369,7 +360,7 @@ async function startRecording() {
       
       // 发送语音消息到store
       const message = recordingText.value.trim()
-      chatStore.sendMessage(message)
+      chatStore.sendUserMessage(message, formatTime())
       
       // 重置录音状态
       isRecording.value = false
@@ -391,30 +382,15 @@ async function startRecording() {
     startSpeechRecognition()
   } catch (error) {
     console.error('录音失败:', error)
-    // 重置按钮状态
-    voiceButtonPressed.value = false
-    isRecording.value = false
-    alert('无法访问麦克风，请检查浏览器权限设置。' + error.message)
+    alert('无法访问麦克风，请检查浏览器权限设置。')
   }
 }
 
 // 停止录音
 function stopRecording() {
-  try {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      mediaRecorder.stop()
-    }
-  } catch (error) {
-    console.error('停止录音失败:', error)
-  } finally {
-    // 无论如何都停止语音识别
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop()
     stopSpeechRecognition()
-    // 确保状态被重置
-    setTimeout(() => {
-      // 使用setTimeout确保状态重置在UI更新循环中
-      isRecording.value = false
-      voiceButtonPressed.value = false
-    }, 0)
   }
 }
 
@@ -427,58 +403,46 @@ function startSpeechRecognition() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
   if (!SpeechRecognition) {
     console.error('浏览器不支持语音识别')
-    // 继续录音过程，但不启动识别
     return
   }
   
-  try {
-    // 创建识别实例
-    recognition = new SpeechRecognition()
-    recognition.lang = 'zh-CN'
-    recognition.continuous = true
-    recognition.interimResults = true
+  // 创建识别实例
+  recognition = new SpeechRecognition()
+  recognition.lang = 'zh-CN'
+  recognition.continuous = true
+  recognition.interimResults = true
+  
+  // 处理识别结果
+  recognition.onresult = (event) => {
+    let interimTranscript = ''
+    let finalTranscript = ''
     
-    // 处理识别结果
-    recognition.onresult = (event) => {
-      let interimTranscript = ''
-      let finalTranscript = ''
-      
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        const transcript = event.results[i][0].transcript
-        if (event.results[i].isFinal) {
-          finalTranscript += transcript
-        } else {
-          interimTranscript += transcript
-        }
+    for (let i = event.resultIndex; i < event.results.length; ++i) {
+      const transcript = event.results[i][0].transcript
+      if (event.results[i].isFinal) {
+        finalTranscript += transcript
+      } else {
+        interimTranscript += transcript
       }
-      
-      // 更新显示文本
-      recordingText.value = finalTranscript || interimTranscript
     }
     
-    // 处理错误
-    recognition.onerror = (event) => {
-      console.error('语音识别错误:', event.error)
-      // 继续录音过程，识别错误不影响录音本身
-    }
-    
-    // 开始识别
-    recognition.start()
-  } catch (error) {
-    console.error('启动语音识别失败:', error)
-    // 继续录音过程，识别失败不影响录音本身
+    // 更新显示文本
+    recordingText.value = finalTranscript || interimTranscript
   }
+  
+  // 处理错误
+  recognition.onerror = (event) => {
+    console.error('语音识别错误:', event.error)
+  }
+  
+  // 开始识别
+  recognition.start()
 }
 
 // 停止语音识别
 function stopSpeechRecognition() {
-  try {
-    if (recognition) {
-      recognition.stop()
-      recognition = null
-    }
-  } catch (error) {
-    console.error('停止语音识别失败:', error)
+  if (recognition) {
+    recognition.stop()
     recognition = null
   }
 }
@@ -563,23 +527,17 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   width: 400px;
-  height: auto;
-  max-height: 80vh;
-  background-color: transparent; /* 完全透明 */
+  height: auto; /* 不再限制固定高度 */
+  max-height: 80vh; /* 调整为更大的值，但仍设置最大高度防止超出屏幕 */
+  background-color: rgba(30, 30, 30, 0.5); /* 增加透明度 */
   border-radius: 20px;
   overflow: hidden;
-  box-shadow: none; /* 移除阴影 */
-  backdrop-filter: none; /* 移除背景模糊效果 */
+  box-shadow: 0 5px 20px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(10px);
   position: fixed;
   right: 30px;
   bottom: 30px;
-  z-index: 10; /* 从1000降低到10，放置在底层 */
-  pointer-events: none; /* 整个面板默认不捕获事件 */
-}
-
-/* 移除之前添加的before伪元素 */
-.chat-panel::before {
-  display: none;
+  z-index: 1000;
 }
 
 .chat-messages {
@@ -588,12 +546,9 @@ onUnmounted(() => {
   padding: 5px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  mask-image: linear-gradient(to top, rgba(0, 0, 0, 1) 70%, rgba(0, 0, 0, 0) 100%);
-  -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 1) 70%, rgba(0, 0, 0, 0) 100%);
-  z-index: 12;
-  position: relative;
-  pointer-events: auto; /* 消息区域可以捕获事件 */
+  gap: 15px;
+  mask-image: linear-gradient(to top, rgba(0, 0, 0, 1) 60%, rgba(0, 0, 0, 0) 100%);
+  -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 1) 60%, rgba(0, 0, 0, 0) 100%);
 }
 
 .empty-chat {
@@ -608,10 +563,10 @@ onUnmounted(() => {
 
 .message {
   display: flex;
-  margin-bottom: 8px;
+  margin-bottom: 16px;
   position: relative;
   align-items: flex-start;
-  transition: opacity 0.3s ease, transform 0.3s ease;
+  transition: opacity 0.3s ease;
 }
 
 .message.user {
@@ -625,11 +580,11 @@ onUnmounted(() => {
 }
 
 .avatar {
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   border-radius: 4px;
   overflow: hidden;
-  margin: 0 5px;
+  margin: 0 8px;
   flex-shrink: 0;
   position: relative;
   top: 0;
@@ -655,27 +610,24 @@ onUnmounted(() => {
 .message-content {
   display: flex;
   flex-direction: column;
-  max-width: 75%;
-  position: relative;
-  z-index: 13; /* 确保消息内容可见并可交互 */
+  max-width: 70%;
 }
 
 /* 发送者名称 */
 .message-sender {
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.8);
-  margin-bottom: 2px;
+  color: #999;
+  margin-bottom: 4px;
   padding-left: 10px;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
 
 /* 消息气泡 */
 .message-bubble {
-  padding: 6px 12px;
-  border-radius: 16px;
+  padding: 10px 15px;
+  border-radius: 18px;
   position: relative;
   word-break: break-word;
-  line-height: 1.4;
+  line-height: 1.5;
   font-size: 15px;
 }
 
@@ -706,39 +658,38 @@ onUnmounted(() => {
 }
 
 .user .message-bubble {
-  background-color: rgba(149, 236, 105, 0.8);
+  background-color: #95ec69;
   color: #000;
 }
 
 .assistant .message-bubble {
-  background-color: rgba(255, 255, 255, 0.8);
+  background-color: #fff;
   color: #000;
 }
 
 /* 时间戳 */
 .message-timestamp {
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.7);
-  margin-top: 2px;
+  color: #999;
+  margin-top: 5px;
   display: block;
   text-align: center;
-  padding: 5px 0;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  padding: 10px 0;
 }
 
 /* 其他agent的消息样式 */
 .message.other-agent .message-bubble {
-  background-color: rgba(240, 240, 240, 0.8);
+  background-color: #f0f0f0;
 }
 
 /* agent变更提示 */
 .agent-change-notice {
-  width: fit-content;
+  width: 70%;
   text-align: center;
   font-size: 12px;
   color: #fff;
-  margin: 5px auto;
-  padding: 3px 8px;
+  margin: 10px auto;
+  padding: 5px 10px;
   background-color: rgba(80, 80, 80, 0.7);
   border-radius: 12px;
   position: relative;
@@ -747,7 +698,7 @@ onUnmounted(() => {
 
 /* 针对短消息的特殊样式 */
 .short-message .message-bubble {
-  padding: 5px 10px;
+  padding: 8px 12px;
 }
 
 /* 录音中的样式 */
@@ -756,41 +707,23 @@ onUnmounted(() => {
 }
 
 .chat-input-area {
-  padding: 10px;
+  padding: 15px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
+  background-color: rgba(40, 40, 40, 1); /* 完全不透明 */
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   position: relative;
-  z-index: 15;
-  border-radius: 0;
-  pointer-events: auto; /* 输入区域可以捕获事件 */
+  z-index: 2;
 }
 
 .input-container {
   flex: 1;
   position: relative;
   border-radius: 24px;
-  -webkit-border-radius: 24px;
-  -moz-border-radius: 24px;
   background-color: rgba(60, 60, 60, 0.7);
   display: flex;
   align-items: center;
-  overflow: hidden;
-  -webkit-mask-image: -webkit-radial-gradient(white, black);
-  z-index: 15;
-  pointer-events: auto; /* 确保可交互 */
-}
-
-.input-container::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  border-radius: 24px;
-  pointer-events: none; /* 确保不阻止交互 */
 }
 
 .input-container.recording {
@@ -801,25 +734,23 @@ onUnmounted(() => {
 
 textarea {
   width: 100%;
-  height: auto;
   border: none;
   background-color: transparent;
   padding: 12px 50px 12px 15px;
   color: white;
   resize: none;
-  border-radius: 0; /* 移除textarea的圆角，让容器控制圆角 */
+  border-radius: 24px;
   outline: none;
   max-height: 120px;
   font-family: inherit;
   font-size: 14px;
-  line-height: 1.4;
 }
 
 .send-button {
   position: absolute;
-  right: 8px; /* 稍微调整位置，避免太靠近边缘 */
-  width: 36px; /* 略微减小尺寸 */
-  height: 36px;
+  right: 5px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   border: none;
   background-color: #2c7c7e;
@@ -829,7 +760,6 @@ textarea {
   justify-content: center;
   cursor: pointer;
   transition: background-color 0.3s;
-  z-index: 20; /* 确保在最上层且可交互 */
 }
 
 .send-button:hover {
@@ -853,7 +783,6 @@ textarea {
   justify-content: center;
   cursor: pointer;
   transition: all 0.3s;
-  z-index: 20; /* 确保可交互 */
 }
 
 .voice-button:hover {
@@ -874,14 +803,14 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 2px;
-  height: 16px;
+  gap: 3px;
+  height: 20px;
 }
 
 .typing-indicator span {
   display: block;
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
   background-color: rgba(255, 255, 255, 0.6);
   border-radius: 50%;
   animation: typing 1.5s infinite ease;
@@ -908,14 +837,14 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 2px;
-  height: 16px;
+  gap: 3px;
+  height: 20px;
 }
 
 .voice-wave .wave {
   display: block;
-  width: 2px;
-  height: 16px;
+  width: 3px;
+  height: 20px;
   background-color: rgba(255, 255, 255, 0.6);
   animation: wave 1s infinite ease-in-out;
   border-radius: 2px;
@@ -944,10 +873,5 @@ textarea {
   50% {
     height: 20px;
   }
-}
-
-/* 确保按钮可交互 */
-.send-button, .voice-button, textarea, .message, .message-bubble {
-  pointer-events: auto;
 }
 </style> 
