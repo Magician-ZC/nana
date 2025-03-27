@@ -271,31 +271,33 @@ onMounted(async () => {
 
 <style scoped>
 .agent-selector {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  z-index: 10;
+  position: relative;
+  z-index: 101;
 }
 
 .agent-selector-button {
+  padding: 10px 15px;
   background-color: rgba(0, 0, 0, 0.7);
   color: white;
-  padding: 8px 15px;
   border-radius: 20px;
   cursor: pointer;
   font-size: 14px;
-  transition: all 0.3s;
+  font-weight: 500;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+  min-width: 100px;
+  text-align: center;
+  transition: all 0.3s ease;
 }
 
 .agent-selector-button:hover {
-  background-color: rgba(50, 50, 50, 0.8);
+  background-color: rgba(20, 20, 20, 0.8);
+  transform: scale(1.05);
 }
 
 .agent-dropdown-container {
   position: absolute;
-  top: 100%;
+  top: calc(100% + 10px);
   right: 0;
-  margin-top: 5px;
   background-color: rgba(30, 30, 30, 0.95);
   border-radius: 10px;
   box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);

@@ -6,6 +6,7 @@ from typing import Optional, List
 import base64
 from chat_service import ChatService
 from tts import TTSService
+from super_tts import SuperTTSService
 from config import Config
 from speech_service import SpeechService
 import uvicorn
@@ -48,8 +49,17 @@ class CustomAgentRequest(BaseModel):
     lifestyle: str
     values: str
 
+class TTSSettingsRequest(BaseModel):
+    enable_tts: bool
+    enable_super_tts: bool
+
+class TTSSettings(BaseModel):
+    enable_tts: bool
+    enable_super_tts: bool
+
 chat_service = ChatService()
 tts_service = TTSService()
+super_tts_service = SuperTTSService()
 speech_service = SpeechService()
 # llm_service = LLMService(Config.LLM_API_KEY, Config.LLM_API_URL)  # 注释掉，使用chat_service中的LLM服务
 
@@ -706,6 +716,73 @@ async def normal_chat_flow(request: ChatRequest):
         response_data["guidance_message"] = guidance_message
     
     return JSONResponse(content=response_data)
+
+# 这里添加TTS设置的API端点
+@app.get("/api/tts_settings")
+async def get_tts_settings():
+    """获取当前TTS设置
+    
+    Returns:
+        dict: 包含TTS设置的响应
+    """
+    return JSONResponse(
+        content={
+            "enable_tts": Config.ENABLE_TTS,
+            "enable_super_tts": Config.ENABLE_SUPER_TTS
+        }
+    )
+
+@app.post("/api/tts_settings")
+async def update_tts_settings(settings: TTSSettingsRequest):
+    """更新TTS设置
+    
+    Args:
+        settings: 新的TTS设置
+        
+    Returns:
+        dict: 包含更新结果的响应
+    """
+    try:
+        # 只能启用一种TTS，或者都不启用
+        if settings.enable_tts and settings.enable_super_tts:
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": "只能启用一种TTS服务"
+                }
+            )
+            
+        # 更新配置
+        Config.ENABLE_TTS = settings.enable_tts
+        Config.ENABLE_SUPER_TTS = settings.enable_super_tts
+        
+        # 更新ChatService中的TTS服务实例
+        if settings.enable_tts and chat_service.tts_service is None:
+            chat_service.tts_service = TTSService()
+        elif not settings.enable_tts:
+            chat_service.tts_service = None
+            
+        if settings.enable_super_tts and chat_service.super_tts_service is None:
+            chat_service.super_tts_service = SuperTTSService()
+        elif not settings.enable_super_tts:
+            chat_service.super_tts_service = None
+            
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": "TTS设置已更新",
+                "enable_tts": Config.ENABLE_TTS,
+                "enable_super_tts": Config.ENABLE_SUPER_TTS
+            }
+        )
+    except Exception as e:
+        print(f"更新TTS设置失败: {e}")
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": f"更新TTS设置失败: {str(e)}"
+            }
+        )
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8666, reload=True)

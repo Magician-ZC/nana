@@ -1,6 +1,7 @@
 from typing import Optional, Tuple
 from llm import LLMService
 from tts import TTSService
+from super_tts import SuperTTSService
 from config import Config
 from main_agent import MainAgent
 from conversation import ConversationHistory
@@ -12,8 +13,9 @@ class ChatService:
         # 初始化LLM服务
         self.llm_service = LLMService(Config.LLM_API_KEY, Config.LLM_API_URL)
         
-        # 只在启用TTS时初始化TTS服务
+        # 初始化TTS服务（根据配置决定是否创建实例）
         self.tts_service = TTSService() if Config.is_tts_enabled() else None
+        self.super_tts_service = SuperTTSService() if Config.is_super_tts_enabled() else None
          
         # 初始化对话历史和主Agent
         self.conversation_history = ConversationHistory(max_turns=Config.MAX_TURNS)
@@ -83,16 +85,24 @@ class ChatService:
                     self.main_agent.conversation_history.turns[-1].ask == "SYSTEM_GUIDANCE"):
                     guidance_message = self.main_agent.conversation_history.turns[-1].answer
             
-            # 生成语音 (如果TTS服务已启用)
-            audio_data = None   
-            if reply and self.tts_service:
+            # 生成语音 (如果语音服务已启用)
+            audio_data = None  
+            
+            # 优先使用超拟人TTS，如果启用
+            if reply and self.super_tts_service:
+                try:
+                    audio_data = self.super_tts_service.generate_audio(reply)
+                except Exception as e:
+                    print(f"生成超拟人语音时出错: {e}")
+            # 如果没有超拟人TTS或生成失败，尝试使用普通TTS
+            elif reply and self.tts_service:
                 try:
                     audio_data = self.tts_service.generate_audio(reply)
                 except Exception as e:
-                    print(f"生成语音时出错了喵: {e}")
+                    print(f"生成普通语音时出错: {e}")
             
             return reply, audio_data, expression, guidance_message
             
         except Exception as e:
-            print(f"生成回复时出错了喵: {e}")
+            print(f"生成回复时出错: {e}")
             return "对不起，我现在有点累了，能稍后再聊吗？", None, "生气", None

@@ -13,7 +13,10 @@
     <QuickQuestions />
     <div class="live2d-main">
       <Live2DModel ref="live2dRef" :modelId="chatStore.currentModel" />
-      <AgentSelector @agent-change="handleAgentChange" :currentModel="chatStore.currentAgent" />
+      <div class="controls-container">
+        <AgentSelector @agent-change="handleAgentChange" :currentModel="chatStore.currentAgent" />
+        <SettingsButton class="settings-button" />
+      </div>
     </div>
     
     <ChatPanel />
@@ -28,6 +31,7 @@ import AgentSelector from './components/AgentSelector.vue'
 import ChatPanel from './components/ChatPanel.vue'
 import TimeWeather from './components/TimeWeather.vue'
 import QuickQuestions from './components/QuickQuestions.vue'
+import SettingsButton from './components/SettingsButton.vue'
 
 const chatStore = useChatStore()
 const live2dRef = ref(null)
@@ -189,6 +193,22 @@ body {
   background-color: transparent;
 }
 
+/* 控制按钮容器 */
+.controls-container {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 100;
+}
+
+/* 设置按钮样式 */
+.settings-button {
+  margin-left: 10px;
+}
+
 /* 滚动条样式 */
 ::-webkit-scrollbar {
   width: 8px;
@@ -217,6 +237,12 @@ body {
     right: 0 !important;
     bottom: 0 !important;
     border-radius: 0 !important;
+  }
+  
+  .controls-container {
+    position: fixed;
+    top: 15px;
+    right: 15px;
   }
 }
 
