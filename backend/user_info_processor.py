@@ -48,9 +48,9 @@ class UserInfoProcessor:
                 if key in new_dict and new_dict[key]:
                     existing_dict[key] = new_dict[key]
             
-            # 2. 检查并合并最近状况部分
+            # 2. 检查并合并其他部分(除了"最近状况"和"心理状态"之外的部分)
             for key in new_dict:
-                if key not in basic_info_keys and key != "最近状况" and new_dict[key]:
+                if key not in basic_info_keys and key not in ["最近状况", "心理状态"] and new_dict[key]:
                     existing_dict[key] = new_dict[key]
             
             # 3. 特殊处理"最近状况"，保持原有结构
@@ -90,6 +90,11 @@ class UserInfoProcessor:
                     for key, value in status_dict.items():
                         status_text.append(f"{key}: {value}")
                     existing_dict["最近状况"] = "\n".join(status_text)
+
+            # 4. 特殊处理"心理状态"
+            if "心理状态" in new_dict and new_dict["心理状态"]:
+                # 直接替换心理状态，因为这是情绪评估的结果
+                existing_dict["心理状态"] = new_dict["心理状态"]
             
             # 构建合并后的信息文本
             merged_info = ""
@@ -102,11 +107,15 @@ class UserInfoProcessor:
             
             # 最近状况部分
             if "最近状况" in existing_dict:
-                merged_info += "最近状况: \n" + existing_dict["最近状况"] + "\n"
+                merged_info += "最近状况: \n" + existing_dict["最近状况"] + "\n\n"
+            
+            # 心理状态部分
+            if "心理状态" in existing_dict:
+                merged_info += "心理状态: \n" + existing_dict["心理状态"] + "\n\n"
             
             # 其他信息
             for key in existing_dict:
-                if key not in basic_info_keys and key != "最近状况" and existing_dict[key]:
+                if key not in basic_info_keys and key not in ["最近状况", "心理状态"] and existing_dict[key]:
                     merged_info += f"{key}: {existing_dict[key]}\n"
             
             # 保存合并后的信息

@@ -20,6 +20,7 @@ import time
 import re
 import math
 from collections import Counter
+import assessment_api  # 导入评估API模块
 # from llm import LLMService  # 注释掉，因为我们使用chat_service中的LLM服务
 
 app = FastAPI()
@@ -77,12 +78,6 @@ super_tts_service = SuperTTSService()
 speech_service = SpeechService()
 # llm_service = LLMService(Config.LLM_API_KEY, Config.LLM_API_URL)  # 注释掉，使用chat_service中的LLM服务
 
-# 确保保存自定义角色的目录存在
-CUSTOM_AGENTS_DIR = "save/custom_agents"
-TEMP_UPLOADS_DIR = "temp_uploads"
-os.makedirs(CUSTOM_AGENTS_DIR, exist_ok=True)
-os.makedirs(TEMP_UPLOADS_DIR, exist_ok=True)
-
 # 文本提取函数
 def extract_text_from_file(file_path, file_extension):
     """从不同格式的文件中提取文本
@@ -113,19 +108,249 @@ def extract_text_from_file(file_path, file_extension):
         except ImportError:
             return "缺少python-docx库，无法解析Word文档。"
     
-    elif file_extension == '.pdf':
+    elif file_extension in ['.jpg', '.jpeg', '.png']:
+        # 对图片文件进行OCR处理
         try:
-            # 使用PyPDF2提取文本
-            from PyPDF2 import PdfReader
-            reader = PdfReader(file_path)
-            text = ""
-            for page in reader.pages:
-                text += page.extract_text() + "\n"
+            import pytesseract
+            from PIL import Image
+            import cv2
+            import numpy as np
+            
+            # 读取图片并进行预处理
+            img = cv2.imread(file_path)
+            if img is None:
+                return "无法读取图片文件"
+                
+            # 转换为灰度图
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            
+            # 自适应阈值处理，提高OCR准确率
+            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                          cv2.THRESH_BINARY, 11, 2)
+            
+            # 使用pytesseract进行OCR
+            text = pytesseract.image_to_string(thresh, lang='chi_sim+eng')
             return text
         except ImportError:
-            return "缺少PyPDF2库，无法解析PDF文档。"
+            return "缺少图像处理或OCR库(opencv-python, pytesseract)，无法处理图片。"
+        except Exception as e:
+            print(f"图片OCR错误: {str(e)}")
+            return f"OCR处理失败: {str(e)}"
+    
+    elif file_extension == '.pdf':
+        try:
+            # 首先尝试使用PyPDF2提取文本
+            from PyPDF2 import PdfReader
+            text = ""
+            try:
+                print("使用PyPDF2提取PDF文本...")
+                reader = PdfReader(file_path)
+                for page in reader.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n\n"
+            except Exception as pypdf_error:
+                print(f"PyPDF2提取错误: {pypdf_error}")
+            
+            # 检查是否获取到了有效文本
+            if not text or len(text.strip()) < 100:
+                print("PyPDF2提取内容不足，使用PDF转图像+OCR方案进行识别...")
+                try:
+                    # 使用pdf2image和OCR处理
+                    import pytesseract
+                    from pdf2image import convert_from_path
+                    import cv2
+                    import numpy as np
+                    
+                    # 转换PDF为高分辨率图像
+                    images = convert_from_path(file_path, dpi=300)
+                    ocr_text = ""
+                    
+                    # 设置pytesseract配置，提高中文识别准确率
+                    # 确保安装了相应语言包
+                    lang_param = 'chi_sim+eng'
+                    try:
+                        # 使用中文简体识别
+                        custom_config = r'--oem 1 --psm 3 -l chi_sim+eng'
+                        for i, image in enumerate(images):
+                            # 转换为OpenCV格式
+                            opencv_image = np.array(image)
+                            # 转为灰度
+                            if len(opencv_image.shape) == 3 and opencv_image.shape[2] == 3:
+                                gray = cv2.cvtColor(opencv_image, cv2.COLOR_RGB2GRAY)
+                            else:
+                                gray = opencv_image
+                            
+                            # 应用自适应阈值
+                            thresh = cv2.adaptiveThreshold(
+                                gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                cv2.THRESH_BINARY, 11, 2
+                            )
+                            
+                            # OCR识别
+                            page_text = pytesseract.image_to_string(thresh, config=custom_config)
+                            
+                            # 特殊处理：替换常见错误识别
+                            replacements = {
+                                '×Ô—¯': '自信',
+                                '˘‰"â': '压力',
+                                '×Ô˛Òµ÷‰Ú': '能量',
+                                'ÒÖÓô': '抑郁',
+                                'Éæ¾›Ö˚': '攻击性',
+                                'O AM I C': 'OAMIC',
+                                '0 AM I C': 'OAMIC',
+                                '攻击 ': '攻击性 ',
+                                '自信 ': '自信 ',
+                                '能量 ': '能量 ',
+                                '压力 ': '压力 ',
+                                '抑郁 ': '抑郁 '
+                            }
+                            
+                            for old, new in replacements.items():
+                                page_text = page_text.replace(old, new)
+                            
+                            ocr_text += page_text + "\n\n"
+                    
+                    except Exception as ocr_error:
+                        print(f"特定语言OCR错误，尝试默认设置: {ocr_error}")
+                        # 如果特定语言配置失败，尝试使用默认设置
+                        for i, image in enumerate(images):
+                            page_text = pytesseract.image_to_string(np.array(image))
+                            ocr_text += page_text + "\n\n"
+                    
+                    # 使用OCR结果
+                    if ocr_text.strip():
+                        if len(text.strip()) < len(ocr_text.strip()):
+                            text = ocr_text
+                        else:
+                            # 合并两种结果
+                            text += "\n\n===OCR结果===\n\n" + ocr_text
+                
+                except Exception as ocr_error:
+                    print(f"PDF OCR处理错误: {ocr_error}")
+            
+            # 后处理：修复常见的中文识别问题
+            text = text.replace('？', '?').replace('，', ',').replace('：', ':')
+            
+            # 人工尝试识别关键指标数据
+            import re
+            
+            # 尝试匹配"指标名称：数值"模式
+            pattern = r'([a-zA-Z\u4e00-\u9fa5]+)[：:]\s*(\d+\.?\d*)'
+            matches = re.findall(pattern, text)
+            
+            # 如果发现了这种模式，构建更结构化的表示
+            if matches:
+                structured_part = "\n结构化指标数据：\n"
+                for name, value in matches:
+                    # 清理名称，去除多余空格
+                    clean_name = name.strip()
+                    # 对关键指标名称进行特别处理
+                    if '攻击' in clean_name:
+                        clean_name = '攻击性'
+                    elif '自信' in clean_name:
+                        clean_name = '自信'
+                    elif '能量' in clean_name or '活力' in clean_name:
+                        clean_name = '能量'
+                    elif '压力' in clean_name:
+                        clean_name = '压力'
+                    elif '抑郁' in clean_name:
+                        clean_name = '抑郁'
+                    structured_part += f"{clean_name}: {value}\n"
+                
+                # 将结构化部分添加到文本末尾
+                text += structured_part
+                
+            # 另一种常见模式："指标名称"+"（数值）"或"[数值]"
+            pattern2 = r'([a-zA-Z\u4e00-\u9fa5]+)[\(（\[\【](\d+\.?\d*)[\)）\]\】]'
+            matches2 = re.findall(pattern2, text)
+            
+            if matches2:
+                structured_part = "\n括号指标数据：\n"
+                for name, value in matches2:
+                    # 清理名称
+                    clean_name = name.strip()
+                    # 对关键指标名称进行特别处理
+                    if '攻击' in clean_name:
+                        clean_name = '攻击性'
+                    elif '自信' in clean_name:
+                        clean_name = '自信'
+                    elif '能量' in clean_name or '活力' in clean_name:
+                        clean_name = '能量'
+                    elif '压力' in clean_name:
+                        clean_name = '压力'
+                    elif '抑郁' in clean_name:
+                        clean_name = '抑郁'
+                    structured_part += f"{clean_name}: {value}\n"
+                
+                # 将结构化部分添加到文本末尾
+                text += structured_part
+                
+            # 直接添加常见指标的搜索结果
+            indicators = ['攻击性', '自信', '能量', '压力', '抑郁']
+            found_indicators = {}
+            
+            for indicator in indicators:
+                # 查找包含指标名称的行
+                lines = text.split('\n')
+                for line in lines:
+                    if indicator in line:
+                        # 查找行中的数字
+                        numbers = re.findall(r'\d+\.?\d*', line)
+                        if numbers:
+                            # 使用找到的第一个数字
+                            found_indicators[indicator] = numbers[0]
+                            break
+            
+            if found_indicators:
+                structured_part = "\n关键指标数据：\n"
+                for name, value in found_indicators.items():
+                    structured_part += f"{name}: {value}\n"
+                text += structured_part
+                
+            return text
+        except Exception as e:
+            print(f"PDF解析错误: {str(e)}")
+            return f"无法解析PDF文档，请尝试其他格式或重新上传: {str(e)}"
     
     return "不支持的文件格式"
+
+# 添加无意义输入判断函数
+def is_meaningless_input(message: str) -> bool:
+    """判断输入是否无意义（过短或过于简单）
+    
+    Args:
+        message: 用户输入消息
+        
+    Returns:
+        bool: 是否无意义
+    """
+    # 如果消息太短，可能没有实际意义
+    if len(message.strip()) < 2:
+        return True
+        
+    # 常见无意义输入
+    meaningless_inputs = [
+        "你好", "hi", "hello", "嗨", "哈喽", "在吗", "在？", "测试", "test",
+        "。", "，", "?", "？", "!", "！", "emmm", "hmm", "啊", "哦", "嗯",
+        "666", "233", "haha", "哈哈", "呵呵"
+    ]
+    
+    # 检查是否是这些无意义输入
+    if message.strip().lower() in meaningless_inputs:
+        return True
+    
+    return False
+
+# 初始化评估API路由
+assessment_api.init_router(chat_service, extract_text_from_file, is_meaningless_input)
+app.include_router(assessment_api.assessment_router, prefix="/api")
+
+# 确保保存自定义角色的目录存在
+CUSTOM_AGENTS_DIR = "save/custom_agents"
+TEMP_UPLOADS_DIR = "temp_uploads"
+os.makedirs(CUSTOM_AGENTS_DIR, exist_ok=True)
+os.makedirs(TEMP_UPLOADS_DIR, exist_ok=True)
 
 @app.post("/api/extract_agent_info")
 async def extract_agent_info(file: UploadFile = File(...)):
@@ -941,6 +1166,20 @@ async def chat_endpoint(websocket: WebSocket):
         await websocket.close()
 
 async def normal_chat_flow(request: ChatRequest):
+    """正常的聊天流程
+    
+    Args:
+        request: 聊天请求
+        
+    Returns:
+        dict: 聊天响应
+    """
+    
+    # 在对话处理前，检查消息是否有效，如果有效则增加计数
+    if not is_meaningless_input(request.message):
+        assessment_api.increment_dialog_counter(request.message)
+    
+    # 对话流程处理
     reply, audio_data, expression, guidance_message = await chat_service.generate_reply(
         request.message, 
         request.session_id,
@@ -1287,166 +1526,6 @@ async def welcome_tts(request: dict = Body(...)):
                 "message": f"生成欢迎语TTS失败: {str(e)}"
             }
         )
-
-def is_meaningless_input(message: str) -> bool:
-    """检测输入是否为无意义内容
-    
-    检测标准:
-    1. 纯数字或主要由数字组成的消息
-    2. 太短的消息(1-2个字符)
-    3. 重复的字符或词组
-    4. 明显的随机字符串
-    5. 无意义的随机中文字符串
-    
-    Args:
-        message: 用户输入消息
-        
-    Returns:
-        bool: 是否为无意义内容
-    """
-    # 去除空白字符
-    message = message.strip()
-    
-    # 检查是否为空消息
-    if not message:
-        return True
-        
-    # 检查是否过短(少于3个字符)
-    if len(message) < 3:
-        return True
-        
-    # 检查是否纯数字或主要由数字组成
-    digit_count = sum(c.isdigit() for c in message)
-    if digit_count / len(message) > 0.5:  # 数字占比超过50%
-        return True
-        
-    # 检查是否有过多重复字符
-    if len(set(message)) < len(message) * 0.3:  # 不同字符占比低于30%
-        return True
-        
-    # 检查是否缺少有意义的中文或英文单词
-    has_chinese = any('\u4e00' <= c <= '\u9fff' for c in message)
-    has_meaningful_text = False
-    
-    # 常见的中文虚词和连词，这些词通常会出现在有意义的中文句子中
-    chinese_common_words = ["的", "是", "了", "在", "我", "有", "和", "就", "不", "人", "都", 
-                           "一", "一个", "上", "也", "很", "到", "说", "要", "这", "你", "会", 
-                           "着", "没有", "看", "好", "自己", "那", "么", "她", "他", "们"]
-    
-    if has_chinese:
-        # 检查是否包含常见中文虚词
-        if any(word in message for word in chinese_common_words):
-            has_meaningful_text = True
-        else:
-            # 中文消息中至少要有2个连续的中文字符
-            for i in range(len(message) - 1):
-                if '\u4e00' <= message[i] <= '\u9fff' and '\u4e00' <= message[i+1] <= '\u9fff':
-                    has_meaningful_text = True
-                    break
-            
-            # 对于短句（3-6个字符）的随机中文，尝试增加额外的检查
-            if has_meaningful_text and 3 <= len(message) <= 6 and all('\u4e00' <= c <= '\u9fff' for c in message):
-                # 对于全中文短句，如果没有常见词，可能是随机字符
-                if not any(word in message for word in chinese_common_words):
-                    # 额外检查：字符的组合是否看起来随机
-                    # 计算字符熵
-                    char_counts = Counter(message)
-                    entropy = -sum((count / len(message)) * math.log(count / len(message), 2) 
-                                for count in char_counts.values())
-                    
-                    # 熵值高意味着字符组合更随机
-                    if entropy > 2.0:  # 熵阈值设为2.0，可根据需要调整
-                        has_meaningful_text = False
-    else:
-        # 英文消息中至少要有一个完整单词(至少3个字母)
-        import re
-        
-        # 修改检测策略：三重检查
-        # 1. 首先检查是否与常见英文单词相似
-        # 常见的1000个英文单词的前缀（为了便于匹配，只使用常见单词的前3-4个字母作为前缀检查）
-        common_word_prefixes = ["the", "and", "for", "are", "but", "not", "you", "all", "any", "can", "had", "her", "was", "one", 
-                               "our", "out", "day", "get", "has", "him", "his", "how", "man", "new", "now", "old", "see", "two", 
-                               "way", "who", "boy", "did", "its", "let", "put", "say", "she", "too", "use", "that", "with", "have", 
-                               "this", "will", "your", "from", "they", "know", "want", "been", "good", "much", "some", "time"]
-        
-        # 检查输入是否与任何常见单词前缀匹配
-        input_lower = message.lower()
-        prefix_match = False
-        
-        for prefix in common_word_prefixes:
-            if input_lower.startswith(prefix) or any(word.startswith(prefix) for word in input_lower.split()):
-                prefix_match = True
-                break
-        
-        # 2. 检查是否含有元音字母和合理的辅音元音分布
-        vowel_pattern = re.compile(r'[aeiou]')
-        has_vowels = bool(vowel_pattern.search(input_lower))
-        
-        # 计算元音和辅音比例
-        vowel_count = sum(c in 'aeiou' for c in input_lower)
-        consonant_count = sum(c in 'bcdfghjklmnpqrstvwxyz' for c in input_lower)
-        total_letters = vowel_count + consonant_count
-        
-        # 检查字母组合是否像自然语言（元音通常占20%-60%）
-        natural_vowel_ratio = (total_letters > 0) and (0.2 <= vowel_count / total_letters <= 0.6)
-        
-        # 3. 检查特有的无意义输入模式
-        # a. 检查辅音连续超过3个或元音连续超过3个（自然英语单词中很少有这种情况）
-        max_consecutive_consonants = 0
-        max_consecutive_vowels = 0
-        current_consonants = 0
-        current_vowels = 0
-        
-        for c in input_lower:
-            if c in 'aeiou':
-                current_vowels += 1
-                current_consonants = 0
-                if current_vowels > max_consecutive_vowels:
-                    max_consecutive_vowels = current_vowels
-            elif c in 'bcdfghjklmnpqrstvwxyz':
-                current_consonants += 1
-                current_vowels = 0
-                if current_consonants > max_consecutive_consonants:
-                    max_consecutive_consonants = current_consonants
-            else:
-                current_consonants = 0
-                current_vowels = 0
-        
-        unnatural_consonant_pattern = max_consecutive_consonants > 3
-        unnatural_vowel_pattern = max_consecutive_vowels > 3
-        
-        # b. 检查是否有重复的辅音-元音模式（如"sasasa"或"dadada"）
-        has_repetitive_pattern = False
-        if len(message) >= 4:
-            # 提取2-3个字符的可能重复模式
-            for pattern_length in [2, 3]:
-                if len(message) >= pattern_length * 2:
-                    pattern = message[:pattern_length]
-                    repetitions = 1
-                    
-                    for i in range(pattern_length, len(message), pattern_length):
-                        if i + pattern_length <= len(message) and message[i:i+pattern_length] == pattern:
-                            repetitions += 1
-                        else:
-                            break
-                    
-                    # 如果同一模式重复出现至少2次，且占据消息长度的大部分
-                    if repetitions >= 2 and (repetitions * pattern_length) / len(message) > 0.6:
-                        has_repetitive_pattern = True
-                        break
-        
-        # 综合判断是否是有意义的文本：
-        # 1. 与常见单词前缀匹配，且有合理的元音辅音分布
-        # 2. 没有不自然的辅音/元音连续模式
-        # 3. 没有明显的重复模式
-        has_meaningful_text = (prefix_match or natural_vowel_ratio) and not (unnatural_consonant_pattern or unnatural_vowel_pattern or has_repetitive_pattern)
-        
-        # 额外的安全检查：如果是常见的无意义输入模式如"asdasd"，"qwerty"，直接判定为无意义
-        common_random_inputs = ["asdf", "qwer", "zxcv", "hjkl", "wasd", "qwerty", "asdasd", "dfdfdf", "jkjk", "ghgh", "sdfsd", "asdasdasd", "qwerty"]
-        if any(rand_input in input_lower for rand_input in common_random_inputs):
-            has_meaningful_text = False
-        
-    return not has_meaningful_text
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8666, reload=True)

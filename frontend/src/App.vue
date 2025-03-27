@@ -9,6 +9,9 @@
       <i :class="isDarkMode ? 'fa-solid fa-sun' : 'fa-solid fa-moon'"></i>
     </button>
     
+    <!-- 添加情绪评估和心理评估按钮 -->
+    <AssessmentButtons />
+    
     <TimeWeather />
     
     <div class="live2d-main">
@@ -34,6 +37,7 @@ import ChatPanel from './components/ChatPanel.vue'
 import TimeWeather from './components/TimeWeather.vue'
 import QuickQuestions from './components/QuickQuestions.vue'
 import SettingsButton from './components/SettingsButton.vue'
+import AssessmentButtons from './components/AssessmentButtons.vue'
 
 const chatStore = useChatStore()
 const live2dRef = ref(null)
