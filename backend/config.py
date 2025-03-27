@@ -45,7 +45,7 @@ class Config:
     TTS_TEXT_LENGTH_LIMIT = 100  # 文本长度限制，降低以减少API错误
     
     # TTS高级参数
-    TTS_SPEED = 50  # 语速，可选值：[0-100]，默认50
+    TTS_SPEED = 70  # 语速，可选值：[0-100]，默认50
     TTS_VOLUME = 50  # 音量，可选值：[0-100]，默认50
     TTS_PITCH = 50  # 音高，可选值：[0-100]，默认50
     
@@ -61,7 +61,7 @@ class Config:
     SUPER_TTS_TEXT_LENGTH_LIMIT = 80  # 超拟人TTS文本长度限制，降低以减少API错误
     
     # 新增：聊天效果配置
-    TYPING_SPEED = 38  # 打字速度，值越小速度越快，单位是毫秒/字符，默认38毫秒（约26字/秒）
+    TYPING_SPEED = 155  # 打字速度，值越小速度越快，单位是毫秒/字符，默认38毫秒（约26字/秒）
     
     ''' 对话历史配置 '''
     MAX_TURNS = 20  # 最多保存20轮对话，超过后自动归档一半

@@ -86,19 +86,36 @@
             <!-- 普通语音音色选择 -->
             <div v-if="enableTTS" class="pl-7 space-y-2">
               <label for="tts-voice" class="block text-sm font-medium text-neutral-700 dark:text-neutral-300">音色选择</label>
-              <select 
-                id="tts-voice"
-                v-model="ttsVoice" 
-                class="mt-1 block w-full rounded-md border-neutral-300 py-2 pl-3 pr-10 text-base focus:border-primary-500 focus:outline-none focus:ring-primary-500 dark:border-neutral-600 dark:bg-neutral-700 dark:text-white sm:text-sm"
-              >
-                <option 
-                  v-for="voice in ttsVoiceList" 
-                  :key="voice.value" 
-                  :value="voice.value"
+              <!-- 自定义下拉选择框 -->
+              <div class="relative dropdown-container">
+                <button 
+                  type="button" 
+                  @click="toggleDropdown('tts')"
+                  class="relative w-full bg-white dark:bg-neutral-700 border border-neutral-300 dark:border-neutral-600 rounded-md py-2 pl-3 pr-10 text-left text-neutral-700 dark:text-white cursor-default focus:outline-none focus:ring-1 focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
                 >
-                  {{ voice.name }}
-                </option>
-              </select>
+                  <span class="block truncate">{{ getTtsVoiceName(ttsVoice) }}</span>
+                  <span class="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
+                    <i class="fa-solid fa-chevron-down text-neutral-400"></i>
+                  </span>
+                </button>
+                
+                <!-- 下拉选项列表 -->
+                <div 
+                  v-show="openDropdown === 'tts'"
+                  class="absolute z-10 mt-1 w-full bg-white dark:bg-neutral-700 shadow-lg max-h-60 rounded-md py-1 text-base ring-1 ring-black ring-opacity-5 overflow-auto focus:outline-none sm:text-sm"
+                >
+                  <div
+                    v-for="voice in ttsVoiceList" 
+                    :key="voice.value"
+                    @click="selectVoice('tts', voice.value)"
+                    :class="['cursor-pointer select-none relative py-2 pl-3 pr-9', 
+                      ttsVoice === voice.value ? 'bg-primary-100 dark:bg-primary-900/50 text-primary-700 dark:text-primary-200' : 'text-neutral-700 dark:text-white hover:bg-neutral-100 dark:hover:bg-neutral-600'
+                    ]"
+                  >
+                    {{ voice.name }}
+                  </div>
+                </div>
+              </div>
             </div>
 
             <!-- 超拟人语音设置 -->
@@ -122,19 +139,36 @@
             <!-- 超拟人语音音色选择 -->
             <div v-if="enableSuperTTS" class="pl-7 space-y-2">
               <label for="super-tts-voice" class="block text-sm font-medium text-neutral-700 dark:text-neutral-300">音色选择</label>
-              <select 
-                id="super-tts-voice"
-                v-model="superTtsVoice" 
-                class="mt-1 block w-full rounded-md border-neutral-300 py-2 pl-3 pr-10 text-base focus:border-primary-500 focus:outline-none focus:ring-primary-500 dark:border-neutral-600 dark:bg-neutral-700 dark:text-white sm:text-sm"
-              >
-                <option 
-                  v-for="voice in superTtsVoiceList" 
-                  :key="voice.value" 
-                  :value="voice.value"
+              <!-- 自定义下拉选择框 -->
+              <div class="relative dropdown-container">
+                <button 
+                  type="button" 
+                  @click="toggleDropdown('super')"
+                  class="relative w-full bg-white dark:bg-neutral-700 border border-neutral-300 dark:border-neutral-600 rounded-md py-2 pl-3 pr-10 text-left text-neutral-700 dark:text-white cursor-default focus:outline-none focus:ring-1 focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
                 >
-                  {{ voice.name }}
-                </option>
-              </select>
+                  <span class="block truncate">{{ getSuperTtsVoiceName(superTtsVoice) }}</span>
+                  <span class="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
+                    <i class="fa-solid fa-chevron-down text-neutral-400"></i>
+                  </span>
+                </button>
+                
+                <!-- 下拉选项列表 -->
+                <div 
+                  v-show="openDropdown === 'super'"
+                  class="absolute z-10 mt-1 w-full bg-white dark:bg-neutral-700 shadow-lg max-h-60 rounded-md py-1 text-base ring-1 ring-black ring-opacity-5 overflow-auto focus:outline-none sm:text-sm"
+                >
+                  <div
+                    v-for="voice in superTtsVoiceList" 
+                    :key="voice.value"
+                    @click="selectVoice('super', voice.value)"
+                    :class="['cursor-pointer select-none relative py-2 pl-3 pr-9', 
+                      superTtsVoice === voice.value ? 'bg-primary-100 dark:bg-primary-900/50 text-primary-700 dark:text-primary-200' : 'text-neutral-700 dark:text-white hover:bg-neutral-100 dark:hover:bg-neutral-600'
+                    ]"
+                  >
+                    {{ voice.name }}
+                  </div>
+                </div>
+              </div>
             </div>
 
             <!-- 语速控制 -->
@@ -188,7 +222,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, computed, onUnmounted } from 'vue'
 import { useChatStore } from '../stores/chat'
 
 const props = defineProps({
@@ -215,12 +249,31 @@ const superTtsVoiceList = ref([])
 const ttsSpeed = ref(50) // 语速，默认50
 const isSaving = ref(false)
 const error = ref('')
+const isDarkMode = ref(false)
+const openDropdown = ref(null)
+
+// 检测当前模式是否为暗色模式
+const checkDarkMode = () => {
+  isDarkMode.value = document.documentElement.classList.contains('dark')
+}
 
 // 加载设置
 onMounted(async () => {
   await loadSettings()
   // 初始化打字机效果设置
   useTypewriterEffect.value = chatStore.useStreamResponse
+  // 检测暗色模式
+  checkDarkMode()
+  // 监听暗色模式变化
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', checkDarkMode)
+  // 添加点击事件监听，用于关闭下拉菜单
+  document.addEventListener('click', handleOutsideClick, true)
+})
+
+// 组件卸载时清除监听器
+onUnmounted(() => {
+  window.matchMedia('(prefers-color-scheme: dark)').removeEventListener('change', checkDarkMode)
+  document.removeEventListener('click', handleOutsideClick, true)
 })
 
 // 监听打开状态变化，打开时重新加载设置
@@ -229,6 +282,8 @@ watch(() => props.isOpen, async (newValue) => {
     await loadSettings()
     // 重新同步打字机效果设置
     useTypewriterEffect.value = chatStore.useStreamResponse
+    // 重新检测暗色模式
+    checkDarkMode()
   }
 })
 
@@ -337,6 +392,40 @@ function showToast(message, type = 'success') {
     toastEl.remove()
   }, 3000)
 }
+
+// 自定义下拉选择框
+function toggleDropdown(type) {
+  openDropdown.value = type
+}
+
+// 获取TTS语音名称
+function getTtsVoiceName(value) {
+  const voice = ttsVoiceList.value.find(v => v.value === value)
+  return voice ? voice.name : '未选择'
+}
+
+// 获取超拟人语音名称
+function getSuperTtsVoiceName(value) {
+  const voice = superTtsVoiceList.value.find(v => v.value === value)
+  return voice ? voice.name : '未选择'
+}
+
+// 选择语音
+function selectVoice(type, value) {
+  if (type === 'tts') {
+    ttsVoice.value = value
+  } else if (type === 'super') {
+    superTtsVoice.value = value
+  }
+  openDropdown.value = null
+}
+
+// 处理点击外部关闭下拉菜单
+function handleOutsideClick(e) {
+  if (openDropdown.value && !e.target.closest('.dropdown-container')) {
+    openDropdown.value = null
+  }
+}
 </script>
 
 <style scoped>
@@ -377,5 +466,43 @@ input[type="range"]::-moz-range-thumb {
 
 :deep(.dark) input[type="range"]::-moz-range-thumb {
   background: #4a9a9c;
+}
+
+/* 全局修复select和option样式 */
+:deep(select) {
+  background-color: white !important;
+  color: black !important;
+  border-color: #d1d5db !important;
+}
+
+:deep(select option) {
+  background-color: white !important;
+  color: black !important;
+  padding: 8px !important;
+}
+
+/* 暗色模式覆盖 */
+:deep(.dark select) {
+  background-color: #374151 !important;
+  color: white !important;
+  border-color: #4b5563 !important;
+}
+
+:deep(.dark select option) {
+  background-color: #374151 !important;
+  color: white !important;
+}
+
+/* 特别针对语音设置中的select */
+#tts-voice,
+#super-tts-voice {
+  background-color: white !important;
+  color: black !important;
+}
+
+.dark #tts-voice,
+.dark #super-tts-voice {
+  background-color: #374151 !important;
+  color: white !important;
 }
 </style> 

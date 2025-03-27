@@ -17,6 +17,7 @@ import uuid
 import shutil
 import tempfile
 import time
+import re
 # from llm import LLMService  # 注释掉，因为我们使用chat_service中的LLM服务
 
 app = FastAPI()
@@ -977,6 +978,7 @@ async def update_tts_settings(settings: TTSSettingsRequest):
                 Config.SUPER_TTS_VCN = settings.super_tts_voice
         
         # 更新语速设置
+        updated_tts_speed = None
         if settings.tts_speed is not None:
             try:
                 # 确保值是整数类型
@@ -984,15 +986,18 @@ async def update_tts_settings(settings: TTSSettingsRequest):
                 # 验证语速值是否在有效范围内
                 if 0 <= speed_value <= 100:
                     Config.TTS_SPEED = speed_value
+                    updated_tts_speed = speed_value
                 else:
                     print(f"语速值超出范围(0-100): {speed_value}")
                     Config.TTS_SPEED = max(0, min(100, speed_value))  # 限制在有效范围内
+                    updated_tts_speed = Config.TTS_SPEED
             except (ValueError, TypeError) as e:
                 print(f"语速值类型错误: {e}")
                 # 如果转换失败，使用默认值
                 Config.TTS_SPEED = 50
         
         # 更新打字速度设置
+        updated_typing_speed = None
         if settings.typing_speed is not None:
             try:
                 # 确保值是整数类型
@@ -1000,9 +1005,11 @@ async def update_tts_settings(settings: TTSSettingsRequest):
                 # 验证打字速度值是否在有效范围内 (10-200ms)
                 if 10 <= typing_value <= 200:
                     Config.TYPING_SPEED = typing_value
+                    updated_typing_speed = typing_value
                 else:
                     print(f"打字速度值超出范围(10-200): {typing_value}")
                     Config.TYPING_SPEED = max(10, min(200, typing_value))  # 限制在有效范围内
+                    updated_typing_speed = Config.TYPING_SPEED
             except (ValueError, TypeError) as e:
                 print(f"打字速度值类型错误: {e}")
                 # 如果转换失败，使用默认值
@@ -1012,11 +1019,22 @@ async def update_tts_settings(settings: TTSSettingsRequest):
         chat_service._refresh_tts_services()
             
         print(f"设置已更新: TTS={Config.ENABLE_TTS}, SuperTTS={Config.ENABLE_SUPER_TTS}, 语速={Config.TTS_SPEED}, 打字速度={Config.TYPING_SPEED}")
+        
+        # 将更新后的设置写入配置文件
+        if updated_tts_speed is not None or updated_typing_speed is not None:
+            await update_config_file(
+                tts_speed=updated_tts_speed,
+                typing_speed=updated_typing_speed,
+                tts_voice=settings.tts_voice if settings.tts_voice else None,
+                super_tts_voice=settings.super_tts_voice if settings.super_tts_voice else None,
+                enable_tts=settings.enable_tts,
+                enable_super_tts=settings.enable_super_tts
+            )
             
         return JSONResponse(
             content={
                 "success": True,
-                "message": "TTS设置已更新",
+                "message": "TTS设置已更新并写入配置文件",
                 "enable_tts": Config.ENABLE_TTS,
                 "enable_super_tts": Config.ENABLE_SUPER_TTS,
                 "tts_voice": Config.TTS_VCN,
@@ -1033,6 +1051,84 @@ async def update_tts_settings(settings: TTSSettingsRequest):
                 "message": f"更新TTS设置失败: {str(e)}"
             }
         )
+
+async def update_config_file(tts_speed=None, typing_speed=None, tts_voice=None, 
+                           super_tts_voice=None, enable_tts=None, enable_super_tts=None):
+    """更新配置文件中的TTS设置
+    
+    Args:
+        tts_speed: 语速值
+        typing_speed: 打字速度值
+        tts_voice: TTS音色
+        super_tts_voice: 超拟人TTS音色
+        enable_tts: 是否启用普通TTS
+        enable_super_tts: 是否启用超拟人TTS
+    """
+    try:
+        config_file_path = os.path.join(os.path.dirname(__file__), 'config.py')
+        
+        # 读取当前配置文件内容
+        with open(config_file_path, 'r', encoding='utf-8') as file:
+            config_content = file.read()
+        
+        # 更新配置内容
+        if tts_speed is not None:
+            # 使用正则表达式替换TTS_SPEED的值
+            config_content = re.sub(
+                r'TTS_SPEED\s*=\s*\d+',
+                f'TTS_SPEED = {tts_speed}',
+                config_content
+            )
+            
+        if typing_speed is not None:
+            # 使用正则表达式替换TYPING_SPEED的值
+            config_content = re.sub(
+                r'TYPING_SPEED\s*=\s*\d+',
+                f'TYPING_SPEED = {typing_speed}',
+                config_content
+            )
+            
+        if tts_voice is not None:
+            # 使用正则表达式替换TTS_VCN的值
+            config_content = re.sub(
+                r'TTS_VCN\s*=\s*"[^"]+"',
+                f'TTS_VCN = "{tts_voice}"',
+                config_content
+            )
+            
+        if super_tts_voice is not None:
+            # 使用正则表达式替换SUPER_TTS_VCN的值
+            config_content = re.sub(
+                r'SUPER_TTS_VCN\s*=\s*"[^"]+"',
+                f'SUPER_TTS_VCN = "{super_tts_voice}"',
+                config_content
+            )
+            
+        if enable_tts is not None:
+            # 使用正则表达式替换ENABLE_TTS的值
+            config_content = re.sub(
+                r'ENABLE_TTS\s*=\s*(True|False)',
+                f'ENABLE_TTS = {str(enable_tts)}',
+                config_content
+            )
+            
+        if enable_super_tts is not None:
+            # 使用正则表达式替换ENABLE_SUPER_TTS的值
+            config_content = re.sub(
+                r'ENABLE_SUPER_TTS\s*=\s*(True|False)',
+                f'ENABLE_SUPER_TTS = {str(enable_super_tts)}',
+                config_content
+            )
+        
+        # 写入更新后的配置文件
+        with open(config_file_path, 'w', encoding='utf-8') as file:
+            file.write(config_content)
+            
+        print(f"配置文件已更新：{config_file_path}")
+        
+    except Exception as e:
+        print(f"更新配置文件失败: {e}")
+        raise
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8666, reload=True)
