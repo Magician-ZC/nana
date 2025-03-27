@@ -333,9 +333,18 @@ class SuperTTSService:
         audio_data = bytearray()
         websocket_connected = False
         websocket_error = None
+        connection_timeout = 10  # 连接超时时间(秒)
+        receive_timeout = 20    # 接收数据超时时间(秒)
+        result_ready = False
+        
+        import threading
+        
+        # 使用事件对象来控制超时
+        connection_event = threading.Event()
+        completion_event = threading.Event()
         
         def on_message(ws, message):
-            nonlocal audio_data
+            nonlocal audio_data, result_ready
             try:
                 # 解析JSON响应
                 message = json.loads(message)
@@ -343,6 +352,10 @@ class SuperTTSService:
                 # 检查是否有错误码
                 if "header" in message and message["header"].get("code") != 0:
                     print(f"超拟人TTS错误: {message}")
+                    nonlocal websocket_error
+                    websocket_error = f"超拟人TTS API返回错误: {message['header'].get('message', '未知错误')}"
+                    completion_event.set()  # 出错时标记完成
+                    ws.close()
                     return
                 
                 # 提取音频数据
@@ -355,22 +368,30 @@ class SuperTTSService:
                     status = message["payload"]["audio"]["status"]
                     if status == 2:
                         print("超拟人TTS合成完成，关闭连接")
+                        result_ready = True
+                        completion_event.set()  # 标记完成
                         ws.close()
                 
             except Exception as e:
                 print(f"处理超拟人TTS响应时出错: {e}")
+                websocket_error = e
+                completion_event.set()  # 出错时标记完成
+                ws.close()
                 
         def on_error(ws, error):
             nonlocal websocket_error
             websocket_error = error
             print(f"超拟人TTS WebSocket错误: {error}")
+            completion_event.set()  # 出错时标记完成
             
         def on_close(ws, close_status_code=None, close_msg=None):
             print("超拟人TTS WebSocket连接已关闭")
+            completion_event.set()  # 连接关闭时标记完成
             
         def on_open(ws):
             nonlocal websocket_connected
             websocket_connected = True
+            connection_event.set()  # 标记连接已建立
             
             def run(*args):
                 # 构建请求数据
@@ -416,9 +437,16 @@ class SuperTTSService:
                     }
                 }
                 
-                # 发送请求数据
-                print("开始发送超拟人TTS请求...")
-                ws.send(json.dumps(request_data))
+                try:
+                    # 发送请求数据
+                    print("开始发送超拟人TTS请求...")
+                    ws.send(json.dumps(request_data))
+                except Exception as e:
+                    nonlocal websocket_error
+                    print(f"发送超拟人TTS请求时出错: {e}")
+                    websocket_error = e
+                    completion_event.set()  # 出错时标记完成
+                    ws.close()
                 
             thread.start_new_thread(run, ())
             
@@ -434,21 +462,44 @@ class SuperTTSService:
         )
         ws.on_open = on_open
         
-        # 启动WebSocket连接
-        ws.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
+        # 在单独的线程中运行WebSocket连接
+        import threading
+        ws_thread = threading.Thread(
+            target=ws.run_forever,
+            kwargs={"sslopt": {"cert_reqs": ssl.CERT_NONE}}
+        )
+        ws_thread.daemon = True  # 设置为后台线程
+        ws_thread.start()
         
+        # 等待连接建立，带超时
+        if not connection_event.wait(connection_timeout):
+            print(f"超拟人TTS WebSocket连接超时(等待{connection_timeout}秒)")
+            ws.close()
+            return None
+            
+        # 等待接收完成，带超时
+        if not completion_event.wait(receive_timeout):
+            print(f"超拟人TTS接收数据超时(等待{receive_timeout}秒)")
+            ws.close()
+            return None
+            
         # 检查连接结果
         if not websocket_connected:
-            print("WebSocket连接失败")
+            print("超拟人TTS WebSocket连接失败")
             return None
             
         if websocket_error:
-            print(f"WebSocket发生错误: {websocket_error}")
+            print(f"超拟人TTS WebSocket发生错误: {websocket_error}")
             return None
             
         if len(audio_data) == 0:
-            print("未收到音频数据")
+            print("超拟人TTS未收到音频数据")
             return None
+            
+        # 等待线程结束，但有超时限制
+        ws_thread.join(2)
+        if ws_thread.is_alive():
+            print("超拟人TTS WebSocket线程未能正常结束，强制继续")
             
         # 返回音频数据
         return bytes(audio_data) 

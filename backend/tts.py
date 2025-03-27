@@ -12,6 +12,7 @@ import _thread as thread
 import ssl
 from typing import Optional
 from config import Config
+import threading
 
 class TTSService:
     def __init__(self, voice=None):
@@ -334,9 +335,17 @@ class TTSService:
             bytes: 音频数据
         """
         audio_data = bytearray()
+        connection_timeout = 10  # 连接超时时间(秒)
+        receive_timeout = 15    # 接收数据超时时间(秒)
+        result_ready = False
+        websocket_error = None
+        
+        # 使用事件对象来控制超时
+        connection_event = threading.Event()
+        completion_event = threading.Event()
         
         def on_message(ws, message):
-            nonlocal audio_data
+            nonlocal audio_data, result_ready
             try:
                 message = json.loads(message)
                 # 提取音频数据并解码
@@ -347,27 +356,42 @@ class TTSService:
                 
                 # 处理结束信号
                 if message["code"] == 0 and message["data"]["status"] == 2:
+                    result_ready = True
+                    completion_event.set()  # 标记完成
                     ws.close()
             except Exception as e:
                 print(f"处理WebSocket消息时出错: {e}")
+                websocket_error = e
+                completion_event.set()  # 出错时也标记完成
                 ws.close()
                 
         def on_error(ws, error):
+            nonlocal websocket_error
             print(f"WebSocket错误: {error}")
+            websocket_error = error
+            completion_event.set()  # 出错时标记完成
             
-        def on_close(ws, close_status_code, close_reason):
+        def on_close(ws, close_status_code=None, close_reason=None):
             print("WebSocket连接关闭")
+            completion_event.set()  # 连接关闭时标记完成
             
         def on_open(ws):
+            nonlocal connection_event
+            connection_event.set()  # 标记连接已建立
+            
             def run():
                 try:
                     # 发送JSON格式的请求数据
                     ws.send(ws_param['body'])
                 except Exception as e:
+                    nonlocal websocket_error
                     print(f"发送WebSocket数据时出错: {e}")
+                    websocket_error = e
+                    completion_event.set()  # 出错时标记完成
                     ws.close()
-            thread.start_new_thread(run, ())
             
+            thread.start_new_thread(run, ())
+        
         # 创建WebSocket对象
         ws = websocket.WebSocketApp(
             ws_param['url'],
@@ -378,7 +402,39 @@ class TTSService:
             header=ws_param['headers']
         )
         
-        # 启动WebSocket连接
-        ws.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
+        # 在单独的线程中运行WebSocket连接
+        ws_thread = threading.Thread(
+            target=ws.run_forever,
+            kwargs={"sslopt": {"cert_reqs": ssl.CERT_NONE}}
+        )
+        ws_thread.daemon = True  # 设置为后台线程
+        ws_thread.start()
+        
+        # 等待连接建立，带超时
+        if not connection_event.wait(connection_timeout):
+            print(f"WebSocket连接超时(等待{connection_timeout}秒)")
+            ws.close()
+            return b""
+            
+        # 等待接收完成，带超时
+        if not completion_event.wait(receive_timeout):
+            print(f"WebSocket接收数据超时(等待{receive_timeout}秒)")
+            ws.close()
+            return b""
+            
+        # 检查是否有错误
+        if websocket_error:
+            print(f"WebSocket发生错误: {websocket_error}")
+            return b""
+            
+        # 检查是否有有效数据
+        if len(audio_data) == 0:
+            print("未收到有效音频数据")
+            return b""
+        
+        # 等待线程结束，但有超时限制
+        ws_thread.join(2)
+        if ws_thread.is_alive():
+            print("WebSocket线程未能正常结束，强制继续")
         
         return bytes(audio_data) 

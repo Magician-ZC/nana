@@ -58,7 +58,7 @@ export const useChatStore = defineStore('chat', () => {
   }
   
   // 播放音频
-  function playAudio(base64Audio) {
+  function playAudio(base64Audio, highPriority = false) {
     if (!base64Audio) {
       console.warn('未收到音频数据，无法播放');
       return;
@@ -71,6 +71,9 @@ export const useChatStore = defineStore('chat', () => {
       if (audioPlayer) {
         console.log('停止当前正在播放的音频');
         audioPlayer.pause();
+        if (audioPlayer.src) {
+          URL.revokeObjectURL(audioPlayer.src);
+        }
         audioPlayer = null;
       }
       
@@ -95,65 +98,50 @@ export const useChatStore = defineStore('chat', () => {
         audioPlayer = new Audio();
         
         // 添加事件监听器
-        audioPlayer.addEventListener('canplaythrough', () => {
-          console.log('音频已加载，准备播放');
-          try {
-            const playPromise = audioPlayer.play();
-            if (playPromise !== undefined) {
-              playPromise
-                .then(() => console.log('音频播放成功启动'))
-                .catch(error => console.error('音频播放失败:', error));
-            }
-          } catch (playError) {
-            console.error('播放时发生错误:', playError);
+        if (highPriority) {
+          // 高优先级模式，尽快播放，不等待完全加载
+          audioPlayer.src = audioUrl;
+          const playPromise = audioPlayer.play();
+          if (playPromise !== undefined) {
+            playPromise
+              .then(() => console.log('高优先级音频播放成功启动'))
+              .catch(error => {
+                console.error('高优先级音频播放失败:', error);
+                // 如果直接播放失败，回退到普通模式
+                audioPlayer.addEventListener('canplaythrough', () => {
+                  audioPlayer.play().catch(e => console.error('回退模式播放也失败:', e));
+                });
+              });
           }
-        });
+        } else {
+          // 普通模式，等待加载完成再播放
+          audioPlayer.addEventListener('canplaythrough', () => {
+            console.log('音频已加载，准备播放');
+            try {
+              const playPromise = audioPlayer.play();
+              if (playPromise !== undefined) {
+                playPromise
+                  .then(() => console.log('音频播放成功启动'))
+                  .catch(error => console.error('音频播放失败:', error));
+              }
+            } catch (playError) {
+              console.error('播放时发生错误:', playError);
+            }
+          });
+          
+          audioPlayer.src = audioUrl;
+        }
         
-        audioPlayer.addEventListener('ended', () => {
-          console.log('音频播放结束，释放资源');
-          // 播放结束后释放资源
-          URL.revokeObjectURL(audioUrl);
-          audioPlayer = null;
-        });
-        
+        // 添加错误处理
         audioPlayer.addEventListener('error', (e) => {
-          console.error('音频播放错误:', e);
-          URL.revokeObjectURL(audioUrl);
-          audioPlayer = null;
+          console.error('音频播放器错误:', e);
         });
-        
-        // 设置音频源并加载
-        audioPlayer.src = audioUrl;
-        audioPlayer.load();
-        console.log('音频已加载');
         
       } catch (decodeError) {
-        console.error('Base64解码失败:', decodeError);
-        // 尝试另一种处理方式
-        try {
-          console.log('尝试使用替代方法处理音频数据');
-          const blob = new Blob(
-            [Uint8Array.from(atob(base64Audio), c => c.charCodeAt(0))],
-            { type: 'audio/mp3' }
-          );
-          const audioUrl = URL.createObjectURL(blob);
-          
-          audioPlayer = new Audio(audioUrl);
-          audioPlayer.oncanplaythrough = () => {
-            console.log('替代方法：音频已加载，准备播放');
-            audioPlayer.play();
-          };
-          audioPlayer.onerror = (e) => {
-            console.error('替代方法：音频播放错误:', e);
-            URL.revokeObjectURL(audioUrl);
-          };
-          audioPlayer.load();
-        } catch (alternativeError) {
-          console.error('替代音频处理方法也失败:', alternativeError);
-        }
+        console.error('Base64解码或创建音频对象失败:', decodeError);
       }
-    } catch (error) {
-      console.error('处理音频数据时出错:', error, '错误类型:', error.name);
+    } catch (e) {
+      console.error('播放音频时发生错误:', e);
     }
   }
   
@@ -240,6 +228,7 @@ export const useChatStore = defineStore('chat', () => {
     let expression = ""
     let guidanceMessage = null
     let audioData = null
+    let guidanceAudio = null  // 新增：存储引导决策的音频数据
     
     // 用于存储分片的音频数据
     let audioChunks = []
@@ -345,6 +334,11 @@ export const useChatStore = defineStore('chat', () => {
                   
                   if (data.guidance_message) {
                     guidanceMessage = data.guidance_message
+                    // 如果有引导决策的音频数据，保存它
+                    if (data.guidance_audio) {
+                      guidanceAudio = data.guidance_audio
+                      console.log('收到引导决策音频数据，长度:', data.guidance_audio.length)
+                    }
                   }
                 } 
                 else if (data.type === 'chunk') {
@@ -524,6 +518,13 @@ export const useChatStore = defineStore('chat', () => {
             expression: expression,
             messageId: Date.now() + 1 // 使用不同的ID
           })
+          
+          // 如果有引导决策的音频数据，播放它
+          if (guidanceAudio) {
+            setTimeout(() => {
+              playAudio(guidanceAudio, true)
+            }, 50) // 使用更短的延迟，确保消息已添加但尽快播放
+          }
         }, 500); // 添加500ms延迟，使其看起来像是分开发送的
       }
       
@@ -636,6 +637,13 @@ export const useChatStore = defineStore('chat', () => {
             timestamp: formatTime(),
             agentId: currentAgent.value 
           })
+          
+          // 如果收到引导决策的音频数据，等消息添加后播放(使用高优先级)
+          if (data.guidance_audio) {
+            setTimeout(() => {
+              playAudio(data.guidance_audio, true)
+            }, 50) // 使用更短的延迟，确保消息已添加但尽快播放
+          }
         }, 500); // 添加500ms延迟，使其看起来像是分开发送的
       }
       
@@ -685,6 +693,27 @@ export const useChatStore = defineStore('chat', () => {
       })
       // 记录已经显示过欢迎消息，此行可保留用于兼容性
       hasShownWelcome.value[agentId] = true
+      
+      // 为欢迎语请求TTS音频
+      fetch('http://localhost:8666/api/welcome_tts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ 
+          message: agentInfo.message,
+          agent_type: agentId
+        }),
+      })
+      .then(response => response.json())
+      .then(data => {
+        if (data.audio) {
+          playAudio(data.audio)
+        }
+      })
+      .catch(error => {
+        console.error('获取欢迎语音频失败:', error)
+      })
     }
   }
   

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, UploadFile, File
+from fastapi import FastAPI, WebSocket, UploadFile, File, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -711,6 +711,16 @@ async def stream_chat(request: ChatRequest):
             if guidance_message:
                 metadata["guidance_message"] = guidance_message
                 
+                # 检查是否有引导决策的音频数据
+                guidance_audio = None
+                if hasattr(chat_service.main_agent.conversation_history, 'guidance_audio'):
+                    guidance_audio = chat_service.main_agent.conversation_history.guidance_audio
+                    
+                if guidance_audio and len(guidance_audio) > 100:
+                    guidance_audio_base64 = base64.b64encode(guidance_audio).decode('ascii')
+                    metadata["guidance_audio"] = guidance_audio_base64
+                    print(f"引导决策音频已添加到流式响应元数据，大小: {len(guidance_audio)} 字节")
+            
             yield json.dumps(metadata) + "\n"
             
             # 如果有音频数据，处理后发送
@@ -918,6 +928,16 @@ async def normal_chat_flow(request: ChatRequest):
     # 如果有引导决策消息，添加到响应中
     if guidance_message:
         response_data["guidance_message"] = guidance_message
+        
+        # 检查是否有引导决策的音频数据
+        guidance_audio = None
+        if hasattr(chat_service.main_agent.conversation_history, 'guidance_audio'):
+            guidance_audio = chat_service.main_agent.conversation_history.guidance_audio
+            
+        if guidance_audio and len(guidance_audio) > 100:
+            guidance_audio_base64 = base64.b64encode(guidance_audio).decode('ascii')
+            response_data["guidance_audio"] = guidance_audio_base64
+            print(f"引导决策音频已添加到响应，大小: {len(guidance_audio)} 字节")
     
     return JSONResponse(content=response_data)
 
@@ -1129,6 +1149,103 @@ async def update_config_file(tts_speed=None, typing_speed=None, tts_voice=None,
     except Exception as e:
         print(f"更新配置文件失败: {e}")
         raise
+
+@app.post("/api/welcome_tts")
+async def welcome_tts(request: dict = Body(...)):
+    """为欢迎语生成TTS音频
+    
+    Args:
+        request: 包含欢迎语文本和agent类型的请求
+        
+    Returns:
+        dict: 包含音频数据的响应
+    """
+    try:
+        message = request.get("message", "")
+        agent_type = request.get("agent_type", "")
+        
+        if not message:
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": "欢迎语文本不能为空"
+                }
+            )
+        
+        # 确保TTS服务使用最新的配置
+        chat_service._refresh_tts_services()
+        
+        # 使用异步任务生成语音，避免阻塞
+        async def generate_tts_audio():
+            audio_data = None
+            
+            # 优先使用超拟人TTS
+            if chat_service.super_tts_service:
+                try:
+                    print("欢迎语TTS: 尝试使用超拟人TTS生成语音...")
+                    # 使用线程池执行可能阻塞的操作
+                    loop = asyncio.get_running_loop()
+                    audio_data = await loop.run_in_executor(
+                        None, 
+                        chat_service.super_tts_service.generate_audio, 
+                        message
+                    )
+                    
+                    if audio_data and len(audio_data) > 100:
+                        print(f"欢迎语超拟人TTS生成成功，音频大小: {len(audio_data)} 字节")
+                    else:
+                        print("欢迎语超拟人TTS生成失败: 生成的音频数据无效或过小")
+                except Exception as e:
+                    print(f"生成欢迎语超拟人语音时出错: {e}")
+            
+            # 如果超拟人TTS失败或未启用，尝试使用普通TTS
+            if (not audio_data or len(audio_data) < 100) and chat_service.tts_service:
+                try:
+                    print("欢迎语TTS: 尝试使用普通TTS生成语音...")
+                    # 使用线程池执行可能阻塞的操作
+                    loop = asyncio.get_running_loop()
+                    audio_data = await loop.run_in_executor(
+                        None, 
+                        chat_service.tts_service.generate_audio, 
+                        message
+                    )
+                    
+                    if audio_data and len(audio_data) > 100:
+                        print(f"欢迎语普通TTS生成成功，音频大小: {len(audio_data)} 字节")
+                    else:
+                        print("欢迎语普通TTS生成失败: 生成的音频数据无效或过小")
+                except Exception as e:
+                    print(f"生成欢迎语普通语音时出错: {e}")
+            
+            return audio_data
+        
+        # 设置超时
+        try:
+            # 使用asyncio.wait_for添加超时控制
+            audio_data = await asyncio.wait_for(generate_tts_audio(), timeout=15.0)
+        except asyncio.TimeoutError:
+            print("欢迎语TTS生成超时，返回空音频")
+            audio_data = None
+        except Exception as e:
+            print(f"欢迎语TTS生成过程中出现异常: {e}")
+            audio_data = None
+            
+        audio_base64 = base64.b64encode(audio_data).decode('ascii') if audio_data else ''
+        
+        return JSONResponse(
+            content={
+                "success": True,
+                "audio": audio_base64
+            }
+        )
+    except Exception as e:
+        print(f"生成欢迎语TTS失败: {e}")
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": f"生成欢迎语TTS失败: {str(e)}"
+            }
+        )
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8666, reload=True)

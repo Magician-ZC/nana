@@ -66,8 +66,13 @@ function initAudioContext() {
         source.connect(window.audioContext.destination);
         source.start(0);
         console.log('播放静音音频成功');
+        
+        // 静音音频成功播放后，立即请求欢迎语音频
+        requestWelcomeAudio();
       } catch (e) {
         console.warn('播放静音音频失败:', e);
+        // 即使静音音频失败，也尝试获取欢迎语音频
+        requestWelcomeAudio();
       }
       
       // 移除事件监听器
@@ -81,8 +86,74 @@ function initAudioContext() {
     document.addEventListener('touchstart', resumeAudioContext);
     document.addEventListener('keydown', resumeAudioContext);
     
+    // 如果音频上下文不是suspended状态，直接获取欢迎语音频
+    if (window.audioContext.state !== 'suspended') {
+      requestWelcomeAudio();
+    }
+    
   } catch (e) {
     console.error('初始化音频上下文失败:', e);
+  }
+}
+
+// 请求欢迎语音频的函数
+function requestWelcomeAudio() {
+  // 获取当前角色信息
+  const agentId = chatStore.currentAgent;
+  const agentInfo = chatStore.currentAgentInfo;
+  
+  if (agentInfo && agentInfo.message) {
+    console.log('请求欢迎语音频...');
+    // 在获取音频之前，可以显示加载状态
+    if (live2dRef.value) {
+      live2dRef.value.showExpression('default');
+    }
+    
+    // 直接请求欢迎语音频
+    fetch('http://localhost:8666/api/welcome_tts', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ 
+        message: agentInfo.message,
+        agent_type: agentId
+      }),
+    })
+    .then(response => response.json())
+    .then(data => {
+      if (data.audio) {
+        console.log('欢迎语音频获取成功，准备播放');
+        // 使用高优先级播放欢迎语音频
+        chatStore.playAudio(data.audio, true);
+        
+        // 根据欢迎语内容设置表情
+        const message = agentInfo.message;
+        if (message.includes('？') || message.includes('?')) {
+          live2dRef.value?.showExpression('惊讶');
+        } else if (message.includes('！') || message.includes('!')) {
+          live2dRef.value?.showExpression('兴奋');
+        } else {
+          // 默认表情
+          const defaultExpressions = {
+            'nanaA': '酷酷',
+            'nanaB': '开心',
+            'nanaC': '害羞',
+          };
+          live2dRef.value?.showExpression(defaultExpressions[chatStore.currentModel] || '酷酷');
+        }
+        
+        // 1.5秒后恢复默认表情
+        setTimeout(() => {
+          live2dRef.value?.showExpression('default', false);
+        }, 1500);
+      }
+    })
+    .catch(error => {
+      console.error('初始欢迎语音频失败:', error);
+      // 错误时恢复默认表情
+      live2dRef.value?.showExpression('default', false);
+    });
   }
 }
 

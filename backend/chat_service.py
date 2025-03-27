@@ -7,6 +7,7 @@ from main_agent import MainAgent
 from conversation import ConversationHistory
 import os
 import json
+import asyncio
 
 class ChatService:
     def __init__(self):
@@ -101,9 +102,11 @@ class ChatService:
                 if (len(self.main_agent.conversation_history.turns) >= 2 and 
                     self.main_agent.conversation_history.turns[-1].ask == "SYSTEM_GUIDANCE"):
                     guidance_message = self.main_agent.conversation_history.turns[-1].answer
+            elif hasattr(self.main_agent.conversation_history, 'last_guidance_message'):
+                guidance_message = self.main_agent.conversation_history.last_guidance_message
             
             # 生成语音 (如果语音服务已启用)
-            audio_data = None  
+            audio_data = None
             super_tts_error = None
             tts_error = None
             
@@ -135,35 +138,65 @@ class ChatService:
                     tts_error = str(e)
                     print(f"生成普通语音时出错: {e}")
             
-            # 如果两种TTS都失败了，记录详细错误
-            if (not audio_data or len(audio_data) < 100) and (super_tts_error or tts_error):
-                print("所有TTS服务都失败了:")
-                if super_tts_error:
-                    print(f"- 超拟人TTS错误: {super_tts_error}")
-                if tts_error:
-                    print(f"- 普通TTS错误: {tts_error}")
-                
-                # 尝试对回复进行截断处理，再次生成语音
-                if len(reply) > 50:  # 如果回复较长，尝试只处理前50个字符
-                    short_reply = reply[:50] + "..."
-                    print(f"尝试使用截断回复生成语音: {short_reply}")
+            # 如果有引导决策消息，同样为其生成语音并保存到临时属性中
+            if guidance_message:
+                try:
+                    # 使用异步方式生成语音，避免阻塞
+                    loop = asyncio.get_running_loop()
                     
-                    try:
-                        if self.tts_service:
-                            audio_data = self.tts_service.generate_audio(short_reply)
-                            if audio_data and len(audio_data) > 100:
-                                print(f"使用截断回复生成语音成功，音频大小: {len(audio_data)} 字节")
-                    except Exception as e:
-                        print(f"使用截断回复生成语音也失败了: {e}")
+                    # 如果有超拟人TTS服务并启用了超拟人TTS
+                    if self.super_tts_service:
+                        print("尝试为引导决策消息生成超拟人TTS...")
+                        
+                        # 使用超时控制，防止阻塞
+                        try:
+                            guidance_audio = await asyncio.wait_for(
+                                loop.run_in_executor(
+                                    None, 
+                                    self.super_tts_service.generate_audio, 
+                                    guidance_message
+                                ),
+                                timeout=10.0
+                            )
+                            
+                            if guidance_audio and len(guidance_audio) > 100:
+                                # 将引导决策音频保存到临时属性中，供API响应获取
+                                self.main_agent.conversation_history.guidance_audio = guidance_audio
+                                print(f"引导决策超拟人TTS生成成功，音频大小: {len(guidance_audio)} 字节")
+                        except asyncio.TimeoutError:
+                            print("引导决策超拟人TTS生成超时")
+                        except Exception as e:
+                            print(f"引导决策超拟人TTS生成出错: {e}")
+                    
+                    # 如果超拟人TTS失败或未启用，尝试使用普通TTS
+                    if not hasattr(self.main_agent.conversation_history, 'guidance_audio') and self.tts_service:
+                        print("尝试为引导决策消息生成普通TTS...")
+                        
+                        # 使用超时控制，防止阻塞
+                        try:
+                            guidance_audio = await asyncio.wait_for(
+                                loop.run_in_executor(
+                                    None, 
+                                    self.tts_service.generate_audio, 
+                                    guidance_message
+                                ),
+                                timeout=10.0
+                            )
+                            
+                            if guidance_audio and len(guidance_audio) > 100:
+                                # 将引导决策音频保存到临时属性中，供API响应获取
+                                self.main_agent.conversation_history.guidance_audio = guidance_audio
+                                print(f"引导决策普通TTS生成成功，音频大小: {len(guidance_audio)} 字节")
+                        except asyncio.TimeoutError:
+                            print("引导决策普通TTS生成超时")
+                        except Exception as e:
+                            print(f"引导决策普通TTS生成出错: {e}")
+                
+                except Exception as e:
+                    print(f"生成引导决策语音时出错: {e}")
             
             return reply, audio_data, expression, guidance_message
             
         except Exception as e:
             print(f"生成回复时出错: {e}")
-            error_message = "对不起，我现在有点累了，能稍后再聊吗？"
-            
-            # 记录详细错误信息供调试
-            import traceback
-            print(f"详细错误: {traceback.format_exc()}")
-            
-            return error_message, None, "生气", None
+            return "抱歉，发生了错误，请稍后再试。", None, "生气", None

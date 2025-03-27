@@ -360,6 +360,7 @@ class MainAgent:
 
     async def _handle_successful_reply(self, message: str, reply_content: str) -> None:
         """处理成功的回复"""
+        # 记录助手回复并添加到对话历史
         self._log_conversation('assistant', reply_content)
         await self.conversation_history.add_dialog(message, reply_content, self.user_info_processor)
         
@@ -402,6 +403,9 @@ class MainAgent:
             
             # 记录引导决策的消息
             self._log_conversation('assistant', guidance_message)
+            
+            # 将引导消息信息保存到conversation_history中的临时属性中，供后续TTS使用
+            self.conversation_history.last_guidance_message = guidance_message
             
             # 将引导消息添加到对话历史
             # 注意：这里不触发归档，所以不传递user_info_processor
