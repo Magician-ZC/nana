@@ -10,8 +10,9 @@
     </button>
     
     <TimeWeather />
-    <QuickQuestions />
+    
     <div class="live2d-main">
+      <QuickQuestions />
       <Live2DModel ref="live2dRef" :modelId="chatStore.currentModel" />
       <div class="controls-container">
         <AgentSelector @agent-change="handleAgentChange" :currentModel="chatStore.currentAgent" />

@@ -535,6 +535,46 @@ const hasStreamingMessage = computed(() => {
   return chatStore.messages.some(message => message.isStreaming === true);
 })
 
+// 监听消息变化，自动滚动到底部
+watch(() => chatStore.messages.length, () => {
+  nextTick(() => {
+    if (messagesEndRef.value) {
+      messagesEndRef.value.scrollIntoView({ behavior: 'smooth' });
+    }
+  });
+});
+
+// 监听正在流式传输的消息变化，保持滚动到底部
+watch(hasStreamingMessage, (newVal) => {
+  if (newVal) {
+    nextTick(() => {
+      if (messagesEndRef.value) {
+        messagesEndRef.value.scrollIntoView({ behavior: 'smooth' });
+      }
+    });
+  }
+});
+
+// 监听最新消息的内容变化，确保在流式传输过程中保持滚动
+watch(
+  () => {
+    const lastMsg = chatStore.messages[chatStore.messages.length - 1];
+    return lastMsg ? lastMsg.content : null;
+  },
+  () => {
+    if (chatStore.messages.length > 0) {
+      const lastMsg = chatStore.messages[chatStore.messages.length - 1];
+      if (lastMsg && lastMsg.isStreaming) {
+        nextTick(() => {
+          if (messagesEndRef.value) {
+            messagesEndRef.value.scrollIntoView({ behavior: 'smooth' });
+          }
+        });
+      }
+    }
+  }
+);
+
 onMounted(() => {
   // 在组件挂载后显示欢迎消息
   chatStore.showWelcomeMessage()
