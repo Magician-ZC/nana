@@ -2,657 +2,495 @@
   <div class="mobile-chat-bubbles" v-if="isMobile">
     <div class="bubbles-container">
       <div
-        v-for="(message, index) in messagesWithId"
+        v-for="(message, index) in assistantMessages"
         :key="message.id"
-        class="message-bubble"
+        class="message-bubble ios-bubble"
         :class="[
           getMessageClass(message),
-          { 'fade-in': true }
+          { 'fade-in': true },
+          { 'welcome-message': message.isWelcomeMessage }
         ]"
-        :style="{
-          opacity: calculateOpacity(index)
-        }"
+        :style="getBubbleStyle(message, index)"
       >
         <!-- 消息内容 -->
-        <div class="message-content">
-          {{ message.content || '无消息内容' }}
-        </div>
-        
-        <!-- 元数据（角色名和时间） -->
-        <div class="message-meta" v-if="message.timestamp || message.agentId">
-          <span v-if="message.agentId" class="agent-name">{{ getAgentName(message.agentId) }}</span>
-          <span v-if="message.timestamp" class="timestamp">{{ formatTime(message.timestamp) }}</span>
+        <div class="message-content" :style="getContentStyle(message.id)">
+          {{ renderMessageContent(message) }}
         </div>
       </div>
       
       <!-- 正在输入的提示 -->
-      <div v-if="hasStreamingMessage" class="typing-indicator">
+      <div v-if="hasStreamingMessage" class="typing-indicator" :style="{ backgroundColor: colors[0] }">
         <span></span>
         <span></span>
         <span></span>
       </div>
     </div>
-    
-    <!-- 渐变遮罩 -->
-    <div class="gradient-overlay"></div>
   </div>
 </template>
 
-<script setup>
-import { ref, computed, watch, onMounted, nextTick, onUnmounted, onBeforeUnmount } from 'vue';
+<script>
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
 import { useChatStore } from '../stores/chat';
 
-const chatStore = useChatStore();
-
-// 从聊天记录中筛选出最新的8条助手消息
-const recentAssistantMessages = computed(() => {
-  const assistantMessages = chatStore.messages
-    .filter(message => message.type === 'assistant')
-    .reverse()
-    .slice(0, 8);
-  
-  console.log("助手消息筛选后数量:", assistantMessages.length);
-  if (assistantMessages.length === 0) {
-    console.log("没有找到助手消息!");
-  } else {
-    console.log("找到助手消息内容示例:", assistantMessages[0].content?.substring(0, 20));
-  }
-  
-  return assistantMessages;
-});
-
-// 为消息添加唯一ID并存储
-const messagesWithId = ref([]);
-
-// 生成唯一ID的函数
-const generateId = () => {
-  return Date.now().toString(36) + Math.random().toString(36).substr(2);
-};
-
-// 监听消息变化并更新messagesWithId
-watch(() => chatStore.messages, (newMessages) => {
-  try {
-    console.log("消息变化监听触发，总消息数:", newMessages?.length || 0);
+export default {
+  props: {
+    // 接收父组件传递的移动设备状态
+    isMobileDevice: {
+      type: Boolean,
+      default: true
+    }
+  },
+  setup(props) {
+    const chatStore = useChatStore();
+    // 使用父组件传来的isMobile状态
+    const isMobile = computed(() => props.isMobileDevice);
     
-    // 获取助手消息
-    const assistantMessages = recentAssistantMessages.value;
-    console.log("当前助手消息数:", assistantMessages?.length || 0);
+    // iOS风格的颜色数组
+    const colors = [
+      'rgba(0, 132, 255, 0.9)',  // iOS蓝色
+      'rgba(76, 217, 100, 0.9)',  // iOS绿色
+      'rgba(255, 45, 85, 0.9)',   // iOS粉色
+      'rgba(88, 86, 214, 0.9)',   // iOS紫色
+      'rgba(255, 149, 0, 0.9)',   // iOS橙色
+      'rgba(90, 200, 250, 0.9)',  // iOS浅蓝色
+      'rgba(52, 170, 220, 0.9)',  // iOS天蓝色
+      'rgba(120, 120, 128, 0.9)'  // iOS灰色
+    ];
     
-    // 更新消息ID列表
-    const newMessagesWithId = [];
+    // 消息颜色映射
+    const messageColors = ref({});
     
-    // 处理每条消息
-    assistantMessages.forEach(message => {
-      if (!message) return; // 跳过无效消息
-      
-      try {
-        // 检查消息是否已存在
-        const existingMessage = messagesWithId.value.find(m => 
-          m.content === message.content && 
-          m.agentId === message.agentId
-        );
-        
-        if (existingMessage) {
-          // 如果消息已存在，保留它
-          newMessagesWithId.push(existingMessage);
-        } else {
-          // 如果是新消息，添加一个新ID
-          newMessagesWithId.push({
+    // 获取消息颜色，确保每个消息ID都有固定的颜色
+    const getMessageColor = (id) => {
+      if (!messageColors.value[id]) {
+        const colorIndex = Object.keys(messageColors.value).length % colors.length;
+        messageColors.value[id] = colors[colorIndex];
+      }
+      return messageColors.value[id];
+    };
+    
+    // 获取助手(agent)消息，确保欢迎消息保留在列表中
+    const assistantMessages = computed(() => {
+      // 获取所有助手消息
+      const allMessages = chatStore.messages
+        .filter(message => message.type === 'assistant')
+        .map((message, index) => {
+          // 确保每个消息都有唯一ID
+          const id = message.id || `msg-${index}`;
+          console.log(`消息[${index}]内容: "${message.content}"`); // 添加调试日志
+          return {
             ...message,
-            id: generateId()
-          });
+            id
+          };
+        });
+      
+      console.log(`共有 ${allMessages.length} 条助手消息`);
+      
+      // 确保欢迎消息保留在顶部，不被顶掉
+      let hasWelcomeMessage = false;
+      let welcomeMessage = null;
+      
+      // 检查是否有欢迎消息
+      for (const msg of allMessages) {
+        if (msg.isWelcomeMessage) {
+          hasWelcomeMessage = true;
+          welcomeMessage = msg;
+          break;
         }
-      } catch (messageError) {
-        console.error("处理单条消息时出错:", messageError);
       }
+      
+      return allMessages;
     });
     
-    // 更新ref
-    messagesWithId.value = newMessagesWithId;
-    console.log("更新后的messagesWithId长度:", messagesWithId.value.length);
-  } catch (error) {
-    console.error("监听消息变化时出错:", error);
+    // 修改渲染消息内容的函数，提高对"正在思考中"的处理优先级
+    const renderMessageContent = (message) => {
+      // 获取消息内容
+      const content = message.content;
+      
+      // 调试日志
+      console.log(`移动端渲染消息(${message.id || 'unknown'})内容: "${content?.substring(0, 30) || '空'}"`);
+      
+      // 如果消息没有内容或内容为空（不应该发生，但以防万一）
+      if (content === null || content === undefined || content.trim() === '') {
+        console.log(`消息 ${message.id || 'unknown'} 内容为空，显示"正在思考中"`);
+        return '正在思考中';
+      }
+      
+      // 如果内容是"正在思考中"或"正在思考中..."，原样显示
+      if (content === '正在思考中' || content === '正在思考中...') {
+        return content;
+      }
+      
+      // 检查内容是否以"正在思考中"开头但不仅是"正在思考中"
+      // 这种情况不应该出现，但为了防止显示问题，我们需要处理
+      if (content.startsWith('正在思考中') && content !== '正在思考中' && content !== '正在思考中...') {
+        // 可能是后端发送的内容没有完全替换"正在思考中"，截取掉这部分
+        console.log(`发现内容以"正在思考中"开头但不仅是"正在思考中"，可能需要处理:`, content);
+        
+        // 使用更强大的正则表达式，匹配"正在思考中"和任何后续的省略号
+        const cleanedContent = content.replace(/^正在思考中\.{0,3}/, '').replace(/^\.{1,3}/, '');
+        console.log(`清理后的内容: "${cleanedContent}"`);
+        return cleanedContent || content; // 如果替换后为空，则返回原内容
+      }
+      
+      // 检查内容是否仅以省略号开头，这可能是省略号单独残留的情况
+      if (content.match(/^\.{1,3}[^\.]/)) {
+        console.log(`发现内容以省略号开头，可能是残留，进行清理:`, content);
+        const cleanedContent = content.replace(/^\.{1,3}/, '');
+        console.log(`清理后的内容: "${cleanedContent}"`);
+        return cleanedContent || content;
+      }
+      
+      // 如果消息被标记为需要清除，但内容不为空，仍显示内容
+      if (message.shouldClear && content && content.trim() !== '') {
+        console.log(`消息 ${message.id || 'unknown'} 被标记为shouldClear但有内容，显示内容`);
+        return content;
+      }
+      
+      // 如果消息被标记为需要清除且内容为空，显示"正在思考中"
+      if (message.shouldClear) {
+        console.log(`消息 ${message.id || 'unknown'} 被标记为shouldClear且内容为空，显示"正在思考中"`);
+        return '正在思考中';
+      }
+      
+      // 返回消息内容
+      return content;
+    };
+    
+    // 为每个消息创建一个样式对象
+    const getBubbleStyle = (message, index) => {
+      const opacity = calculateOpacity(index);
+      const backgroundColor = getMessageColor(message.id);
+      
+      // 欢迎消息使用特殊样式
+      if (message.isWelcomeMessage) {
+        return {
+          opacity,
+          backgroundColor,
+          borderWidth: '2px',
+          borderColor: 'rgba(255, 255, 255, 0.4)'
+        };
+      }
+      
+      // 添加最小高度和内边距确保气泡始终可见
+      return {
+        opacity,
+        backgroundColor,
+        padding: '10px 16px', // 确保气泡有足够的padding
+        minHeight: '36px',    // 确保气泡有最小高度
+        minWidth: '50px'      // 确保气泡有最小宽度
+      };
+    };
+    
+    // 修改getContentStyle函数，确保文本样式适合阅读
+    const getContentStyle = (id) => {
+      const backgroundColor = getMessageColor(id);
+      // 为系统消息设置黑色文本，其他为白色
+      const textColor = backgroundColor === 'rgba(230, 230, 235, 0.9)' ? '#000' : '#fff';
+      
+      return {
+        color: textColor,
+        minWidth: '20px', // 确保消息内容区域有最小宽度
+        minHeight: '20px',  // 确保消息内容区域有最小高度
+        fontSize: '16px', // 确保字体大小足够大
+        lineHeight: '1.4',
+        padding: '5px 0', // 添加一些内边距使文本更易读
+        wordBreak: 'break-word',
+        overflow: 'hidden'
+      };
+    };
+    
+    // 获取消息类名
+    const getMessageClass = (message) => {
+      return message.type === 'user' ? 'user-message' : 'system-message';
+    };
+    
+    // 计算透明度 - 实现iOS风格的渐变效果
+    const calculateOpacity = (index) => {
+      const totalMessages = assistantMessages.value.length;
+      if (totalMessages === 0) return 1;
+      
+      // 计算相对位置 (0到1之间，0表示最顶部，1表示最底部)
+      const relativePosition = index / (totalMessages - 1);
+      
+      // 如果是欢迎消息，保持完全可见
+      if (assistantMessages.value[index]?.isWelcomeMessage) {
+        return 1;
+      }
+      
+      // 如果消息不在上半部分区域，保持完全可见
+      if (relativePosition >= 0.5) {
+        return 1;
+      }
+      
+      // 否则，渐变消失 (将0-0.5映射到0-1)
+      // 使用更平滑的透明度变化
+      const t = relativePosition / 0.5;
+      // 使用自定义渐变函数，让顶部区域接近完全透明
+      return Math.min(t * 1.5, 1); // 顶部更趋近于0透明度
+    };
+    
+    // 获取正在流式传输的消息状态
+    const hasStreamingMessage = computed(() => {
+      return chatStore.messages.some(msg => msg.isStreaming === true);
+    });
+    
+    // 注册音频事件
+    const registerAudioEvents = () => {
+      // 创建一个事件，通知组件音频已准备就绪
+      const audioReadyEvent = new CustomEvent('audio-ready', {
+        detail: { ready: true }
+      });
+      document.dispatchEvent(audioReadyEvent);
+    };
+    
+    onMounted(() => {
+      // 注册音频事件
+      registerAudioEvents();
+      
+      // 打印初始消息状态
+      console.log('初始化消息状态:', JSON.stringify(chatStore.messages.map(m => ({
+        type: m.type,
+        content: m.content,
+        id: m.id
+      }))));
+      
+      // 监听新消息，自动滚动到底部
+      watch(() => assistantMessages.value.length, () => {
+        scrollToBottom();
+      });
+    });
+    
+    // 添加自动滚动到底部的函数
+    const scrollToBottom = () => {
+      // 使用nextTick确保DOM已更新
+      nextTick(() => {
+        const container = document.querySelector('.bubbles-container');
+        if (container) {
+          container.scrollTop = container.scrollHeight;
+        }
+      });
+    };
+    
+    return {
+      isMobile,
+      assistantMessages,
+      hasStreamingMessage,
+      getMessageClass,
+      getMessageColor,
+      getBubbleStyle,
+      getContentStyle,
+      calculateOpacity,
+      colors,
+      scrollToBottom,
+      renderMessageContent
+    };
   }
-}, { immediate: true, deep: true });
-
-// 监听当前正在流式传输的消息
-watch(() => hasStreamingMessage.value, () => {
-  // 强制更新以确保动画正常
-  if (messagesWithId.value.length > 0) {
-    const lastMessage = messagesWithId.value[messagesWithId.value.length - 1];
-    if (lastMessage) {
-      lastMessage.updatedAt = Date.now();
-    }
-  }
-});
-
-// 计算消息的透明度，越往上越透明
-function calculateOpacity(index) {
-  // 使用非线性渐变，使底部的几条消息都较为清晰，上面的迅速变透明
-  const ratio = index / (recentAssistantMessages.value.length - 1);
-  const opacity = Math.max(0.1, 1 - (ratio * ratio * 1.2));
-  
-  // 如果是最新消息并且正在流式传输，确保完全不透明
-  if (index === 0 && hasStreamingMessage.value) {
-    return 1;
-  }
-  
-  return opacity;
-}
-
-// 根据消息的长度和内容调整样式
-function getMessageStyle(message, index) {
-  // 基础样式
-  const style = {
-    opacity: calculateOpacity(index),
-    transform: `translateY(${-index * 10}px) scale(${0.98 + (index * 0.004)})`,
-  };
-  
-  // 根据消息长度设置最大宽度
-  if (message.content && message.content.length < 15) {
-    style.maxWidth = '60%';
-  } else if (message.content && message.content.length > 50) {
-    style.maxWidth = '90%';
-  }
-  
-  return style;
-}
-
-// 根据消息内容确定气泡类型
-function getBubbleClass(message) {
-  const content = message.content || '';
-  
-  // 基础类
-  const classes = { 
-    'typing': message.isStreaming,
-  };
-  
-  // 根据内容添加情感类型
-  if (content.includes('？') || content.includes('?')) {
-    classes['question'] = true;
-  } else if (content.includes('！') || content.includes('!')) {
-    classes['excited'] = true;
-  } else if (/[哈嘻😊😄😂🤣]/u.test(content)) {
-    classes['happy'] = true;
-  } else if (/[😔😟🙁☹️😢😭]/u.test(content)) {
-    classes['sad'] = true;
-  }
-  
-  return classes;
-}
-
-// 获取角色简称
-function getShortAgentName(agentId) {
-  if (!agentId) return '助手';
-  
-  // 根据角色ID返回简短名称
-  const agentNames = {
-    'nanaA': '猫娘',
-    'nanaB': '姐姐',
-    'nanaC': '少女'
-  };
-  
-  // 对于自定义角色，获取名称前两个字符
-  if (agentId.startsWith('custom_')) {
-    const customAgent = chatStore.agents?.find(agent => agent.id === agentId);
-    if (customAgent && customAgent.name) {
-      return customAgent.name.substring(0, 2);
-    }
-    return '自定';
-  }
-  
-  return agentNames[agentId] || '助手';
-}
-
-// 时间格式化为简短格式
-function formatTime(timestamp) {
-  if (!timestamp || !timestamp.time) return '';
-  
-  try {
-    const date = new Date(timestamp.time);
-    const hours = date.getHours().toString().padStart(2, '0');
-    const minutes = date.getMinutes().toString().padStart(2, '0');
-    return `${hours}:${minutes}`;
-  } catch (e) {
-    return '';
-  }
-}
-
-// 判断是否需要显示时间戳
-function shouldShowTimestamp(message, index) {
-  if (index === 0) return true;
-  
-  // 获取前一条消息
-  const prevMessage = recentAssistantMessages.value[index + 1];
-  if (!prevMessage) return true;
-  
-  // 如果角色ID不同，显示时间
-  if (message.agentId !== prevMessage.agentId) return true;
-  
-  // 如果时间相差超过3分钟，显示时间
-  if (message.timestamp && prevMessage.timestamp) {
-    const curr = new Date(message.timestamp.time);
-    const prev = new Date(prevMessage.timestamp.time);
-    return (curr - prev) > 1000 * 60 * 3; // 3分钟
-  }
-  
-  return false;
-}
-
-// 检测是否有正在流式传输的消息
-const hasStreamingMessage = computed(() => {
-  return chatStore.messages.some(message => message.isStreaming === true);
-});
-
-// 移动设备检测
-const isMobile = ref(false);
-
-const checkMobileDevice = () => {
-  isMobile.value = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
-    || window.innerWidth <= 768;
-  console.log("移动设备检测结果:", isMobile.value);
 };
-
-// 获取角色名称
-function getAgentName(agentId) {
-  if (!agentId) return '助手';
-  
-  const agents = {
-    'zhinang': '智囊',
-    'assistant': '助手',
-    'default': '助手',
-    // 可以添加更多角色
-  };
-  
-  return agents[agentId] || agentId;
-}
-
-// 获取消息样式类
-function getMessageClass(message) {
-  if (!message || !message.content) return '';
-  
-  const content = message.content.toLowerCase();
-  
-  // 根据内容长度和情感特征返回不同的样式
-  if (content.includes('?') || content.includes('？')) {
-    return 'question-message';
-  } else if (content.length < 15) {
-    return 'short-message';
-  } else if (content.length > 80) {
-    return 'long-message';
-  }
-  
-  return '';
-}
-
-// 在组件挂载时初始化
-onMounted(() => {
-  // 事件处理函数绑定到实例，以便于在卸载时正确移除
-  checkMobileDevice.handler = checkMobileDevice;
-  handleMessageSent.handler = handleMessageSent;
-  
-  // 检测移动设备
-  checkMobileDevice();
-  
-  // 监听窗口大小变化
-  window.addEventListener('resize', checkMobileDevice.handler);
-  
-  // 初始化可能需要的任何资源
-  console.log("移动端气泡组件已挂载");
-  
-  try {
-    // 将消息展示的初始化操作放在nextTick中执行，确保DOM已经更新
-    nextTick(() => {
-      try {
-        // 强制更新一次消息列表
-        const currentMessages = [...chatStore.messages];
-        if (currentMessages.length > 0) {
-          console.log("移动端气泡组件挂载后强制更新", currentMessages.length, "条消息");
-          
-          // 检查当前助手消息
-          const assistantMessages = currentMessages.filter(msg => msg.type === 'assistant');
-          console.log("移动端气泡组件：助手消息", assistantMessages.length, "条");
-          
-          // 检查消息内容，使用安全访问
-          assistantMessages.forEach((msg, index) => {
-            if (msg) {
-              console.log(`助手消息${index+1}:`, msg.content?.substring(0, 30) || '无内容', 
-                          "id:", msg.id || '无ID', 
-                          "agentId:", msg.agentId || '无agentId');
-            }
-          });
-          
-          // 检查recentAssistantMessages计算属性
-          console.log("recentAssistantMessages长度:", recentAssistantMessages.value.length);
-          
-          // 如果消息数组为空，强制添加一条消息用于测试
-          if (messagesWithId.value.length === 0 && assistantMessages.length > 0) {
-            messagesWithId.value = assistantMessages.map(msg => ({
-              ...msg,
-              id: generateId()
-            }));
-            console.log("强制添加消息到messagesWithId, 现在长度:", messagesWithId.value.length);
-          }
-        }
-      } catch (tickError) {
-        console.error("nextTick更新消息时出错:", tickError);
-      }
-    });
-    
-    // 监听消息发送事件
-    document.addEventListener('message-sent', handleMessageSent.handler);
-  } catch (mountError) {
-    console.error("组件挂载过程中出错:", mountError);
-  }
-});
-
-// 处理新消息事件
-function handleMessageSent() {
-  // 在消息发送后，确保更新视图
-  nextTick(() => {
-    console.log("收到消息发送事件，recentAssistantMessages长度：", recentAssistantMessages.value.length);
-  });
-}
-
-// 组件卸载时清理事件监听
-onUnmounted(() => {
-  try {
-    console.log("移动端气泡组件卸载");
-    // 移除事件监听器，使用保存的引用以确保正确移除
-    document.removeEventListener('message-sent', handleMessageSent.handler);
-  } catch (error) {
-    console.error("移除事件监听器时出错:", error);
-  }
-});
-
-onBeforeUnmount(() => {
-  try {
-    // 清理事件监听器，使用保存的引用以确保正确移除
-    window.removeEventListener('resize', checkMobileDevice.handler);
-    console.log("移动端气泡组件卸载前清理完成");
-  } catch (error) {
-    console.error("清理窗口大小事件监听器时出错:", error);
-  }
-});
 </script>
 
 <style scoped>
 .mobile-chat-bubbles {
   position: fixed;
-  bottom: 80px; /* 位于输入框上方 */
-  right: 10px;
+  bottom: 90px;
+  right: 0;
   width: 85%;
-  max-width: 320px;
-  height: 70vh;
-  z-index: 500; /* 进一步提高z-index确保在所有元素上方 */
-  pointer-events: none; /* 防止干扰其他交互 */
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  overflow: hidden;
-  background-color: rgba(0, 0, 0, 0.02); /* 添加微小背景色，用于调试 */
-  border: 1px solid rgba(255, 0, 0, 0.1); /* 添加微小边框，用于调试 */
-}
-
-/* 在移动端上调整底部空间，为输入区域留出空间 */
-@media (max-width: 768px) {
-  .mobile-chat-bubbles {
-    bottom: 80px; /* 确保在输入区域上方 */
-    left: 10px; /* 添加左侧边距 */
-    right: 10px;
-    width: auto; /* 自动宽度 */
-    max-width: none;
-    height: calc(70vh - 60px); /* 减去输入区域高度 */
-  }
+  max-width: 380px;
+  height: 40vh;
+  z-index: 9999;
+  overflow: hidden; /* 保留overflow:hidden，内部容器将可滚动 */
 }
 
 .bubbles-container {
-  position: fixed;
-  bottom: 60px; /* 保留输入区域的空间 */
-  left: 0;
+  position: relative;
   width: 100%;
-  height: calc(70vh - 60px); /* 调整高度以便在移动设备上能更好地显示 */
-  background-color: rgba(0, 0, 0, 0.02); /* 几乎不可见的背景 */
+  height: 100%;
   display: flex;
-  flex-direction: column-reverse;
-  overflow: hidden;
-  padding: 10px 15px;
-  z-index: 500; /* 增加z-index确保能显示在其他元素之上 */
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: flex-end;
+  overflow-y: auto; /* 改为可垂直滚动 */
+  overflow-x: hidden;
+  background: transparent;
+  padding-right: 0;
+  padding-bottom: 10px;
+  /* 保留遮罩以实现渐变效果 */
+  mask-image: linear-gradient(to top, rgba(0, 0, 0, 1) 50%, rgba(0, 0, 0, 0) 100%);
+  -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 1) 50%, rgba(0, 0, 0, 0) 100%);
+  /* 添加触摸滚动优化 */
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  pointer-events: auto; /* 允许触摸事件通过 */
+}
+
+/* 确保iOS风格滚动条 */
+.bubbles-container::-webkit-scrollbar {
+  width: 3px;
+}
+
+.bubbles-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.bubbles-container::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.3);
+  border-radius: 10px;
 }
 
 .message-bubble {
-  max-width: 85%;
-  margin-bottom: 12px;
-  padding: 12px 16px;
-  background-color: rgba(255, 255, 255, 0.95); /* 增加不透明度 */
-  border-radius: 18px;
-  font-size: 15px;
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
-  opacity: 1; /* 默认完全不透明 */
-  transform-origin: left bottom;
-  transition: all 0.3s ease;
   position: relative;
-  z-index: 210;
-  word-break: break-word;
-  line-height: 1.5;
-  color: #333;
-  border-bottom-right-radius: 4px; /* 右下角为小圆角，模拟对话气泡 */
+  max-width: 90%;
+  margin: 4px 5px;
+  padding: 10px 16px !important; /* 增加padding并确保优先级 */
+  border-radius: 18px;
+  background-color: rgba(0, 132, 255, 0.9);
+  word-wrap: break-word;
+  transform-origin: right bottom;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  overflow: visible;
   animation: fadeIn 0.3s ease-out;
-}
-
-.message-bubble.typing {
-  animation: pulse 1.5s infinite ease-in-out;
-}
-
-/* 打字指示器 */
-.typing-indicator {
+  transition: opacity 0.3s, transform 0.3s;
+  pointer-events: auto; /* 允许气泡响应触摸事件 */
+  min-width: 50px !important; /* 确保气泡有最小宽度 */
+  min-height: 36px !important; /* 确保气泡有最小高度 */
   display: flex;
   align-items: center;
-  justify-content: center;
-  background-color: rgba(255, 255, 255, 0.8);
+}
+
+.ios-bubble {
   border-radius: 18px;
-  padding: 8px 12px;
-  width: fit-content;
-  margin-bottom: 10px;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
-  animation: fadeIn 0.3s ease-out;
+  position: relative;
+  min-width: 40px;
+  max-width: 90%;
+  align-self: flex-end;
+  margin-bottom: 8px;
+  margin-right: 10;
+}
+
+.ios-bubble.user-message {
+  border-bottom-right-radius: 4px;
+  margin-right: 0;
+  border-top-right-radius: 4px;
+}
+
+.ios-bubble.system-message {
+  border-top-left-radius: 18px;
+  border-top-right-radius: 18px;
+  border-bottom-left-radius: 18px;
+  border-bottom-right-radius: 4px;
+  margin-left: 0;
+  align-self: flex-end;
+  margin-right: 0;
+}
+
+.message-content {
+  color: white;
+  text-align: left;
+  font-size: 16px;
+  line-height: 1.4;
+  word-break: break-word;
+  white-space: pre-wrap; /* 保留空格和换行 */
+  overflow-wrap: break-word; /* 确保长单词能换行 */
+  min-height: 16px !important; /* 确保内容区域有最小高度 */
+  width: 100%; /* 确保内容区占满气泡宽度 */
+  display: block; /* 确保总是显示为块 */
+}
+
+.message-bubble.user-message {
+  align-self: flex-end;
+}
+
+.message-bubble.system-message {
+  align-self: flex-end;
+  margin-right: 10px;
+  background-color: rgba(230, 230, 235, 0.9);
+}
+
+.system-message .message-content {
+  color: #000;
+}
+
+/* 欢迎消息样式 */
+.message-bubble.welcome-message {
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.25);
+  z-index: 10; /* 确保欢迎消息显示在最上层 */
+}
+
+.typing-indicator {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  background-color: rgba(0, 132, 255, 0.9);
+  border-radius: 18px;
+  margin: 4px 0;
+  position: relative;
+  align-self: flex-end;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  margin-right: 0;
+  border-bottom-right-radius: 4px;
 }
 
 .typing-indicator span {
   height: 8px;
   width: 8px;
   margin: 0 2px;
-  background-color: #3b82f6;
+  background-color: rgba(255, 255, 255, 0.8);
   border-radius: 50%;
   display: inline-block;
-  opacity: 0.6;
+  animation: typing 1.4s infinite ease-in-out both;
 }
 
 .typing-indicator span:nth-child(1) {
-  animation: bouncing 1s infinite 0.2s;
+  animation-delay: 0s;
 }
+
 .typing-indicator span:nth-child(2) {
-  animation: bouncing 1s infinite 0.4s;
+  animation-delay: 0.2s;
 }
+
 .typing-indicator span:nth-child(3) {
-  animation: bouncing 1s infinite 0.6s;
+  animation-delay: 0.4s;
 }
 
-@keyframes bouncing {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-5px); }
-}
-
-/* 气泡动画 */
-.bubble-animation-enter-active {
-  animation: bubbleIn 0.5s ease;
-}
-
-.bubble-animation-leave-active {
-  animation: bubbleOut 0.5s ease forwards;
-}
-
-.bubble-animation-move {
-  transition: transform 0.5s ease;
-}
-
-@keyframes bubbleIn {
-  0% {
-    transform: translateY(20px) scale(0.8);
-    opacity: 0;
+@keyframes typing {
+  0%, 100% {
+    transform: translateY(0);
+    opacity: 0.5;
   }
-  100% {
-    transform: translateY(0) scale(1);
+  50% {
+    transform: translateY(-5px);
     opacity: 1;
   }
 }
 
-@keyframes bubbleOut {
-  0% {
-    transform: translateY(0) scale(1);
-    opacity: 1;
-  }
-  100% {
-    transform: translateY(-30px) scale(0.8);
-    opacity: 0;
-  }
-}
-
-/* 调整渐变遮罩，减小透明度 */
-.mobile-chat-bubbles::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 100%;
-  height: 100%;
-  background: linear-gradient(
-    to bottom,
-    rgba(0, 0, 0, 0.8) 0%,
-    rgba(0, 0, 0, 0.6) 20%,
-    rgba(0, 0, 0, 0) 40%
-  );
-  pointer-events: none;
-  z-index: 3; /* 调整遮罩的z-index */
-}
-
-.message-bubble.question {
-  background-color: rgba(220, 245, 255, 0.92);
-  border-left: 3px solid #4a90e2;
-}
-
-.message-bubble.excited {
-  background-color: rgba(255, 235, 220, 0.92);
-  border-left: 3px solid #ff7043;
-}
-
-.message-bubble.happy {
-  background-color: rgba(235, 255, 235, 0.92);
-  border-left: 3px solid #4caf50;
-}
-
-.message-bubble.sad {
-  background-color: rgba(240, 240, 250, 0.92);
-  border-left: 3px solid #9c27b0;
-}
-
-/* 情绪动画 */
-.message-bubble.excited {
-  animation: excited 0.5s 1;
-}
-
-.message-bubble.happy {
-  animation: happy 0.7s 1;
-}
-
-.message-bubble.sad {
-  animation: sad 1s 1;
-}
-
-@keyframes excited {
-  0%, 100% { transform: translateY(0); }
-  25% { transform: translateY(-5px); }
-  50% { transform: translateY(0); }
-  75% { transform: translateY(-3px); }
-}
-
-@keyframes happy {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.02) rotate(1deg); }
-}
-
-@keyframes sad {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(3px); }
-}
-
-.message-meta {
-  display: flex;
-  justify-content: space-between;
-  font-size: 12px;
-  color: #777;
-  margin-top: 6px;
-  padding-top: 4px;
-  border-top: 1px solid rgba(0, 0, 0, 0.05);
-}
-
-.agent-name {
-  font-weight: 500;
-}
-
-.timestamp {
-  opacity: 0.8;
-}
-
-.message-text {
-  word-break: break-word;
-}
-
-/* 渐变遮罩覆盖底部，创造消失效果 */
-.gradient-overlay {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  width: 100%;
-  height: 30%;
-  background: linear-gradient(
-    to bottom,
-    rgba(255, 255, 255, 0) 0%,
-    rgba(255, 255, 255, 0.5) 70%,
-    rgba(255, 255, 255, 0.9) 100%
-  );
-  pointer-events: none;
-  z-index: 400; /* 确保在消息之上，但在其他UI元素之下 */
-}
-
-/* 消息类型样式 */
-.short-message {
-  font-size: 16px;
-  font-weight: 500;
-  background-color: rgba(255, 245, 230, 0.95);
-  border-left: 3px solid #ffb74d;
-}
-
-.question-message {
-  background-color: rgba(232, 245, 233, 0.95);
-  border-left: 3px solid #81c784;
-}
-
-.long-message {
-  font-size: 14px;
-  line-height: 1.6;
-  background-color: rgba(255, 255, 255, 0.97);
-}
-
-/* 消息进入动画 */
 @keyframes fadeIn {
-  from {
+  0% {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(20px) scale(0.9);
   }
-  to {
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes fadeOut {
+  0% {
     opacity: 1;
     transform: translateY(0);
   }
+  100% {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+}
+
+.fade-in {
+  animation: fadeIn 0.3s ease-out;
+}
+
+.fade-out {
+  animation: fadeOut 0.3s ease-out forwards;
 }
 </style> 

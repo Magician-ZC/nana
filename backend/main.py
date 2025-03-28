@@ -901,12 +901,17 @@ async def stream_chat(request: ChatRequest):
                 }) + "\n"
                 
                 yield json.dumps({
+                    "type": "chunk",
+                    "content": "请输入有效的消息内容"
+                }) + "\n"
+                
+                yield json.dumps({
                     "type": "complete",
                     "content": "请输入有效的消息内容"
                 }) + "\n"
                 return
             
-            # API层也检测是否是无意义输入，避免网络请求开销
+            # API层检测无意义输入
             if not request.is_category and is_meaningless_input(request.message):
                 print(f"API层检测到无意义输入: '{request.message}'，返回模板回复")
                 
@@ -962,14 +967,11 @@ async def stream_chat(request: ChatRequest):
                 reply, audio_data, expression, guidance_message = response_task.result()
             else:
                 # 任务仍在进行，但我们可以发送部分内容
-                # 继续等待任务完成，但先传输元数据和启动文本流
-                
-                # 先发送表情和消息ID的元数据
+                # 先发送元数据和临时文本
                 initial_metadata = {
                     "type": "metadata",
                     "expression": "思考",  # 临时表情，表示正在思考
-                    "message_id": int(time.time() * 1000),
-                    "partial": True  # 标记为部分响应
+                    "message_id": int(time.time() * 1000)
                 }
                 yield json.dumps(initial_metadata) + "\n"
                 
@@ -985,30 +987,17 @@ async def stream_chat(request: ChatRequest):
                 # 等待任务最终完成
                 reply, audio_data, expression, guidance_message = await response_task
                 
-                # 发送明确的清除指令，确保前端完全清除之前的临时消息
-                yield json.dumps({
-                    "type": "clear_previous",
-                    "force_clear": True  # 添加强制清除标志
-                }) + "\n"
-                
-                # 发送更新的元数据（包含正确的表情）
+                # 发送更新的元数据，但不再发送清除指令
                 updated_metadata = {
                     "type": "metadata",
                     "expression": expression,
-                    "message_id": int(time.time() * 1000),
-                    "replace_previous": True,  # 告诉前端替换之前的消息
-                    "new_message": True  # 添加新消息标志
+                    "message_id": int(time.time() * 1000)
                 }
                 
                 if guidance_message:
                     updated_metadata["guidance_message"] = guidance_message
                 
                 yield json.dumps(updated_metadata) + "\n"
-                
-                # 确保前端知道我们将发送全新的内容
-                yield json.dumps({
-                    "type": "reset_content",
-                }) + "\n"
             
             # 用于调试输出
             print("-- /api/stream_chat --")
@@ -1028,11 +1017,16 @@ async def stream_chat(request: ChatRequest):
                 }) + "\n"
                 
                 yield json.dumps({
+                    "type": "chunk",
+                    "content": "抱歉，我现在无法回答。请稍后再试。"
+                }) + "\n"
+                
+                yield json.dumps({
                     "type": "complete",
                     "content": "抱歉，我现在无法回答。请稍后再试。"
                 }) + "\n"
                 return
-                
+            
             # 设置音频处理标志
             audio_processing_complete = False
             audio_processed = False
@@ -1056,13 +1050,13 @@ async def stream_chat(request: ChatRequest):
                 # 短回复可以跳过音频处理
                 audio_processing_complete = True
                 audio_processed = True
-                
-            # 先发送表情和引导消息的元数据（不包含音频数据，因为可能还在生成）
+            
+            # 先发送表情和引导消息的元数据
             metadata = {
                 "type": "metadata",
                 "expression": expression,
                 "message_id": int(time.time() * 1000),
-                "audio_pending": not audio_processing_complete and (request.is_category or len(reply) > 100)  # 通知前端音频正在生成
+                "audio_pending": not audio_processing_complete and (request.is_category or len(reply) > 100)
             }
             
             if guidance_message:
@@ -1359,6 +1353,8 @@ async def normal_chat_flow(request: ChatRequest):
     if not is_meaningless_input(request.message):
         assessment_api.increment_dialog_counter(request.message)
     
+    print(f"开始处理普通聊天请求: '{request.message}'")
+    
     # 对话流程处理
     reply, audio_data, expression, guidance_message = await chat_service.generate_reply(
         request.message, 
@@ -1368,15 +1364,32 @@ async def normal_chat_flow(request: ChatRequest):
         is_category=request.is_category
     )
     
-    print("-- /api/chat --")
+    print("-- /api/chat 详细日志 --")
+    print("请求消息:", request.message)
     print("agent_type:", request.agent_type)
     print("personality:", request.personality)
     print("is_category:", request.is_category)
-    print("reply:", reply)
-    print("expression:", expression)
+    print("回复内容:", reply)
+    print("回复类型:", type(reply))
+    print("回复长度:", len(reply) if reply else 0)
+    print("表情:", expression)
     if guidance_message:
-        print("guidance_message:", guidance_message)
-
+        print("引导消息:", guidance_message)
+    
+    # 确保回复内容不为空
+    if not reply or len(reply.strip()) == 0:
+        print("警告: 生成的回复内容为空，使用默认回复")
+        reply = "抱歉，我现在无法回答。请稍后再试。"
+        expression = "疑惑"
+    
+    # 确保回复内容为字符串
+    if not isinstance(reply, str):
+        print(f"警告: 回复内容不是字符串类型，而是 {type(reply)}，转换为字符串")
+        try:
+            reply = str(reply)
+        except:
+            reply = "抱歉，处理消息时出现错误。"
+    
     audio_base64 = base64.b64encode(audio_data).decode('ascii') if audio_data else ''
     
     response_data = {
@@ -1398,6 +1411,13 @@ async def normal_chat_flow(request: ChatRequest):
             guidance_audio_base64 = base64.b64encode(guidance_audio).decode('ascii')
             response_data["guidance_audio"] = guidance_audio_base64
             print(f"引导决策音频已添加到响应，大小: {len(guidance_audio)} 字节")
+    
+    print("完整响应数据:", {
+        "message_length": len(response_data["message"]) if "message" in response_data else 0,
+        "audio_length": len(response_data["audio"]) if "audio" in response_data else 0,
+        "expression": response_data.get("expression", "无表情"),
+        "has_guidance": "guidance_message" in response_data
+    })
     
     return JSONResponse(content=response_data)
 

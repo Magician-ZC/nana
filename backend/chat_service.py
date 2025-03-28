@@ -172,8 +172,12 @@ class ChatService:
         :return: (回复文本, 语音数据, 表情, 引导决策消息)
         """
         try:
+            print(f"[generate_reply] 开始处理消息: '{message}'")
+            print(f"[generate_reply] 参数: agent_type={agent_type}, session_id={session_id}, is_category={is_category}")
+            
             # 确保消息非空
             if not message or not message.strip():
+                print("[generate_reply] 消息为空，返回默认回复")
                 return "请输入有效的消息内容", None, "生气", None
             
             # 确保TTS服务使用最新的配置
@@ -181,6 +185,7 @@ class ChatService:
             
             # 如果收到新的agent_type，先切换智能体
             if agent_type:
+                print(f"[generate_reply] 切换智能体: {agent_type}")
                 self.change_agent(agent_type, session_id)
             
             # 对于非分类问题，尝试快速回复
@@ -190,119 +195,66 @@ class ChatService:
             
             if not is_category and not self._is_user_info_related(message):
                 # 尝试使用向量检索进行快速回复
-                print("尝试使用向量检索进行快速回复...")
+                print("[generate_reply] 尝试使用向量检索进行快速回复...")
                 reply, expression = await self.fast_reply(message)
+                if reply:
+                    print(f"[generate_reply] 快速回复成功: '{reply}'")
             
             # 如果快速回复未成功，使用完整流程
             if not reply:
+                print("[generate_reply] 快速回复未成功，使用完整流程...")
                 # 使用 MainAgent 生成回复和表情，传入性格描述和快捷提问标志
                 reply, expression = await self.main_agent.reply(message, personality=personality, is_category=is_category)
-            
-            # 确保回复不为空
-            if not reply:
-                return "抱歉，我现在无法回答您的问题，请稍后再试。", None, "生气", None
-            
-            # 检查是否有引导决策消息
-            if is_category:
-                # 查看最近一次对话是否是系统引导
-                if (len(self.main_agent.conversation_history.turns) >= 2 and 
-                    self.main_agent.conversation_history.turns[-1].ask == "SYSTEM_GUIDANCE"):
-                    guidance_message = self.main_agent.conversation_history.turns[-1].answer
-            elif hasattr(self.main_agent.conversation_history, 'last_guidance_message'):
-                guidance_message = self.main_agent.conversation_history.last_guidance_message
-            
-            # 生成语音 (如果语音服务已启用)
-            audio_data = None
-            super_tts_error = None
-            tts_error = None
-            
-            # 异步处理TTS生成
-            if reply and self.super_tts_service:
-                try:
-                    print("尝试使用超拟人TTS生成语音...")
-                    audio_data = self.super_tts_service.generate_audio(reply)
-                    if audio_data and len(audio_data) > 100:  # 确保生成的音频数据有效
-                        print(f"超拟人TTS生成成功，音频大小: {len(audio_data)} 字节")
-                    else:
-                        super_tts_error = "生成的音频数据无效或过小"
-                        print(f"超拟人TTS生成失败: {super_tts_error}")
-                except Exception as e:
-                    super_tts_error = str(e)
-                    print(f"生成超拟人语音时出错: {e}")
-            
-            # 如果超拟人TTS失败或未启用，尝试使用普通TTS
-            if (not audio_data or len(audio_data) < 100) and self.tts_service:
-                try:
-                    print("尝试使用普通TTS生成语音...")
-                    audio_data = self.tts_service.generate_audio(reply)
-                    if audio_data and len(audio_data) > 100:
-                        print(f"普通TTS生成成功，音频大小: {len(audio_data)} 字节")
-                    else:
-                        tts_error = "生成的音频数据无效或过小"
-                        print(f"普通TTS生成失败: {tts_error}")
-                except Exception as e:
-                    tts_error = str(e)
-                    print(f"生成普通语音时出错: {e}")
-            
-            # 如果有引导决策消息，同样为其生成语音并保存到临时属性中
-            if guidance_message:
-                try:
-                    # 使用异步方式生成语音，避免阻塞
-                    loop = asyncio.get_running_loop()
-                    
-                    # 如果有超拟人TTS服务并启用了超拟人TTS
-                    if self.super_tts_service:
-                        print("尝试为引导决策消息生成超拟人TTS...")
-                        
-                        # 使用超时控制，防止阻塞
-                        try:
-                            guidance_audio = await asyncio.wait_for(
-                                loop.run_in_executor(
-                                    None, 
-                                    self.super_tts_service.generate_audio, 
-                                    guidance_message
-                                ),
-                                timeout=10.0
-                            )
-                            
-                            if guidance_audio and len(guidance_audio) > 100:
-                                # 将引导决策音频保存到临时属性中，供API响应获取
-                                self.main_agent.conversation_history.guidance_audio = guidance_audio
-                                print(f"引导决策超拟人TTS生成成功，音频大小: {len(guidance_audio)} 字节")
-                        except asyncio.TimeoutError:
-                            print("引导决策超拟人TTS生成超时")
-                        except Exception as e:
-                            print(f"引导决策超拟人TTS生成出错: {e}")
-                    
-                    # 如果超拟人TTS失败或未启用，尝试使用普通TTS
-                    if not hasattr(self.main_agent.conversation_history, 'guidance_audio') and self.tts_service:
-                        print("尝试为引导决策消息生成普通TTS...")
-                        
-                        # 使用超时控制，防止阻塞
-                        try:
-                            guidance_audio = await asyncio.wait_for(
-                                loop.run_in_executor(
-                                    None, 
-                                    self.tts_service.generate_audio, 
-                                    guidance_message
-                                ),
-                                timeout=10.0
-                            )
-                            
-                            if guidance_audio and len(guidance_audio) > 100:
-                                # 将引导决策音频保存到临时属性中，供API响应获取
-                                self.main_agent.conversation_history.guidance_audio = guidance_audio
-                                print(f"引导决策普通TTS生成成功，音频大小: {len(guidance_audio)} 字节")
-                        except asyncio.TimeoutError:
-                            print("引导决策普通TTS生成超时")
-                        except Exception as e:
-                            print(f"引导决策普通TTS生成出错: {e}")
+                print(f"[generate_reply] 主智能体回复结果: reply='{reply}', expression='{expression}'")
                 
-                except Exception as e:
-                    print(f"生成引导决策语音时出错: {e}")
+                # 检查是否有引导决策消息
+                if hasattr(self.main_agent.conversation_history, 'guidance_message'):
+                    guidance_message = self.main_agent.conversation_history.guidance_message
+                    print(f"[generate_reply] 获取到引导决策消息: '{guidance_message}'")
             
+            # 确保回复不为None
+            if reply is None:
+                print("[generate_reply] 警告: 回复为None，设置为默认回复")
+                reply = "抱歉，我现在无法理解您的问题。请换一种方式提问。"
+            
+            # 确保回复是字符串类型
+            if not isinstance(reply, str):
+                print(f"[generate_reply] 警告: 回复不是字符串类型，而是 {type(reply)}，转换为字符串")
+                try:
+                    reply = str(reply)
+                except:
+                    reply = "抱歉，处理消息时出现错误。"
+            
+            # 确保回复内容不为空字符串
+            if reply.strip() == "":
+                print("[generate_reply] 警告: 回复为空字符串，设置为默认回复")
+                reply = "抱歉，我现在无法回答您的问题。请稍后再试。"
+            
+            # 确保表情不为None
+            if expression is None:
+                print("[generate_reply] 警告: 表情为None，设置为默认表情")
+                expression = "思考"
+            
+            # 生成语音数据
+            audio_data = None
+            if Config.is_tts_enabled() or Config.is_super_tts_enabled():
+                print(f"[generate_reply] 开始生成语音，TTS状态: 普通TTS={Config.is_tts_enabled()}, 超拟人TTS={Config.is_super_tts_enabled()}")
+                if Config.is_super_tts_enabled() and self.super_tts_service:
+                    audio_data = await self.super_tts_service.async_tts(reply, Config.TTS_SPEED)
+                    if audio_data:
+                        print(f"[generate_reply] 超拟人TTS成功生成音频，大小: {len(audio_data)} 字节")
+                elif Config.is_tts_enabled() and self.tts_service:
+                    audio_data = await self.tts_service.async_tts(reply, Config.TTS_SPEED)
+                    if audio_data:
+                        print(f"[generate_reply] 普通TTS成功生成音频，大小: {len(audio_data)} 字节")
+                
+                if not audio_data:
+                    print("[generate_reply] 警告: 未能生成语音数据")
+            
+            print(f"[generate_reply] 处理完成，返回结果: 回复={reply[:30]}{'...' if len(reply) > 30 else ''}, 音频大小={len(audio_data) if audio_data else 0}字节, 表情={expression}")
             return reply, audio_data, expression, guidance_message
             
         except Exception as e:
-            print(f"生成回复时出错: {e}")
-            return "抱歉，发生了错误，请稍后再试。", None, "生气", None
+            print(f"[generate_reply] 生成回复时发生错误: {e}")
+            # 发生错误时返回默认回复
+            return "抱歉，系统遇到了问题。请稍后再试。", None, "生气", None

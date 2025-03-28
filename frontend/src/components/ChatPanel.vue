@@ -27,7 +27,8 @@
           <div :class="['message', message.type, { 
             'short-message': message.content && message.content.length <= 10,
             'current-agent': message.agentId === chatStore.currentAgent,
-            'other-agent': message.agentId && message.agentId !== chatStore.currentAgent
+            'other-agent': message.agentId && message.agentId !== chatStore.currentAgent,
+            'welcome-message': message.isWelcomeMessage
           }]">
             <!-- AI助手头像 -->
             <div v-if="message.type === 'assistant'" class="avatar">
@@ -39,15 +40,18 @@
               <!-- 所有助手消息都显示名称 -->
               <div v-if="message.type === 'assistant'" class="message-sender">
                 {{ getAgentName(message.agentId) }}
+                <span v-if="message.isWelcomeMessage" class="welcome-badge">欢迎</span>
               </div>
               
               <!-- 消息气泡 -->
-              <div v-if="message.content || message.isStreaming" 
+              <div v-if="(message.content || message.isStreaming) || message.shouldClear" 
                    :class="['message-bubble', { 
                      'typing': message.isStreaming,
-                     'cleared': message.shouldClear 
+                     'cleared': message.shouldClear && !message.content,
+                     'welcome-bubble': message.isWelcomeMessage
                    }]">
-                {{ message.shouldClear ? '' : (message.content || '') }}
+                <!-- 显示消息内容，优先使用实际内容，空内容时显示"正在思考中" -->
+                {{ formatMessageContent(message) }}
               </div>
             </div>
             
@@ -183,11 +187,18 @@ function formatDisplayTime(timestamp) {
 
 // 判断是否需要显示agent变更提示
 function shouldShowAgentChange(message, index) {
+  // 如果是第一条消息或者没有agentId，不显示变更提示
   if (index === 0 || !message.agentId) return false
   
-  // 如果当前消息的agentId与前一条不同，则显示变更提示
+  // 获取前一条消息
   const prevMessage = chatStore.messages[index - 1]
-  return message.agentId !== prevMessage.agentId && message.type === 'assistant'
+  
+  // 只有当前消息是assistant类型、前一条也有agentId、且agentId不同时才显示变更提示
+  // 并且要求前一条消息也是assistant类型，避免用户-助手消息间显示变更提示
+  return message.type === 'assistant' && 
+         prevMessage.agentId && 
+         message.agentId !== prevMessage.agentId && 
+         (prevMessage.type === 'assistant' || index > 1); // 如果前一条是用户消息，则需检查更前面的消息
 }
 
 // 获取agent名称
@@ -376,7 +387,36 @@ async function checkMicrophoneSupport() {
   }
 }
 
+// 在script setup部分添加监听消息变化的代码
+watch(() => chatStore.messages, (newMessages) => {
+  console.log('ChatPanel接收到消息更新，当前消息数量:', newMessages.length);
+  // 打印消息内容
+  newMessages.forEach((msg, index) => {
+    console.log(`ChatPanel消息[${index}]:`, {
+      id: msg.id,
+      type: msg.type,
+      content: msg.content ? msg.content.substring(0, 50) + (msg.content.length > 50 ? '...' : '') : '(无内容)',
+      timestamp: msg.timestamp ? `${msg.timestamp.hours}:${msg.timestamp.minutes}` : '无时间戳',
+      agentId: msg.agentId,
+      isStreaming: msg.isStreaming
+    });
+  });
+}, { deep: true });
+
 onMounted(() => {
+  // 检测麦克风支持
+  checkMicrophoneSupport();
+  
+  console.log('ChatPanel组件挂载，初始消息数量:', chatStore.messages.length);
+  chatStore.messages.forEach((msg, index) => {
+    console.log(`ChatPanel初始消息[${index}]:`, {
+      id: msg.id,
+      type: msg.type,
+      content: msg.content ? msg.content.substring(0, 50) + (msg.content.length > 50 ? '...' : '') : '(无内容)',
+      agentId: msg.agentId
+    });
+  });
+  
   // 在组件挂载后显示欢迎消息
   chatStore.showWelcomeMessage()
   
@@ -407,6 +447,39 @@ function handleMessageSent() {
     }
   });
 }
+
+// 格式化消息内容，处理"正在思考中"前缀问题
+const formatMessageContent = (message) => {
+  const content = message.content;
+  
+  // 如果消息没有内容或内容为空，显示"正在思考中"
+  if (!content || content.trim() === '') {
+    return message.shouldClear ? '正在思考中' : '正在思考中';
+  }
+  
+  // 如果内容本身就是"正在思考中"或"正在思考中..."，原样显示
+  if (content === '正在思考中' || content === '正在思考中...') {
+    return content;
+  }
+  
+  // 检查内容是否以"正在思考中"开头但不仅是"正在思考中"
+  if (content.startsWith('正在思考中') && content !== '正在思考中' && content !== '正在思考中...') {
+    // 清除前缀和任何可能残留的省略号
+    const cleanedContent = content.replace(/^正在思考中\.{0,3}/, '').replace(/^\.{1,3}/, '');
+    console.log(`桌面端清理消息前缀，原内容: "${content}", 清理后: "${cleanedContent}"`);
+    return cleanedContent || content;
+  }
+  
+  // 检查内容是否仅以省略号开头
+  if (content.match(/^\.{1,3}[^\.]/)) {
+    const cleanedContent = content.replace(/^\.{1,3}/, '');
+    console.log(`桌面端清理省略号前缀，原内容: "${content}", 清理后: "${cleanedContent}"`);
+    return cleanedContent || content;
+  }
+  
+  // 返回原始内容
+  return content;
+};
 </script>
 
 <style scoped>
@@ -670,5 +743,25 @@ function handleMessageSent() {
 /* 确保所有消息元素可交互 */
 .message, .message-bubble {
   pointer-events: auto;
+}
+
+/* 欢迎消息样式 */
+.message.welcome-message {
+  z-index: 10;
+}
+
+.welcome-badge {
+  font-size: 10px;
+  background-color: rgba(76, 217, 100, 0.7);
+  color: white;
+  padding: 1px 6px;
+  border-radius: 10px;
+  margin-left: 6px;
+  font-weight: normal;
+}
+
+.message-bubble.welcome-bubble {
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.25);
 }
 </style> 

@@ -12,16 +12,18 @@
         <SettingsButton class="settings-button" />
       </div>
       <!-- 桌面端显示普通聊天面板 -->
-      <ChatPanel ref="chatPanelRef" :is-mobile="isMobile" />
+      <ChatPanel ref="chatPanelRef" v-if="!isMobile" :is-mobile="false" />
+
+      <!-- 移动端显示气泡样式聊天面板 -->
+      <MobileChatBubbles v-if="isMobile" :is-mobile-device="isMobile" />
+      
+      <!-- 移动端单独显示输入区域 -->
+      <div v-if="isMobile" class="mobile-input-area">
+        <ChatInputArea ref="mobileInputAreaRef" :is-mobile="true" />
+      </div>
     </div>
     
-    <!-- 移动端显示气泡样式聊天面板 -->
-    <MobileChatBubbles v-if="isMobile" />
     
-    <!-- 移动端单独显示输入区域 -->
-    <div v-if="isMobile" class="mobile-input-area">
-      <ChatInputArea ref="mobileInputAreaRef" :is-mobile="true" />
-    </div>
 
     <!-- 添加模式切换按钮，在所有平台都显示 -->
     <button class="theme-toggle-btn" @click="toggleDarkMode">
@@ -281,12 +283,13 @@ const checkMobileView = () => {
     // 如果是移动设备，始终使用移动视图
     if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
       isMobile.value = true
+      console.log("App - 设备检测: 移动设备 (通过UA判断)")
       return
     }
     
     // 如果是桌面设备，根据窗口宽度判断
     isMobile.value = window.innerWidth <= 768
-    console.log("App - 设备检测:", isMobile.value ? "移动设备" : "桌面设备")
+    console.log("App - 设备检测:", isMobile.value ? "移动设备 (通过窗口宽度判断)" : "桌面设备")
   } catch (error) {
     console.error("设备类型检测出错:", error)
     // 失败时默认为非移动设备
@@ -440,24 +443,14 @@ body {
 
 /* 移动端适配 */
 @media (max-width: 768px) {
-  .chat-panel {
-    width: 100% !important;
-    height: 100vh !important;
-    max-height: none !important;
-    right: 0 !important;
-    bottom: 0 !important;
-    border-radius: 0 !important;
+  .app-container {
+    z-index: 5;
   }
   
   .controls-container {
     position: fixed;
     top: 15px;
     right: 15px;
-  }
-  
-  /* 移动端隐藏Live2D模型，让消息气泡占据更多空间 */
-  .app-container {
-    z-index: 5; 
   }
 }
 
@@ -502,11 +495,13 @@ body {
   left: 0;
   right: 0;
   z-index: 999;
+  padding: 5px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 @media (max-width: 768px) {
   .mobile-input-area {
-    background-color: rgba(0, 0, 0, 0.2);
+    background-color: rgba(30, 30, 30, 0.7);
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
   }
