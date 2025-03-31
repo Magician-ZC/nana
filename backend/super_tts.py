@@ -21,6 +21,30 @@ class SuperTTSService:
         self.url = Config.SUPER_TTS_URL
         self.voice = voice or Config.SUPER_TTS_VCN  # 如果没有提供音色，使用默认配置
     
+    async def async_tts(self, text: str, speed=50) -> bytes:
+        """
+        异步方法将文本转换为语音
+        
+        Args:
+            text: 要转换的文本
+            speed: 语速，范围1-100
+            
+        Returns:
+            bytes: 音频数据
+        """
+        import asyncio
+        
+        # 使用 run_in_executor 在线程池中执行同步的 generate_audio 方法
+        loop = asyncio.get_running_loop()
+        try:
+            print(f"SuperTTS异步方法开始执行，文本长度: {len(text)}")
+            result = await loop.run_in_executor(None, lambda: self.generate_audio(text))
+            print(f"SuperTTS异步方法执行完成，返回数据大小: {len(result) if result else 0} 字节")
+            return result
+        except Exception as e:
+            print(f"SuperTTS异步方法执行失败: {e}")
+            return b""
+    
     def generate_audio(self, text: str) -> bytes:
         """
         使用超拟人音色API将文本转换为语音

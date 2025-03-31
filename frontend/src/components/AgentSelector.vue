@@ -90,7 +90,7 @@ const handleAgentSelect = async (agentId) => {
       ? selectedAgentData.model // 使用自定义agent的model字段
       : agentId                 // 对于内置agent，直接使用id
 
-    const response = await fetch(`${getApiBaseUrl()}/api/change_agent`, {
+    const response = await fetch(`${getApiBaseUrl()}/change_agent`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -148,7 +148,7 @@ const handleDeleteAgent = async (agentId) => {
   }
   
   try {
-    const response = await fetch(`${getApiBaseUrl()}/api/delete_custom_agent/${agentId}`, {
+    const response = await fetch(`${getApiBaseUrl()}/delete_custom_agent/${agentId}`, {
       method: 'DELETE'
     })
     
@@ -177,7 +177,7 @@ const handleCustomAgentSave = async (customAgent) => {
     
     if (editingAgent.value) {
       // 更新现有角色
-      response = await fetch(`${getApiBaseUrl()}/api/update_custom_agent/${editingAgent.value.id}`, {
+      response = await fetch(`${getApiBaseUrl()}/update_custom_agent/${editingAgent.value.id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -187,7 +187,7 @@ const handleCustomAgentSave = async (customAgent) => {
       savedAgentId = editingAgent.value.id
     } else {
       // 创建新角色
-      response = await fetch(`${getApiBaseUrl()}/api/create_custom_agent`, {
+      response = await fetch(`${getApiBaseUrl()}/create_custom_agent`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -254,7 +254,7 @@ const handleCustomAgentSave = async (customAgent) => {
 // 组件挂载时加载自定义角色列表
 onMounted(async () => {
   try {
-    const response = await fetch(`${getApiBaseUrl()}/api/list_custom_agents`)
+    const response = await fetch(`${getApiBaseUrl()}/list_custom_agents`)
     const data = await response.json()
     
     if (data.success && data.agents) {

@@ -28,10 +28,17 @@ app = FastAPI()
 # 添加CORS中间件，允许所有源
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 允许所有源的请求
+    allow_origins=[
+        "https://localhost:5173",  # 前端HTTPS开发服务器
+        "http://localhost:5173",   # 前端HTTP开发服务器
+        "https://192.168.3.51:5173",  # 内网IP HTTPS访问
+        "http://192.168.3.51:5173",   # 内网IP HTTP访问
+        "*"                        # 仍然允许所有源，但上面的配置会优先
+    ],  
     allow_credentials=True,
     allow_methods=["*"],  # 允许所有方法
     allow_headers=["*"],  # 允许所有头部
+    expose_headers=["*"]  # 暴露所有头部信息
 )
 
 class ChatRequest(BaseModel):
@@ -1703,6 +1710,7 @@ async def welcome_tts(request: dict = Body(...)):
         try:
             # 使用asyncio.wait_for添加超时控制
             audio_data = await asyncio.wait_for(generate_tts_audio(), timeout=15.0)
+            print(f"TTS音频生成结果: 类型={type(audio_data)}, 是否为空={audio_data is None}, 长度={len(audio_data) if audio_data else 0}")
         except asyncio.TimeoutError:
             print("欢迎语TTS生成超时，返回空音频")
             audio_data = None
@@ -1711,6 +1719,7 @@ async def welcome_tts(request: dict = Body(...)):
             audio_data = None
             
         audio_base64 = base64.b64encode(audio_data).decode('ascii') if audio_data else ''
+        print(f"生成的Base64编码音频长度: {len(audio_base64)}, 前20个字符: {audio_base64[:20] if audio_base64 else '空'}")
         
         return JSONResponse(
             content={
@@ -1728,4 +1737,27 @@ async def welcome_tts(request: dict = Body(...)):
         )
 
 if __name__ == "__main__":
+    # 标准HTTP模式启动服务器
     uvicorn.run("main:app", host="0.0.0.0", port=8666, reload=True)
+    
+    # HTTPS模式暂时注释掉以便调试
+    """
+    # 使用HTTPS启动服务器
+    import ssl
+    ssl_keyfile = "server.key"   # 新的SSL私钥文件路径
+    ssl_certfile = "server.crt"  # 新的SSL证书文件路径
+    
+    # 配置SSL上下文
+    ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ssl_context.load_cert_chain(ssl_certfile, ssl_keyfile)
+    
+    # 使用SSL启动服务器
+    uvicorn.run(
+        "main:app", 
+        host="0.0.0.0", 
+        port=8666, 
+        reload=True,
+        ssl_keyfile=ssl_keyfile,
+        ssl_certfile=ssl_certfile
+    )
+    """

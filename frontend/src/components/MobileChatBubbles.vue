@@ -297,7 +297,7 @@ export default {
   width: 85%;
   max-width: 380px;
   height: 40vh;
-  z-index: 9999;
+  z-index: 100;
   overflow: hidden; /* 保留overflow:hidden，内部容器将可滚动 */
 }
 

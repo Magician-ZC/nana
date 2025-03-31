@@ -91,6 +91,11 @@ const voiceButtonPressed = ref(false)
 
 // 检测麦克风支持状态
 const microphoneSupported = ref(true)
+// 选中的麦克风设备ID
+const selectedMicrophoneId = ref(null)
+
+// 麦克风访问已被授权
+const microphoneAuthorized = ref(false)
 
 // 添加formatTime函数
 function formatTime() {
@@ -128,6 +133,64 @@ function handleSendText() {
   })
 }
 
+// 请求麦克风权限，用于组件初始化时或用户主动请求时
+async function requestMicrophonePermission() {
+  try {
+    console.log('请求麦克风权限...')
+    
+    // 检查浏览器支持
+    if (!navigator.mediaDevices && !navigator.getUserMedia && !navigator.webkitGetUserMedia && 
+        !navigator.mozGetUserMedia && !navigator.msGetUserMedia) {
+      console.warn('浏览器不支持媒体设备API')
+      microphoneSupported.value = false
+      return false
+    }
+    
+    // 检查安全上下文
+    if (!isSecureContext.value && window.location.hostname !== 'localhost') {
+      console.warn('非安全上下文，麦克风访问受限')
+      microphoneSupported.value = false
+      return false
+    }
+    
+    // 采用现代API请求权限
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      
+      if (stream) {
+        // 立即停止流，我们只是想获取权限
+        stream.getTracks().forEach(track => track.stop())
+        console.log('麦克风权限已授予')
+        microphoneAuthorized.value = true
+        microphoneSupported.value = true
+        return true
+      }
+    }
+    
+    return false
+  } catch (error) {
+    console.error('请求麦克风权限失败:', error.name, error.message)
+    
+    // 特殊处理权限被拒绝的情况
+    if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+      console.warn('麦克风权限被用户拒绝')
+      microphoneAuthorized.value = false
+    }
+    
+    // 特殊处理无设备的情况
+    if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+      console.warn('未找到麦克风设备')
+    }
+    
+    // 特殊处理设备已占用的情况
+    if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
+      console.warn('麦克风设备可能被其他应用程序占用')
+    }
+    
+    return false
+  }
+}
+
 // 语音按钮按下事件
 function handleVoiceButtonDown() {
   if (chatStore.loading || !microphoneSupported.value) return
@@ -160,24 +223,113 @@ async function startRecording() {
     // 使用兼容多浏览器的方式获取媒体流
     let stream;
     
-    // 优先使用现代API
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } 
-    // 回退到旧版API
-    else {
-      // 创建兼容不同浏览器的getUserMedia函数
-      const getUserMedia = navigator.getUserMedia || navigator.webkitGetUserMedia ||
-                         navigator.mozGetUserMedia || navigator.msGetUserMedia;
-      
-      if (!getUserMedia) {
-        throw new Error('您的浏览器不支持媒体录制');
+    // 获取选中的麦克风设备ID
+    const deviceId = selectedMicrophoneId.value || localStorage.getItem('selectedMicrophoneId');
+    
+    // 创建音频约束条件，如果有指定设备ID则使用
+    const audioConstraints = deviceId 
+      ? { 
+          audio: {
+            deviceId: { exact: deviceId },
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          } 
+        }
+      : { 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          } 
+        };
+    
+    console.log('使用麦克风设备ID:', deviceId || '默认设备');
+    
+    // 最多尝试三次获取媒体流
+    let attemptCount = 0;
+    let lastError;
+    let streamAcquired = false;
+    
+    while (attemptCount < 3 && !streamAcquired) {
+      attemptCount++;
+      try {
+        // 优先使用现代API
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+          console.log(`尝试获取麦克风访问权限 (尝试 ${attemptCount}/3)...`);
+          
+          // 第一次尝试使用指定设备/设置
+          if (attemptCount === 1) {
+            stream = await navigator.mediaDevices.getUserMedia(audioConstraints);
+          } 
+          // 第二次尝试简化约束条件，仅使用设备ID（如果有）
+          else if (attemptCount === 2 && deviceId) {
+            stream = await navigator.mediaDevices.getUserMedia({
+              audio: { deviceId: { exact: deviceId } }
+            });
+          } 
+          // 最后尝试使用默认设置
+          else {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          }
+          
+          streamAcquired = true;
+          console.log(`成功获取音频流 (尝试 ${attemptCount}/3):`, stream.getAudioTracks().length, '个音轨');
+          
+          // 检查是否成功获取到蓝牙设备
+          const audioTrack = stream.getAudioTracks()[0];
+          if (audioTrack) {
+            console.log('使用的音频设备:', audioTrack.label);
+            // 显示正在使用的设备名称
+            if (audioTrack.label.toLowerCase().includes('bluetooth') || 
+                audioTrack.label.toLowerCase().includes('airpods') ||
+                audioTrack.label.toLowerCase().includes('wireless')) {
+              recordingText.value = `正在使用蓝牙麦克风: ${audioTrack.label}`;
+            }
+          }
+          
+          // 如果成功获取流，更新授权标志
+          microphoneAuthorized.value = true;
+        } 
+        // 回退到旧版API
+        else {
+          // 创建兼容不同浏览器的getUserMedia函数
+          const getUserMedia = navigator.getUserMedia || navigator.webkitGetUserMedia ||
+                            navigator.mozGetUserMedia || navigator.msGetUserMedia;
+          
+          if (!getUserMedia) {
+            throw new Error('您的浏览器不支持媒体录制');
+          }
+          
+          // 使用Promise包装旧版API
+          stream = await new Promise((resolve, reject) => {
+            getUserMedia.call(navigator, { audio: true }, resolve, reject);
+          });
+          
+          streamAcquired = true;
+          // 如果成功获取流，更新授权标志
+          microphoneAuthorized.value = true;
+        }
+      } catch (err) {
+        lastError = err;
+        console.error(`麦克风访问尝试 ${attemptCount}/3 失败:`, err.name, err.message);
+        
+        // 如果是权限错误，不再尝试
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+          microphoneAuthorized.value = false;
+          break;
+        }
+        
+        // 短暂延迟后再次尝试
+        if (attemptCount < 3) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
       }
-      
-      // 使用Promise包装旧版API
-      stream = await new Promise((resolve, reject) => {
-        getUserMedia.call(navigator, { audio: true }, resolve, reject);
-      });
+    }
+    
+    // 如果所有尝试都失败，抛出最后一个错误
+    if (!streamAcquired) {
+      throw lastError || new Error('无法访问麦克风，请检查浏览器设置');
     }
     
     // 创建媒体录制器
@@ -186,7 +338,19 @@ async function startRecording() {
       throw new Error('您的浏览器不支持MediaRecorder');
     }
     
-    mediaRecorder = new MediaRecorder(stream)
+    // 使用更高音质设置
+    const options = {
+      mimeType: 'audio/webm;codecs=opus',
+      audioBitsPerSecond: 128000
+    };
+    
+    try {
+      mediaRecorder = new MediaRecorder(stream, options);
+    } catch (e) {
+      console.warn('不支持 audio/webm;codecs=opus，回退到默认格式', e);
+      mediaRecorder = new MediaRecorder(stream);
+    }
+    
     const audioChunks = []
     
     // 收集录音数据
@@ -227,13 +391,25 @@ async function startRecording() {
     // 开始语音识别
     startSpeechRecognition()
   } catch (error) {
-    console.error('录音失败:', error)
+    console.error('录音失败:', error.name, error.message)
     // 重置按钮状态
     voiceButtonPressed.value = false
     isRecording.value = false
     
     // 提供更友好的错误信息
     let errorMessage = '无法访问麦克风，请检查浏览器权限设置。';
+    
+    // 根据错误类型提供不同提示
+    if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+      errorMessage = '麦克风访问被拒绝。请在浏览器地址栏左侧点击锁定图标，并允许麦克风访问。';
+      microphoneAuthorized.value = false;
+    } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+      errorMessage = '未检测到麦克风设备。请确认您的设备已连接并正常工作。';
+    } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
+      errorMessage = '麦克风可能被其他应用程序占用。请关闭可能使用麦克风的其他应用，然后重试。';
+    } else if (error.name === 'AbortError') {
+      errorMessage = '麦克风访问被中断，请重试。';
+    }
     
     // 针对iOS设备的特殊处理
     if (isIOS.value) {
@@ -250,7 +426,7 @@ async function startRecording() {
       errorMessage = '麦克风访问需要安全连接(HTTPS)，请使用HTTPS访问本站。';
     }
     
-    alert(errorMessage + '\n\n技术详情: ' + error.message);
+    alert(errorMessage + '\n\n技术详情: ' + error.name + ' - ' + error.message);
   }
 }
 
@@ -409,6 +585,40 @@ defineExpose({
   formatTime
 })
 
+// 组件挂载时检测麦克风支持和监听麦克风设置变更
+onMounted(() => {
+  // 检测麦克风支持
+  checkMicrophoneSupport();
+  
+  // 从localStorage加载选中的麦克风设备ID
+  selectedMicrophoneId.value = localStorage.getItem('selectedMicrophoneId');
+  
+  // 监听麦克风设备变更事件
+  document.addEventListener('microphone-changed', handleMicrophoneChanged);
+  
+  // 监听消息发送事件，以便重置状态
+  document.addEventListener('message-sent', handleMessageSent);
+  
+  // 尝试预先请求麦克风权限
+  setTimeout(() => {
+    requestMicrophonePermission().then(success => {
+      if (success) {
+        console.log('麦克风权限已预先获取');
+      }
+    }).catch(error => {
+      console.warn('预先请求麦克风权限失败:', error);
+    });
+  }, 1000); // 延迟1秒请求，避免干扰初始用户体验
+})
+
+// 处理麦克风设备变更
+function handleMicrophoneChanged(event) {
+  if (event.detail && event.detail.deviceId !== undefined) {
+    selectedMicrophoneId.value = event.detail.deviceId;
+    console.log('麦克风设备已更改:', selectedMicrophoneId.value || '默认设备');
+  }
+}
+
 // 组件挂载时检测麦克风支持
 async function checkMicrophoneSupport() {
   try {
@@ -445,14 +655,6 @@ async function checkMicrophoneSupport() {
   }
 }
 
-onMounted(() => {
-  // 检测麦克风支持
-  checkMicrophoneSupport();
-  
-  // 监听消息发送事件，以便重置状态
-  document.addEventListener('message-sent', handleMessageSent);
-})
-
 function handleMessageSent() {
   // 消息发送后的回调，可以在这里添加额外逻辑
 }
@@ -464,6 +666,7 @@ onUnmounted(() => {
   }
   
   // 移除事件监听器
+  document.removeEventListener('microphone-changed', handleMicrophoneChanged);
   document.removeEventListener('message-sent', handleMessageSent);
 })
 </script>

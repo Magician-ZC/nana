@@ -1,7 +1,7 @@
 <template>
   <div class="app" :class="{ 'dark': isDarkMode }">
     <div class="app-container">
-      <Settings v-if="showSettings" @close="showSettings = false" />
+      <Settings v-if="showSettings" @close="showSettings = false" class="settings-panel" />
       <AssessmentButtons />
       
       <TimeWeather />
@@ -141,7 +141,7 @@ function requestWelcomeAudio() {
     }
     
     // 直接请求欢迎语音频
-    fetch(`${getApiBaseUrl()}/api/welcome_tts`, {
+    fetch(`${getApiBaseUrl()}/welcome_tts`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -153,8 +153,28 @@ function requestWelcomeAudio() {
     })
     .then(response => response.json())
     .then(data => {
+      console.log('欢迎语TTS响应:', data);
+      
       if (data.audio) {
-        console.log('欢迎语音频获取成功，准备播放');
+        console.log('欢迎语音频获取成功，数据长度:', data.audio.length);
+        console.log('音频数据前20个字符:', data.audio.substring(0, 20));
+        
+        // 创建一个AudioContext检查音频数据
+        try {
+          // 解码Base64数据
+          const audioBytes = atob(data.audio);
+          console.log('解码后音频数据大小:', audioBytes.length, '字节');
+          
+          // 查看音频数据的前几个字节，帮助确定格式
+          const firstBytes = [];
+          for (let i = 0; i < Math.min(10, audioBytes.length); i++) {
+            firstBytes.push(audioBytes.charCodeAt(i).toString(16).padStart(2, '0'));
+          }
+          console.log('音频数据前10个字节:', firstBytes.join(' '));
+        } catch (e) {
+          console.error('解析音频数据出错:', e);
+        }
+        
         // 使用高优先级播放欢迎语音频
         chatStore.playAudio(data.audio, true);
         
@@ -486,6 +506,12 @@ body {
 
 .dark .theme-toggle-btn:hover {
   background-color: rgba(255, 255, 255, 0.3);
+}
+
+/* 设置面板优先级 */
+.settings-panel {
+  position: relative;
+  z-index: 10001 !important; /* 确保设置面板的z-index最高，比所有其他组件都高 */
 }
 
 /* 移动端输入区域样式 */

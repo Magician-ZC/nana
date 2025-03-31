@@ -29,11 +29,8 @@ function formatTime() {
 
 // 添加获取当前API基础URL的函数
 export function getApiBaseUrl() {
-  // 获取当前主机地址和协议
-  const protocol = window.location.protocol;
-  const hostname = window.location.hostname;
-  // 使用固定的后端端口8666
-  return `${protocol}//${hostname}:8666`;
+  // 使用相对路径，让Vite代理处理
+  return "/api";
 }
 
 // 生成唯一ID
@@ -79,6 +76,7 @@ export const useChatStore = defineStore('chat', () => {
     }
     
     console.log('准备播放音频，数据长度:', base64Audio.length);
+    console.log('base64Audio前20个字符:', base64Audio.substring(0, 20));
     
     try {
       // 停止当前正在播放的音频
@@ -110,6 +108,24 @@ export const useChatStore = defineStore('chat', () => {
         
         // 创建并播放音频
         audioPlayer = new Audio();
+        
+        // 添加调试事件
+        audioPlayer.addEventListener('loadstart', () => console.log('音频开始加载'));
+        audioPlayer.addEventListener('durationchange', () => console.log('音频持续时间变化, 时长:', audioPlayer.duration));
+        audioPlayer.addEventListener('loadedmetadata', () => console.log('音频元数据加载完成'));
+        audioPlayer.addEventListener('loadeddata', () => console.log('音频数据加载完成'));
+        audioPlayer.addEventListener('progress', () => console.log('音频下载中...'));
+        audioPlayer.addEventListener('canplay', () => console.log('音频可以开始播放'));
+        audioPlayer.addEventListener('canplaythrough', () => console.log('音频可以流畅播放'));
+        audioPlayer.addEventListener('playing', () => console.log('音频开始播放'));
+        audioPlayer.addEventListener('play', () => console.log('音频播放事件触发'));
+        
+        // 添加错误处理
+        audioPlayer.addEventListener('error', (e) => {
+          console.error('音频播放器错误:', e);
+          console.error('错误代码:', audioPlayer.error ? audioPlayer.error.code : '未知');
+          console.error('错误消息:', audioPlayer.error ? audioPlayer.error.message : '未知');
+        });
         
         // 添加事件监听器
         if (highPriority) {
@@ -145,11 +161,6 @@ export const useChatStore = defineStore('chat', () => {
           
           audioPlayer.src = audioUrl;
         }
-        
-        // 添加错误处理
-        audioPlayer.addEventListener('error', (e) => {
-          console.error('音频播放器错误:', e);
-        });
         
         // 触发音频准备就绪事件，让移动端组件也能获取到音频数据
         document.dispatchEvent(new CustomEvent('audio-ready', { 
@@ -267,7 +278,7 @@ export const useChatStore = defineStore('chat', () => {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 30000) // 30秒超时
       
-      const response = await fetch(`${getApiBaseUrl()}/api/stream_chat`, {
+      const response = await fetch(`${getApiBaseUrl()}/stream_chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -382,6 +393,10 @@ export const useChatStore = defineStore('chat', () => {
           // 处理完整的音频数据
           audioData = data.audio
           console.log('收到完整音频数据，长度:', data.audio.length);
+          // 立即播放音频
+          if (audioData && audioData.length > 100) {
+            playAudio(audioData, true) // 使用高优先级播放音频
+          }
         }
         else if (data.type === 'audio_chunk') {
           // 处理音频分片数据
@@ -405,7 +420,7 @@ export const useChatStore = defineStore('chat', () => {
               
               // 播放音频
               if (audioData && audioData.length > 100) {
-                playAudio(audioData)
+                playAudio(audioData, true) // 使用高优先级播放音频
               }
             }
           }
@@ -603,7 +618,7 @@ export const useChatStore = defineStore('chat', () => {
         "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"
       ].includes(message)
       
-      const response = await fetch(`${getApiBaseUrl()}/api/chat`, {
+      const response = await fetch(`${getApiBaseUrl()}/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -639,7 +654,7 @@ export const useChatStore = defineStore('chat', () => {
       
       // 如果收到音频数据，播放它
       if (data.audio) {
-        playAudio(data.audio)
+        playAudio(data.audio, true) // 使用高优先级播放音频
       }
       
       // 如果有引导决策消息，添加为单独的一条助手消息
@@ -736,7 +751,7 @@ export const useChatStore = defineStore('chat', () => {
       hasShownWelcome.value[agentId] = true
       
       // 为欢迎语请求TTS音频
-      fetch(`${getApiBaseUrl()}/api/welcome_tts`, {
+      fetch(`${getApiBaseUrl()}/welcome_tts`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

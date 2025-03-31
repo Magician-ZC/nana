@@ -1,6 +1,6 @@
 <template>
   <!-- 遮罩层 -->
-  <div v-if="isOpen" class="fixed inset-0 bg-neutral-900/70 backdrop-blur-sm z-50 flex items-center justify-center transition-all duration-300 ease-in-out" @click="$emit('close')">
+  <div v-if="isOpen" class="fixed inset-0 bg-neutral-900/70 backdrop-blur-sm z-[10000] flex items-center justify-center transition-all duration-300 ease-in-out" @click="$emit('close')">
     <!-- 主内容区 -->
     <div class="w-full max-w-xl max-h-[90vh] overflow-y-auto bg-white dark:bg-neutral-800 rounded-xl shadow-2xl transition-all duration-300 ease-in-out transform animate-fade-in" @click.stop>
       <!-- 顶部标题栏 -->
@@ -191,6 +191,80 @@
                 <span class="text-xs text-neutral-500 dark:text-neutral-400">快</span>
               </div>
             </div>
+            
+            <!-- 麦克风设备选择 -->
+            <div class="space-y-2">
+              <div class="flex justify-between items-center">
+                <label for="microphone-device" class="text-sm font-medium text-neutral-700 dark:text-neutral-300">麦克风设备</label>
+                <button 
+                  @click="refreshMicrophoneList" 
+                  class="text-xs text-primary-600 dark:text-primary-400 hover:underline"
+                >
+                  <i class="fa-solid fa-refresh mr-1"></i>刷新
+                </button>
+              </div>
+              <!-- 自定义下拉选择框 -->
+              <div class="relative dropdown-container">
+                <button 
+                  type="button" 
+                  @click="toggleDropdown('mic')"
+                  class="relative w-full bg-white dark:bg-neutral-700 border border-neutral-300 dark:border-neutral-600 rounded-md py-2 pl-3 pr-10 text-left text-neutral-700 dark:text-white cursor-default focus:outline-none focus:ring-1 focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+                >
+                  <span class="block truncate">{{ selectedMicrophoneName || '默认麦克风' }}</span>
+                  <span class="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
+                    <i class="fa-solid fa-chevron-down text-neutral-400"></i>
+                  </span>
+                </button>
+                
+                <!-- 下拉选项列表 -->
+                <div 
+                  v-show="openDropdown === 'mic'"
+                  class="absolute z-10 mt-1 w-full bg-white dark:bg-neutral-700 shadow-lg max-h-60 rounded-md py-1 text-base ring-1 ring-black ring-opacity-5 overflow-auto focus:outline-none sm:text-sm"
+                >
+                  <!-- 默认设备选项 -->
+                  <div
+                    @click="selectMicrophone(null)"
+                    :class="['cursor-pointer select-none relative py-2 pl-3 pr-9', 
+                      !selectedMicrophoneId ? 'bg-primary-100 dark:bg-primary-900/50 text-primary-700 dark:text-primary-200' : 'text-neutral-700 dark:text-white hover:bg-neutral-100 dark:hover:bg-neutral-600'
+                    ]"
+                  >
+                    默认麦克风
+                  </div>
+                  
+                  <!-- 设备列表 -->
+                  <div
+                    v-for="device in microphoneList" 
+                    :key="device.deviceId"
+                    @click="selectMicrophone(device)"
+                    :class="['cursor-pointer select-none relative py-2 pl-3 pr-9', 
+                      selectedMicrophoneId === device.deviceId ? 'bg-primary-100 dark:bg-primary-900/50 text-primary-700 dark:text-primary-200' : 'text-neutral-700 dark:text-white hover:bg-neutral-100 dark:hover:bg-neutral-600'
+                    ]"
+                  >
+                    {{ device.label || `设备 ${device.deviceId.substring(0, 5)}...` }}
+                    <span v-if="device.type === 'bluetooth'" class="text-blue-500 ml-1">
+                      <i class="fa-solid fa-bluetooth"></i>
+                    </span>
+                  </div>
+                  
+                  <!-- 无设备时显示提示 -->
+                  <div v-if="microphoneList.length === 0" class="py-2 pl-3 pr-9 text-neutral-500 dark:text-neutral-400">
+                    未检测到麦克风设备
+                  </div>
+                </div>
+              </div>
+              
+              <!-- 权限提示 -->
+              <div v-if="!microphonePermission" class="text-xs text-amber-500 dark:text-amber-400 mt-1">
+                <i class="fa-solid fa-exclamation-triangle mr-1"></i>
+                需要麦克风权限才能选择设备
+              </div>
+              
+              <!-- 蓝牙连接状态 -->
+              <div v-if="hasBluetoothDevice" class="flex items-center text-xs text-blue-500 dark:text-blue-400 mt-1">
+                <i class="fa-solid fa-bluetooth mr-1"></i>
+                蓝牙麦克风已连接
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -252,6 +326,15 @@ const error = ref('')
 const isDarkMode = ref(false)
 const openDropdown = ref(null)
 
+// 麦克风设备设置
+const microphoneList = ref([])
+const selectedMicrophoneId = ref(null)
+const selectedMicrophoneName = ref('')
+const microphonePermission = ref(false)
+const hasBluetoothDevice = computed(() => {
+  return microphoneList.value.some(device => device.type === 'bluetooth')
+})
+
 // 检测当前模式是否为暗色模式
 const checkDarkMode = () => {
   isDarkMode.value = document.documentElement.classList.contains('dark')
@@ -290,7 +373,7 @@ watch(() => props.isOpen, async (newValue) => {
 // 加载当前设置
 async function loadSettings() {
   try {
-    const response = await fetch(`${getApiBaseUrl()}/api/tts_settings`)
+    const response = await fetch(`${getApiBaseUrl()}/tts_settings`)
     const data = await response.json()
     
     enableTTS.value = data.enable_tts
@@ -301,6 +384,13 @@ async function loadSettings() {
     superTtsVoiceList.value = data.super_tts_voice_list || []
     ttsSpeed.value = data.tts_speed || 50
     typingSpeed.value = data.typing_speed || 38
+    
+    // 加载麦克风设置
+    selectedMicrophoneId.value = localStorage.getItem('selectedMicrophoneId') || null
+    selectedMicrophoneName.value = localStorage.getItem('selectedMicrophoneName') || ''
+    
+    // 刷新麦克风列表
+    refreshMicrophoneList()
     
   } catch (error) {
     console.error('加载设置失败:', error)
@@ -335,7 +425,7 @@ async function saveSettings() {
     // 更新打字机效果设置
     chatStore.useStreamResponse = useTypewriterEffect.value
     
-    const response = await fetch(`${getApiBaseUrl()}/api/tts_settings`, {
+    const response = await fetch(`${getApiBaseUrl()}/tts_settings`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -361,8 +451,14 @@ async function saveSettings() {
         superTtsVoice: superTtsVoice.value,
         ttsSpeed: ttsSpeed.value,
         typingSpeed: typingSpeed.value,
-        useTypewriterEffect: useTypewriterEffect.value
+        useTypewriterEffect: useTypewriterEffect.value,
+        selectedMicrophoneId: selectedMicrophoneId.value
       })
+      
+      // 使用全局事件通知系统其他组件麦克风设置已更改
+      document.dispatchEvent(new CustomEvent('microphone-changed', {
+        detail: { deviceId: selectedMicrophoneId.value }
+      }))
       
       // 关闭设置面板
       emit('close')
@@ -424,6 +520,53 @@ function selectVoice(type, value) {
 function handleOutsideClick(e) {
   if (openDropdown.value && !e.target.closest('.dropdown-container')) {
     openDropdown.value = null
+  }
+}
+
+// 刷新麦克风列表
+async function refreshMicrophoneList() {
+  try {
+    // 请求麦克风权限
+    await navigator.mediaDevices.getUserMedia({ audio: true })
+    microphonePermission.value = true
+    
+    // 获取设备列表
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    
+    // 过滤出麦克风设备
+    const audioInputs = devices.filter(device => device.kind === 'audioinput')
+    
+    // 转换为列表项
+    microphoneList.value = audioInputs.map(device => {
+      const isBluetoothDevice = device.label.toLowerCase().includes('bluetooth') || 
+                               device.label.toLowerCase().includes('airpods') ||
+                               device.label.toLowerCase().includes('wireless')
+      
+      return {
+        deviceId: device.deviceId,
+        label: device.label || `麦克风 (${device.deviceId.substring(0, 8)}...)`,
+        type: isBluetoothDevice ? 'bluetooth' : 'wired'
+      }
+    })
+  } catch (error) {
+    console.error('获取麦克风列表失败:', error)
+    microphonePermission.value = false
+  }
+}
+
+// 选择麦克风
+function selectMicrophone(device) {
+  selectedMicrophoneId.value = device ? device.deviceId : null
+  selectedMicrophoneName.value = device ? device.label : ''
+  openDropdown.value = null
+  
+  // 保存选择到localStorage
+  if (device) {
+    localStorage.setItem('selectedMicrophoneId', device.deviceId)
+    localStorage.setItem('selectedMicrophoneName', device.label)
+  } else {
+    localStorage.removeItem('selectedMicrophoneId')
+    localStorage.removeItem('selectedMicrophoneName')
   }
 }
 </script>

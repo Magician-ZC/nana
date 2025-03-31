@@ -378,7 +378,7 @@ const handleFileUpload = async (event) => {
       }
     }, 200)
     
-    const response = await fetch(`${getApiBaseUrl()}/api/extract_agent_info`, {
+    const response = await fetch(`${getApiBaseUrl()}/extract_agent_info`, {
       method: 'POST',
       body: formData,
     })

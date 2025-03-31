@@ -180,7 +180,7 @@ const openPsychologicalAssessment = async () => {
     uploadStatus.value = '正在生成心理评估报告...';
     
     // 发送请求以生成和下载报告
-    const response = await fetch(`${getApiBaseUrl()}/api/psychological_assessment`, {
+    const response = await fetch(`${getApiBaseUrl()}/psychological_assessment`, {
       method: 'GET',
     });
     
@@ -230,7 +230,7 @@ const uploadFile = async () => {
     isUploading.value = true;
     uploadStatus.value = '上传中...';
     
-    const response = await fetch(`${getApiBaseUrl()}/api/emotional_assessment`, {
+    const response = await fetch(`${getApiBaseUrl()}/emotional_assessment`, {
       method: 'POST',
       body: formData,
     });
@@ -272,7 +272,7 @@ const parseFile = async () => {
     isUploading.value = true;
     uploadStatus.value = '解析中...';
     
-    const response = await fetch(`${getApiBaseUrl()}/api/parse_document`, {
+    const response = await fetch(`${getApiBaseUrl()}/parse_document`, {
       method: 'POST',
       body: formData,
     });
@@ -297,7 +297,7 @@ const parseFile = async () => {
 // 获取对话轮数和评估状态
 const checkAssessmentStatus = async () => {
   try {
-    const response = await fetch(`${getApiBaseUrl()}/api/assessment_status`);
+    const response = await fetch(`${getApiBaseUrl()}/assessment_status`);
     const data = await response.json();
     
     if (data.success) {
