@@ -1,7 +1,10 @@
+import os
+
 class Config:
     ''' LLM配置 '''
-    LLM_API_URL = "https://api.ppinfra.com/v3/openai"
-    LLM_API_KEY = "sk_8wpzHpLKzD8JzBHfTblPzLNK54PmH2Tk7VRJmHFZ2g8"
+
+    LLM_API_URL = os.environ.get("LLM_API_URL", "https://api.ppinfra.com/v3/openai")
+    LLM_API_KEY = os.environ.get("LLM_API_KEY", "sk_8wpzHpLKzD8JzBHfTblPzLNK54PmH2Tk7VRJmHFZ2g8")
     
     ''' 向量模型配置 '''
     EMBEDDING_API_KEY = "sk-eziehqfupwjhffcnixziqozcqxaqkgnzshgvueemosdijebj"
@@ -18,7 +21,7 @@ class Config:
         TTS服务配置（科大讯飞）
     '''
     # TTS功能配置
-    ENABLE_TTS = False  # 是否启用普通TTS
+    ENABLE_TTS = True  # 是否启用普通TTS
     ENABLE_SUPER_TTS = False  # 是否启用超拟人TTS
     
     # 普通TTS可用音色列表
@@ -65,6 +68,11 @@ class Config:
     
     ''' 对话历史配置 '''
     MAX_TURNS = 20  # 最多保存20轮对话，超过后自动归档一半
+    
+    # 添加视觉模型配置
+    VISION_MODEL_ENABLED = os.environ.get("VISION_MODEL_ENABLED", "false").lower() == "true"
+    VISION_MODEL_API_KEY = os.environ.get("VISION_MODEL_API_KEY", LLM_API_KEY)
+    VISION_MODEL_API_URL = os.environ.get("VISION_MODEL_API_URL", "https://api.openai.com/v1")
     
     @classmethod
     def is_tts_enabled(cls) -> bool:

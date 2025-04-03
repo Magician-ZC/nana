@@ -2,6 +2,7 @@ import asyncio
 from typing import List, Dict
 import json
 import re
+import base64
 from openai import OpenAI, AsyncOpenAI
 
 class LLMService:
@@ -12,6 +13,13 @@ class LLMService:
             base_url=api_url,
             api_key=api_key
         )
+        # 检查API是否支持视觉功能
+        try:
+            self.vision_model_available = "GPT" in api_url or "gpt" in api_url
+            print(f"视觉模型状态: {'可用' if self.vision_model_available else '不可用'}")
+        except:
+            self.vision_model_available = False
+            print("视觉模型不可用")
         
     async def async_chat(self, message: str, temperature: float = 0.7, max_tokens: int = 2048) -> str:
         """简单的异步聊天方法，直接返回文本回复
@@ -30,6 +38,61 @@ class LLMService:
             max_tokens=max_tokens,
             is_json=False
         )
+    
+    async def analyze_image(self, img_base64: str, prompt: str = None) -> str:
+        """分析图片内容并返回描述文本
+        
+        Args:
+            img_base64: Base64编码的图片数据
+            prompt: 可选的提示词，指导模型关注图片的特定方面
+            
+        Returns:
+            str: 图片内容的描述文本
+        """
+        # 如果没有提供具体指令，使用默认提示词
+        if not prompt:
+            prompt = """请分析这张图片，识别图片中的所有文本、表格和图表数据。
+如果包含情绪评估相关的数据，请特别关注"攻击性"、"自信"、"能量"、"压力"、"抑郁"等指标及其数值。
+请以结构化格式返回所有识别到的数据。"""
+        
+        # 检查是否支持视觉功能
+        if not self.vision_model_available:
+            print("视觉模型不可用，跳过图像分析")
+            return ""
+        
+        try:
+            # 构建消息，包含文本和图像内容
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{img_base64}",
+                                "detail": "high"  # 请求高详细度，以便读取文本和表格
+                            }
+                        }
+                    ]
+                }
+            ]
+            
+            # 调用视觉模型API
+            response = await asyncio.to_thread(
+                self.client.chat.completions.create,
+                model="gpt-4-vision-preview",  # 使用支持视觉的模型
+                messages=messages,
+                temperature=0.2,  # 低温度，更精确的回答
+                max_tokens=2000,
+                stream=False
+            )
+            
+            return response.choices[0].message.content.strip()
+            
+        except Exception as e:
+            print(f"图像分析出错: {str(e)}")
+            return f"无法分析图像: {str(e)}"
         
     async def generate_response(
         self, 

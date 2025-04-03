@@ -57,6 +57,7 @@ backend/dist/
 backend/venv/
 backend/.env 
 backend/save/
+backend/temp_uploads/
 backend/__pycache__
 
 .codegpt

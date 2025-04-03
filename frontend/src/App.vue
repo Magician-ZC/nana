@@ -9,12 +9,13 @@
       <i :class="isDarkMode ? 'fa-solid fa-sun' : 'fa-solid fa-moon'"></i>
     </button>
     
-    <!-- 添加情绪评估和心理评估按钮 -->
-    <AssessmentButtons />
     
-    <TimeWeather />
     
     <div class="live2d-main">
+      <!-- 添加情绪评估和心理评估按钮 -->
+      <AssessmentButtons />
+    
+      <TimeWeather />
       <QuickQuestions />
       <Live2DModel ref="live2dRef" :modelId="chatStore.currentModel" />
       <div class="controls-container">

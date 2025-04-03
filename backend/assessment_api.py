@@ -15,6 +15,8 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.units import cm
+import multiprocessing
+import threading
 
 # 从主应用导入所需服务和函数
 # 这些需要在主应用中初始化并传递给路由器
@@ -29,6 +31,9 @@ assessment_router = APIRouter()
 # 对话计数器和评估状态
 DIALOG_COUNTER = 0
 ASSESSMENT_READY = False
+# 评估处理状态追踪
+PROCESSING_ASSESSMENT = False
+PROCESSING_START_TIME = None
 
 @assessment_router.get("/assessment_status")
 async def get_assessment_status():
@@ -37,15 +42,135 @@ async def get_assessment_status():
     Returns:
         dict: 包含评估状态的响应
     """
-    global DIALOG_COUNTER, ASSESSMENT_READY
+    global DIALOG_COUNTER, ASSESSMENT_READY, PROCESSING_ASSESSMENT
     
     return JSONResponse(
         content={
             "success": True,
             "assessment_ready": ASSESSMENT_READY,
-            "dialog_count": DIALOG_COUNTER
+            "dialog_count": DIALOG_COUNTER,
+            "processing_assessment": PROCESSING_ASSESSMENT
         }
     )
+
+@assessment_router.get("/latest_assessment")
+async def get_latest_assessment():
+    """获取最新的情绪评估状态
+    
+    Returns:
+        dict: 包含最新情绪评估状态的响应
+    """
+    try:
+        # 检查save/assessments目录是否存在
+        assessment_dir = os.path.join("save", "assessments")
+        if not os.path.exists(assessment_dir):
+            return JSONResponse(
+                content={
+                    "success": True,
+                    "has_assessment": False,
+                    "message": "未找到情绪评估记录"
+                }
+            )
+        
+        # 获取目录中的所有JSON文件
+        assessment_files = [f for f in os.listdir(assessment_dir) if f.endswith('.json')]
+        
+        # 如果没有文件，返回没有评估
+        if not assessment_files:
+            return JSONResponse(
+                content={
+                    "success": True,
+                    "has_assessment": False,
+                    "message": "未找到情绪评估记录"
+                }
+            )
+        
+        # 按照文件名排序（文件名包含时间戳）
+        assessment_files.sort(reverse=True)
+        
+        # 获取最新的评估文件
+        latest_file = assessment_files[0]
+        
+        return JSONResponse(
+            content={
+                "success": True,
+                "has_assessment": True,
+                "file_path": os.path.join(assessment_dir, latest_file),
+                "file_name": latest_file,
+                "created_at": latest_file.replace("assessment_", "").replace(".json", "")
+            }
+        )
+    
+    except Exception as e:
+        print(f"获取最新评估状态失败: {e}")
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": f"获取评估状态失败: {str(e)}"
+            }
+        )
+
+@assessment_router.get("/assessment_results")
+async def get_assessment_results():
+    """获取情绪评估结果
+    
+    Returns:
+        dict: 包含情绪评估结果的响应
+    """
+    try:
+        # 获取最新的评估文件
+        assessment_dir = os.path.join("save", "assessments")
+        if not os.path.exists(assessment_dir):
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": "未找到情绪评估记录"
+                }
+            )
+        
+        # 获取目录中的所有JSON文件
+        assessment_files = [f for f in os.listdir(assessment_dir) if f.endswith('.json')]
+        
+        # 如果没有文件，返回没有评估
+        if not assessment_files:
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": "未找到情绪评估记录"
+                }
+            )
+        
+        # 按照文件名排序（文件名包含时间戳）
+        assessment_files.sort(reverse=True)
+        
+        # 获取最新的评估文件
+        latest_file = assessment_files[0]
+        file_path = os.path.join(assessment_dir, latest_file)
+        
+        # 读取JSON文件内容
+        import json
+        with open(file_path, "r", encoding="utf-8") as f:
+            assessment_data = json.load(f)
+        
+        return JSONResponse(
+            content={
+                "success": True,
+                "results": assessment_data,
+                "file_name": latest_file,
+                "created_at": latest_file.replace("assessment_", "").replace(".json", "")
+            }
+        )
+    
+    except Exception as e:
+        print(f"获取评估结果失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": f"获取评估结果失败: {str(e)}"
+            }
+        )
 
 @assessment_router.post("/emotional_assessment")
 async def emotional_assessment(file: UploadFile = File(...)):
@@ -57,6 +182,18 @@ async def emotional_assessment(file: UploadFile = File(...)):
     Returns:
         dict: 包含处理结果的响应
     """
+    global PROCESSING_ASSESSMENT, PROCESSING_START_TIME
+    
+    # 如果当前已经有正在处理的评估，拒绝新的请求
+    if PROCESSING_ASSESSMENT:
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": "当前已有情绪评估正在处理中，请稍后再试"
+            },
+            status_code=429  # Too Many Requests
+        )
+    
     try:
         # 检查文件类型
         file_extension = os.path.splitext(file.filename)[1].lower()
@@ -78,63 +215,244 @@ async def emotional_assessment(file: UploadFile = File(...)):
         with open(temp_file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
-        # 提取文本内容
+        # 快速验证文件内容是否可以提取
         file_content = extract_text_from_file(temp_file_path, file_extension)
         
         if not file_content or file_content.startswith("缺少") or file_content == "不支持的文件格式":
+            # 清理临时文件
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+                
             return JSONResponse(
                 content={
                     "success": False,
                     "message": f"文件内容提取失败或文件为空: {file_content}"
                 }
             )
+        
+        # 设置评估处理状态
+        PROCESSING_ASSESSMENT = True
+        PROCESSING_START_TIME = datetime.now()
+        
+        # 启动后台线程进行详细分析
+        assessment_thread = threading.Thread(
+            target=process_assessment_in_background,
+            args=(temp_file_path, file_extension, file_content),
+            daemon=True
+        )
+        assessment_thread.start()
+        
+        # 立即返回成功响应，让用户知道文件已接收并开始处理
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": "文件已上传，正在后台处理分析",
+                "file_id": os.path.basename(temp_file_path),
+                "processing": True
+            }
+        )
+    
+    except Exception as e:
+        # 如果处理过程中出错，重置处理状态
+        PROCESSING_ASSESSMENT = False
+        PROCESSING_START_TIME = None
+        
+        print(f"情绪评估处理失败: {e}")
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": f"处理失败: {str(e)}"
+            }
+        )
+
+def process_assessment_in_background(temp_file_path, file_extension, file_content):
+    """在后台处理情绪评估分析
+    
+    Args:
+        temp_file_path: 临时文件路径
+        file_extension: 文件扩展名
+        file_content: 初步提取的文件内容
+    """
+    global PROCESSING_ASSESSMENT, PROCESSING_START_TIME
+    
+    try:
+        print(f"开始后台处理情绪评估: {os.path.basename(temp_file_path)}")
+        
+        # 进行更深入的报告分析
+        try:
+            from config import Config
             
+            # 检查是否可以使用增强的图像分析
+            enhanced_analysis = ""
+            if Config.VISION_MODEL_ENABLED and file_extension == '.pdf':
+                print("对PDF进行增强图像分析...")
+                # 如果是PDF，使用专用的视觉分析
+                try:
+                    from PyPDF2 import PdfReader
+                    import fitz  # PyMuPDF
+                    import base64
+                    import cv2
+                    import numpy as np
+                    from pdf2image import convert_from_path
+                    
+                    # PDF页面转为图像进行分析
+                    images = convert_from_path(temp_file_path, dpi=300)
+                    
+                    # 选择关键页面进行深度分析（通常报告中的图表/数据表在前几页）
+                    # 如果PDF很短，分析所有页面；否则只分析前5页
+                    pages_to_analyze = min(len(images), 5)
+                    
+                    for i in range(pages_to_analyze):
+                        # 保存图像到临时文件
+                        temp_img_path = f"temp_uploads/enhanced_page_{i+1}.png"
+                        images[i].save(temp_img_path, "PNG")
+                        
+                        # 使用视觉模型分析
+                        if chat_service and chat_service.llm_service and hasattr(chat_service.llm_service, 'analyze_image'):
+                            with open(temp_img_path, "rb") as img_file:
+                                img_base64 = base64.b64encode(img_file.read()).decode('utf-8')
+                            
+                            custom_prompt = f"""请详细分析这张情绪/心理评估报告图像，重点是:
+
+1. 提取所有关键指标值，特别是"攻击性"、"自信"、"能量/活力"、"压力"、"抑郁"等，以及它们的数值
+2. 识别每个指标的正常范围和当前值的意义（偏高/偏低/正常）
+3. 解读图表、条形图或雷达图中的数据模式
+4. 提取任何文字形式的结论或建议
+5. 忽略页面上的装饰元素或广告
+
+只关注与情绪状态或心理评估直接相关的数据。这是报告的第{i+1}页，请尽可能准确地提取所有数值型数据。"""
+                            
+                            # 使用同步版本的analyze_image，因为我们已经在后台线程中
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            image_analysis = loop.run_until_complete(chat_service.llm_service.analyze_image(img_base64, custom_prompt))
+                            loop.close()
+                            
+                            if image_analysis and len(image_analysis.strip()) > 20:
+                                enhanced_analysis += f"\n\n===== 第{i+1}页深度分析 =====\n{image_analysis}\n"
+                        
+                        # 清理临时文件
+                        if os.path.exists(temp_img_path):
+                            os.remove(temp_img_path)
+                
+                except Exception as pdf_analysis_error:
+                    print(f"PDF页面分析错误: {pdf_analysis_error}")
+                
+                # 如果获得了增强分析，添加到文件内容中
+                if enhanced_analysis:
+                    file_content += "\n\n===增强图像分析结果===\n" + enhanced_analysis
+            
+        except Exception as enhanced_error:
+            print(f"增强分析出错: {enhanced_error}")
+        
+        # 读取心理医生代理提示词
+        xinli_agent_path = os.path.join("prompts", "xinli_agent.txt")
+        try:
+            with open(xinli_agent_path, "r", encoding="utf-8") as f:
+                xinli_prompt = f.read()
+        except Exception as e:
+            xinli_prompt = "你是一位专业的精神心理科医师，擅长分析心理评估报告并提供专业建议。"
+            print(f"心理医生代理提示词读取失败: {e}")
+        
         # 使用chat_service中的LLM服务提取情绪信息并更新用户信息
-        prompt = f"""请从以下检测报告中提取并分析量化数据，综合评估用户的心理状态。
+        prompt = f"""{xinli_prompt}
 
-基于以下维度进行分析：
-1. 基本信息：提取姓名、性别、年龄等基本信息
-2. 综合结果：分析活力状态和总体建议
-3. 异常指标分析：文本中可能包含以下五个主要指标的数值，请提取并分析：
-   - 攻击性/攻击倾向: 数值及其正常范围（通常为20-50），分析偏高或偏低的影响
-   - 自信: 数值及其正常范围（通常为50-80），分析偏高或偏低的影响
-   - 能量/活力: 数值及其正常范围（通常为20-40），分析偏高或偏低的影响
-   - 压力: 数值及其正常范围（通常为15-45），分析偏高或偏低的影响
-   - 抑郁: 数值及其正常范围（通常为10-30），分析偏高或偏低的影响
-4. 潜在问题与建议：识别报告中的潜在心理问题，并提供相应建议
-5. 数据矛盾点：指出报告中可能存在的数据不一致或错误
-6. 整体结论：对用户当前心理状态给出整体评价
+## 任务
+请分析以下心理/情绪评估报告，提取关键指标数据并生成结构化的专业分析报告。作为专业心理医师，请基于您的临床经验，对异常指标提供针对性的干预建议。
 
-特别优先处理：文件内容末尾部分会包含"结构化指标数据"、"括号指标数据"和"关键指标数据"部分，这些是系统已经预处理并标准化的数据，提取准确度更高，请特别关注这部分数据作为主要分析依据。
+## 分析维度
+1. 核心状态：提取活力状态、情绪稳定性、能量水平、脑疲劳度等核心状态指标
+2. 关键指标：分析以下指标及其是否异常：
+   - 攻击性：正常范围20-50
+   - 自信：正常范围50-80
+   - 能量/活力：正常上限值40
+   - 压力：正常范围20-40
+   - 抑郁：正常范围10-30
+   - 幸福感：正常范围30-60
+   - 情绪波动：关注情绪变化量（百分比）
+   - 注意力：关注注意力集中度及波动情况
 
-请提供清晰的分析结果，格式如下：
+## 报告格式要求
+请按照以下结构提供分析结果：
+
 ```
-关键信息总结：
-[总结基本信息和主要发现]
+一、核心状态分析
+1. 当前总体状态（活力状态/平衡状态/消耗状态）
+2. 情绪稳定性评估（包括情绪波动百分比）
+3. 能量水平与脑疲劳度分析
 
-异常指标分析：
-攻击性: [数值] (正常范围20-50) - [分析影响]
-自信: [数值] (正常范围50-80) - [分析影响]
-能量: [数值] (正常范围20-40) - [分析影响]
-压力: [数值] (正常范围15-45) - [分析影响]
-抑郁: [数值] (正常范围10-30) - [分析影响]
+二、重点指标异常
+- 列出所有异常指标（超出正常范围的指标）
+- 每个异常指标的当前值与正常范围对比
+- 分析各异常指标对日常功能的具体影响
 
-潜在问题与建议：
-[识别问题并提供建议]
+三、针对性干预建议
+（针对每个异常指标，提供2-3条具体详细的专业干预建议）
+1. 针对[异常指标A]:
+   - [具体建议1]: 详细说明实施频率（如每周3次）、时长（如每次30分钟）、具体操作步骤，以及该方法如何影响该指标
+   - [具体建议2]: 同样详细描述具体实践方法，包括必要的工具、环境设置和执行标准
+   
+2. 针对[异常指标B]:
+   - [具体建议1]: 提供具体方法，如"每日记录3件微小成就（如'今天完成了工作报告'）"，并解释为何有效
+   - [具体建议2]: 提供可量化的操作指南，包括实施频率、所需时间和具体方法
+   
+（如此类推，确保所有异常指标都有针对性、可执行的具体建议）
+```
 
-综合结论：
-[对用户心理状态的整体评价]
+## 重要说明
+1. 请特别关注报告中"结构化指标数据"、"括号指标数据"、"关键指标数据"和"增强图像分析结果"部分
+2. 针对每个异常指标，请提供基于专业临床经验的具体干预建议，包括可执行的方法和技术
+3. 建议必须具体、可量化、可操作，包含具体的频率（每天/每周几次）、时长（每次多少分钟）和操作方法
+4. 使用专业术语命名方法，如「333运动法则」、「番茄工作法」、「社交行为实验」、「安全岛」想象技术等
+5. 建议应体现专业性，引用认知行为疗法、正念训练、情绪调节等专业手段，说明其作用机制
+6. 如果用户是儿童或青少年，请特别关注家庭和学校干预策略
+
+另外，请在分析完成后，生成一个JSON格式的数据结构，包含以下三个主要部分：
+1. "核心状态分析"：包含总体状态描述、情绪稳定性评估和能量水平分析
+2. "重点指标异常"：列出所有异常指标及其详细信息
+3. "针对性干预建议"：针对每个异常指标的具体建议
+
+JSON结构示例：
+```json
+{{
+  "核心状态分析": {{
+    "总体状态": "这里填写具体描述",
+    "情绪稳定性": "这里填写具体描述",
+    "能量水平": "这里填写具体描述"
+  }},
+  "重点指标异常": [
+    {{
+      "指标名称": "这里填写指标名称",
+      "当前值": "这里填写数值",
+      "正常范围": "这里填写范围",
+      "影响分析": "这里填写分析内容"
+    }}
+  ],
+  "针对性干预建议": {{
+    "异常指标名称": [
+      {{
+        "建议标题": "这里填写建议标题",
+        "具体方法": "这里填写具体方法",
+        "预期效果": "这里填写预期效果"
+      }}
+    ]
+  }}
+}}
 ```
 
 报告内容：
-{file_content[:8000]}  # 增加文本长度上限以包含更多内容
+{file_content[:10000]}  # 包含图像分析结果的文本内容
 """
         
-        # 使用chat_service中的llm_service
-        analysis = await chat_service.llm_service.async_chat(prompt)
+        # 使用chat_service中的llm_service，增加token上限以获取更详细的分析
+        # 由于我们在后台线程中，需要创建一个新的事件循环
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        analysis = loop.run_until_complete(chat_service.llm_service.async_chat(prompt, max_tokens=4000, temperature=0.2))
+        loop.close()
         
         # 将分析结果转换为用户信息格式
-        user_info = f"""心理状态: 
+        user_info = f"""心理状态评估报告: 
 {analysis}
 """
         
@@ -143,25 +461,155 @@ async def emotional_assessment(file: UploadFile = File(...)):
         user_processor = UserInfoProcessor()
         user_processor.save_user_info(user_info)
         
+        # 提取JSON结构数据并保存为文件
+        import json
+        import re
+        
+        # 尝试从文本中提取JSON数据
+        try:
+            # 使用正则表达式查找JSON格式的内容
+            json_match = re.search(r'```json\s*(.*?)\s*```', analysis, re.DOTALL)
+            
+            if json_match:
+                json_text = json_match.group(1)
+                assessment_data = json.loads(json_text)
+            else:
+                # 如果没有找到JSON格式，则手动构建结构
+                print("未找到JSON格式数据，从文本内容中提取...")
+                
+                # 提取核心状态分析
+                core_analysis_match = re.search(r'一、核心状态分析(.*?)二、重点指标异常', analysis, re.DOTALL)
+                core_analysis_text = core_analysis_match.group(1).strip() if core_analysis_match else ""
+                
+                # 从核心状态分析中提取具体信息
+                core_state_match = re.search(r'当前.*?(?:处于|状态[为是]).*?([活力|平衡|消耗]状态)', core_analysis_text, re.DOTALL)
+                emotion_stability_match = re.search(r'情绪稳定性.*?(.*?)(?:[\n\r]|$)', core_analysis_text, re.DOTALL)
+                energy_level_match = re.search(r'能量水平.*?(.*?)(?:[\n\r]|$)', core_analysis_text, re.DOTALL)
+                
+                core_state = core_state_match.group(1).strip() if core_state_match else "未提及"
+                emotion_stability = emotion_stability_match.group(1).strip() if emotion_stability_match else "未提及"
+                energy_level = energy_level_match.group(1).strip() if energy_level_match else "未提及"
+                
+                # 提取重点指标异常
+                abnormal_indicators_match = re.search(r'二、重点指标异常(.*?)三、针对性干预建议', analysis, re.DOTALL)
+                abnormal_indicators_text = abnormal_indicators_match.group(1).strip() if abnormal_indicators_match else ""
+                
+                # 从异常指标部分提取各指标
+                abnormal_indicators = []
+                indicator_pattern = r'([攻击性|自信|能量|活力|压力|抑郁|幸福感|情绪波动|注意力]+)(?:指标)?(?:偏高|偏低|异常|超出正常范围).*?(\d+\.?\d*)[/／]?(?:正常)?(?:范围)?.*?(\d+[-至]\d+|\d+[以上下]?).*?(?:影响|表现为|导致)(.*?)(?:[\n\r]|$)'
+                indicator_matches = re.finditer(indicator_pattern, abnormal_indicators_text, re.DOTALL)
+                
+                for match in indicator_matches:
+                    abnormal_indicators.append({
+                        "指标名称": match.group(1).strip(),
+                        "当前值": match.group(2).strip(),
+                        "正常范围": match.group(3).strip(),
+                        "影响分析": match.group(4).strip()
+                    })
+                
+                # 如果没有匹配到具体指标，尝试提取整段文本
+                if not abnormal_indicators:
+                    # 按行分割，找出可能的指标行
+                    lines = abnormal_indicators_text.split('\n')
+                    for line in lines:
+                        line = line.strip()
+                        if line and not line.startswith('二、') and line.find(':') == -1 and line.find('：') == -1:
+                            # 尝试提取指标名称
+                            indicator_name_match = re.search(r'^[-\*•]?\s*([攻击性|自信|能量|活力|压力|抑郁|幸福感|情绪波动|注意力]+)', line)
+                            if indicator_name_match:
+                                abnormal_indicators.append({
+                                    "指标名称": indicator_name_match.group(1).strip(),
+                                    "当前值": "未明确提及",
+                                    "正常范围": "未明确提及",
+                                    "影响分析": line
+                                })
+                
+                # 提取针对性干预建议
+                intervention_match = re.search(r'三、针对性干预建议(.*?)$', analysis, re.DOTALL)
+                intervention_text = intervention_match.group(1).strip() if intervention_match else ""
+                
+                # 从干预建议中提取各指标的建议
+                intervention_suggestions = {}
+                
+                # 首先提取各个指标部分
+                indicator_sections = re.split(r'\d+\.\s*针对\s*', intervention_text)
+                
+                # 第一个元素通常是空或标题，跳过
+                for section in indicator_sections[1:] if len(indicator_sections) > 1 else []:
+                    # 提取指标名称
+                    indicator_name_match = re.search(r'^(.*?)[:：]', section)
+                    if not indicator_name_match:
+                        continue
+                        
+                    indicator_name = indicator_name_match.group(1).strip()
+                    section_text = section[len(indicator_name) + 1:].strip()
+                    
+                    # 提取具体建议
+                    suggestions = []
+                    suggestion_matches = re.finditer(r'[-*•]?\s*(.*?)[:：](.*?)(?:[\n\r]|(?=-)|$)', section_text, re.DOTALL)
+                    
+                    for suggestion_match in suggestion_matches:
+                        suggestions.append({
+                            "建议标题": suggestion_match.group(1).strip(),
+                            "具体方法": suggestion_match.group(2).strip(),
+                            "预期效果": "提高生活质量和心理健康水平"  # 默认效果
+                        })
+                    
+                    # 如果没有匹配到具体建议，尝试按行分割
+                    if not suggestions:
+                        lines = section_text.split('\n')
+                        for line in lines:
+                            line = line.strip()
+                            if line and line.startswith('-') or line.startswith('*') or line.startswith('•'):
+                                suggestions.append({
+                                    "建议标题": "建议",
+                                    "具体方法": line[1:].strip(),
+                                    "预期效果": "提高生活质量和心理健康水平"
+                                })
+                    
+                    intervention_suggestions[indicator_name] = suggestions
+                
+                # 构建最终的数据结构
+                assessment_data = {
+                    "核心状态分析": {
+                        "总体状态": core_state,
+                        "情绪稳定性": emotion_stability,
+                        "能量水平": energy_level
+                    },
+                    "重点指标异常": abnormal_indicators,
+                    "针对性干预建议": intervention_suggestions
+                }
+            
+            # 创建保存目录
+            os.makedirs("save/assessments", exist_ok=True)
+            
+            # 生成文件名
+            assessment_file = os.path.join("save/assessments", f"assessment_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+            
+            # 保存为JSON文件
+            with open(assessment_file, "w", encoding="utf-8") as json_file:
+                json.dump(assessment_data, json_file, ensure_ascii=False, indent=2)
+                
+            print(f"情绪评估结果已保存到文件: {assessment_file}")
+                
+        except Exception as json_error:
+            print(f"保存JSON格式评估结果失败: {json_error}")
+            import traceback
+            traceback.print_exc()
+        
+        print(f"情绪评估后台处理完成: {os.path.basename(temp_file_path)}")
+        
+    except Exception as e:
+        print(f"后台处理情绪评估失败: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # 处理完成，重置处理状态
+        PROCESSING_ASSESSMENT = False
+        PROCESSING_START_TIME = None
         # 删除临时文件
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
-        
-        return JSONResponse(
-            content={
-                "success": True,
-                "message": "情绪评估完成，用户信息已更新"
-            }
-        )
-    
-    except Exception as e:
-        print(f"情绪评估处理失败: {e}")
-        return JSONResponse(
-            content={
-                "success": False,
-                "message": f"处理失败: {str(e)}"
-            }
-        )
 
 @assessment_router.get("/psychological_assessment")
 async def psychological_assessment():

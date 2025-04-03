@@ -109,12 +109,14 @@ def extract_text_from_file(file_path, file_extension):
             return "缺少python-docx库，无法解析Word文档。"
     
     elif file_extension in ['.jpg', '.jpeg', '.png']:
-        # 对图片文件进行OCR处理
+        # 对图片文件进行增强OCR处理
         try:
             import pytesseract
             from PIL import Image
             import cv2
             import numpy as np
+            import base64
+            import io
             
             # 读取图片并进行预处理
             img = cv2.imread(file_path)
@@ -128,9 +130,51 @@ def extract_text_from_file(file_path, file_extension):
             thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
                                           cv2.THRESH_BINARY, 11, 2)
             
-            # 使用pytesseract进行OCR
-            text = pytesseract.image_to_string(thresh, lang='chi_sim+eng')
-            return text
+            # 标准OCR识别
+            standard_text = pytesseract.image_to_string(thresh, lang='chi_sim+eng')
+            
+            # 针对表格进行特殊处理
+            try:
+                # 表格边缘检测
+                edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+                # 霍夫变换检测直线
+                lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=100, minLineLength=100, maxLineGap=10)
+                
+                # 如果检测到足够的直线，可能是表格
+                if lines is not None and len(lines) > 10:
+                    print("检测到可能的表格，使用表格模式OCR...")
+                    # 使用表格识别模式
+                    table_data = pytesseract.image_to_data(thresh, lang='chi_sim+eng', output_type=pytesseract.Output.DICT)
+                    
+                    # 将表格数据转换为文本格式
+                    table_text = "表格数据:\n"
+                    for i in range(len(table_data['text'])):
+                        if int(float(table_data['conf'][i])) > 60:  # 只保留置信度高的识别结果
+                            if table_data['text'][i].strip():
+                                table_text += f"{table_data['text'][i]} "
+                            if table_data['text'][i].strip() and 'block_num' in table_data and i+1 < len(table_data['block_num']) and table_data['block_num'][i] != table_data['block_num'][i+1]:
+                                table_text += "\n"
+                    
+                    standard_text += "\n\n表格OCR结果:\n" + table_text
+            except Exception as table_err:
+                print(f"表格检测错误: {table_err}")
+            
+            # 使用大模型分析图像内容 (如果启用了对应的API)
+            try:
+                if chat_service and chat_service.llm_service and hasattr(chat_service.llm_service, 'analyze_image'):
+                    print("使用大模型分析图像内容...")
+                    # 将图像转换为Base64编码
+                    success, encoded_img = cv2.imencode('.jpg', img)
+                    if success:
+                        img_base64 = base64.b64encode(encoded_img).decode('utf-8')
+                        # 使用大模型分析图像
+                        image_analysis = chat_service.llm_service.analyze_image(img_base64)
+                        if image_analysis:
+                            standard_text += "\n\n图像内容分析:\n" + image_analysis
+            except Exception as img_analysis_err:
+                print(f"图像内容分析错误: {img_analysis_err}")
+                
+            return standard_text
         except ImportError:
             return "缺少图像处理或OCR库(opencv-python, pytesseract)，无法处理图片。"
         except Exception as e:
@@ -139,22 +183,114 @@ def extract_text_from_file(file_path, file_extension):
     
     elif file_extension == '.pdf':
         try:
-            # 首先尝试使用PyPDF2提取文本
-            from PyPDF2 import PdfReader
+            # 使用多种方法提取PDF文本和图像内容
             text = ""
-            try:
-                print("使用PyPDF2提取PDF文本...")
-                reader = PdfReader(file_path)
-                for page in reader.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text + "\n\n"
-            except Exception as pypdf_error:
-                print(f"PyPDF2提取错误: {pypdf_error}")
             
-            # 检查是否获取到了有效文本
+            # 1. 首先使用PyMuPDF (fitz)提取文本和图像
+            try:
+                import fitz  # PyMuPDF
+                print("使用PyMuPDF提取PDF内容...")
+                
+                doc = fitz.open(file_path)
+                extracted_images = []
+                extracted_text = ""
+                
+                for page_num, page in enumerate(doc):
+                    # 提取文本
+                    page_text = page.get_text()
+                    extracted_text += page_text + "\n\n"
+                    
+                    # 提取图像
+                    image_list = page.get_images(full=True)
+                    for img_index, img in enumerate(image_list):
+                        xref = img[0]
+                        base_image = doc.extract_image(xref)
+                        image_bytes = base_image["image"]
+                        
+                        # 保存图像到临时文件
+                        img_filename = f"temp_uploads/img_p{page_num+1}_{img_index+1}.png"
+                        with open(img_filename, "wb") as img_file:
+                            img_file.write(image_bytes)
+                            
+                        extracted_images.append(img_filename)
+                
+                # 如果提取了有效文本，使用它
+                if len(extracted_text.strip()) > 100:
+                    text = extracted_text
+                
+                # 处理提取出的图像
+                images_text = ""
+                for i, img_path in enumerate(extracted_images):
+                    try:
+                        # 对图像进行OCR
+                        img = cv2.imread(img_path)
+                        if img is not None:
+                            # 转为灰度
+                            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                            # 自适应阈值处理
+                            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                                          cv2.THRESH_BINARY, 11, 2)
+                            # OCR识别
+                            img_text = pytesseract.image_to_string(thresh, lang='chi_sim+eng')
+                            
+                            if len(img_text.strip()) > 5:  # 只添加有意义的OCR结果
+                                images_text += f"\n图像{i+1}内容:\n{img_text}\n"
+                                
+                            # 使用大模型分析图像
+                            try:
+                                if chat_service and chat_service.llm_service and hasattr(chat_service.llm_service, 'analyze_image'):
+                                    # 将图像转换为Base64编码
+                                    success, encoded_img = cv2.imencode('.jpg', img)
+                                    if success:
+                                        img_base64 = base64.b64encode(encoded_img).decode('utf-8')
+                                        # 使用大模型分析图像，专注于表格和图表
+                                        llm_prompt = """请分析这张图片，特别注意其中可能包含的表格、图表或情绪评估相关的数据，如果有:
+1. 表格数据：提取表格中的数值和标签，特别关注"攻击性"、"自信"、"能量"、"压力"、"抑郁"等指标及其数值
+2. 图表数据：描述图表展示的趋势和重要数值点
+3. 情绪评估数据：识别任何与心理或情绪状态相关的评分和解释
+
+请以结构化格式返回所有数据，特别是数值型数据。"""
+                                        image_analysis = chat_service.llm_service.analyze_image(img_base64, llm_prompt)
+                                        if image_analysis and len(image_analysis.strip()) > 10:
+                                            images_text += f"\n图像{i+1}深度分析:\n{image_analysis}\n"
+                            except Exception as img_analysis_err:
+                                print(f"图像内容分析错误: {img_analysis_err}")
+                        
+                        # 清理临时图像文件
+                        if os.path.exists(img_path):
+                            os.remove(img_path)
+                    except Exception as img_proc_err:
+                        print(f"图像处理错误: {img_proc_err}")
+                
+                # 将图像分析添加到文本结果
+                if images_text:
+                    text += "\n===提取的图像内容===\n" + images_text
+            
+            except ImportError:
+                print("PyMuPDF未安装，跳过此方法")
+            except Exception as pymupdf_error:
+                print(f"PyMuPDF提取错误: {pymupdf_error}")
+            
+            # 2. 如果PyMuPDF提取不足，尝试使用PyPDF2
             if not text or len(text.strip()) < 100:
-                print("PyPDF2提取内容不足，使用PDF转图像+OCR方案进行识别...")
+                try:
+                    from PyPDF2 import PdfReader
+                    print("使用PyPDF2提取PDF文本...")
+                    reader = PdfReader(file_path)
+                    pdf_text = ""
+                    for page in reader.pages:
+                        page_text = page.extract_text()
+                        if page_text:
+                            pdf_text += page_text + "\n\n"
+                    
+                    if len(pdf_text.strip()) > len(text.strip()):
+                        text = pdf_text
+                except Exception as pypdf_error:
+                    print(f"PyPDF2提取错误: {pypdf_error}")
+            
+            # 3. 如果以上方法提取内容不足，使用PDF转图像+OCR方案
+            if not text or len(text.strip()) < 100:
+                print("PDF文本提取不足，使用PDF转图像+OCR方案进行识别...")
                 try:
                     # 使用pdf2image和OCR处理
                     import pytesseract
@@ -162,24 +298,24 @@ def extract_text_from_file(file_path, file_extension):
                     import cv2
                     import numpy as np
                     
+                    # 创建临时目录存储图像，方便后续处理
+                    os.makedirs("temp_images", exist_ok=True)
+                    
                     # 转换PDF为高分辨率图像
                     images = convert_from_path(file_path, dpi=300)
                     ocr_text = ""
                     
-                    # 设置pytesseract配置，提高中文识别准确率
-                    # 确保安装了相应语言包
-                    lang_param = 'chi_sim+eng'
-                    try:
-                        # 使用中文简体识别
-                        custom_config = r'--oem 1 --psm 3 -l chi_sim+eng'
-                        for i, image in enumerate(images):
-                            # 转换为OpenCV格式
-                            opencv_image = np.array(image)
+                    # 对每一页进行处理
+                    for i, image in enumerate(images):
+                        # 保存图像到临时文件
+                        temp_img_path = f"temp_images/page_{i+1}.png"
+                        image.save(temp_img_path, "PNG")
+                        
+                        # 使用OpenCV加载并处理图像
+                        opencv_image = cv2.imread(temp_img_path)
+                        if opencv_image is not None:
                             # 转为灰度
-                            if len(opencv_image.shape) == 3 and opencv_image.shape[2] == 3:
-                                gray = cv2.cvtColor(opencv_image, cv2.COLOR_RGB2GRAY)
-                            else:
-                                gray = opencv_image
+                            gray = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2GRAY)
                             
                             # 应用自适应阈值
                             thresh = cv2.adaptiveThreshold(
@@ -187,7 +323,8 @@ def extract_text_from_file(file_path, file_extension):
                                 cv2.THRESH_BINARY, 11, 2
                             )
                             
-                            # OCR识别
+                            # 标准OCR识别
+                            custom_config = r'--oem 1 --psm 3 -l chi_sim+eng'
                             page_text = pytesseract.image_to_string(thresh, config=custom_config)
                             
                             # 特殊处理：替换常见错误识别
@@ -210,13 +347,38 @@ def extract_text_from_file(file_path, file_extension):
                                 page_text = page_text.replace(old, new)
                             
                             ocr_text += page_text + "\n\n"
+                            
+                            # 使用大模型分析图像内容
+                            try:
+                                if chat_service and chat_service.llm_service and hasattr(chat_service.llm_service, 'analyze_image'):
+                                    # 将图像转换为Base64编码
+                                    with open(temp_img_path, "rb") as img_file:
+                                        img_base64 = base64.b64encode(img_file.read()).decode('utf-8')
+                                    
+                                    # 使用大模型分析图像，专注于情绪评估数据
+                                    llm_prompt = """请分析这张图片，专注于情绪/心理评估相关的数据:
+1. 识别图像中的表格、图表和文本
+2. 提取所有与情绪评估相关的指标值，特别是"攻击性"、"自信"、"能量"、"压力"、"抑郁"等指标及其数值
+3. 标注每个指标的数值范围（如果图片中有显示）
+4. 理解图表中表示的情绪波动趋势
+
+请以结构化格式返回所有发现的数据点和分析结果。特别强调数值型数据，如：攻击性：45，自信：70等。"""
+                                    image_analysis = chat_service.llm_service.analyze_image(img_base64, llm_prompt)
+                                    if image_analysis and len(image_analysis.strip()) > 10:
+                                        ocr_text += f"\n页面{i+1}图像深度分析:\n{image_analysis}\n\n"
+                            except Exception as img_analysis_err:
+                                print(f"图像内容分析错误: {img_analysis_err}")
+                        
+                        # 清理临时文件
+                        if os.path.exists(temp_img_path):
+                            os.remove(temp_img_path)
                     
-                    except Exception as ocr_error:
-                        print(f"特定语言OCR错误，尝试默认设置: {ocr_error}")
-                        # 如果特定语言配置失败，尝试使用默认设置
-                        for i, image in enumerate(images):
-                            page_text = pytesseract.image_to_string(np.array(image))
-                            ocr_text += page_text + "\n\n"
+                    # 清理临时目录
+                    try:
+                        if os.path.exists("temp_images"):
+                            os.rmdir("temp_images")
+                    except:
+                        pass
                     
                     # 使用OCR结果
                     if ocr_text.strip():
