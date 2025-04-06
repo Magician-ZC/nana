@@ -1617,62 +1617,33 @@ async def welcome_tts(request: dict = Body(...)):
         # 确保TTS服务使用最新的配置
         chat_service._refresh_tts_services()
         
-        # 使用异步任务生成语音，避免阻塞
-        async def generate_tts_audio():
-            audio_data = None
-            
-            # 优先使用超拟人TTS
-            if chat_service.super_tts_service:
-                try:
-                    print("欢迎语TTS: 尝试使用超拟人TTS生成语音...")
-                    # 使用线程池执行可能阻塞的操作
-                    loop = asyncio.get_running_loop()
-                    audio_data = await loop.run_in_executor(
-                        None, 
-                        chat_service.super_tts_service.generate_audio, 
-                        message
-                    )
-                    
-                    if audio_data and len(audio_data) > 100:
-                        print(f"欢迎语超拟人TTS生成成功，音频大小: {len(audio_data)} 字节")
-                    else:
-                        print("欢迎语超拟人TTS生成失败: 生成的音频数据无效或过小")
-                except Exception as e:
-                    print(f"生成欢迎语超拟人语音时出错: {e}")
-            
-            # 如果超拟人TTS失败或未启用，尝试使用普通TTS
-            if (not audio_data or len(audio_data) < 100) and chat_service.tts_service:
-                try:
-                    print("欢迎语TTS: 尝试使用普通TTS生成语音...")
-                    # 使用线程池执行可能阻塞的操作
-                    loop = asyncio.get_running_loop()
-                    audio_data = await loop.run_in_executor(
-                        None, 
-                        chat_service.tts_service.generate_audio, 
-                        message
-                    )
-                    
-                    if audio_data and len(audio_data) > 100:
-                        print(f"欢迎语普通TTS生成成功，音频大小: {len(audio_data)} 字节")
-                    else:
-                        print("欢迎语普通TTS生成失败: 生成的音频数据无效或过小")
-                except Exception as e:
-                    print(f"生成欢迎语普通语音时出错: {e}")
-            
-            return audio_data
+        # 使用消息内容作为欢迎语
+        welcome_text = message
+        welcome_audio = None
         
-        # 设置超时
-        try:
-            # 使用asyncio.wait_for添加超时控制
-            audio_data = await asyncio.wait_for(generate_tts_audio(), timeout=15.0)
-        except asyncio.TimeoutError:
-            print("欢迎语TTS生成超时，返回空音频")
-            audio_data = None
-        except Exception as e:
-            print(f"欢迎语TTS生成过程中出现异常: {e}")
-            audio_data = None
-            
-        audio_base64 = base64.b64encode(audio_data).decode('ascii') if audio_data else ''
+        # 根据配置决定使用哪个TTS服务
+        if Config.is_tts_enabled() and chat_service.tts_service:
+            try:
+                print("欢迎语TTS: 尝试使用普通TTS生成语音...")
+                welcome_audio = chat_service.tts_service.generate_audio(welcome_text)
+                if welcome_audio and len(welcome_audio) > 100:
+                    print(f"欢迎语普通TTS生成成功，音频大小: {len(welcome_audio)} 字节")
+                else:
+                    print("欢迎语普通TTS生成失败: 生成的音频数据无效或过小")
+            except Exception as e:
+                print(f"生成欢迎语普通语音时出错: {e}")
+        elif Config.is_super_tts_enabled() and chat_service.super_tts_service:
+            try:
+                print("欢迎语TTS: 尝试使用超拟人TTS生成语音...")
+                welcome_audio = chat_service.super_tts_service.generate_audio(welcome_text)
+                if welcome_audio and len(welcome_audio) > 100:
+                    print(f"欢迎语超拟人TTS生成成功，音频大小: {len(welcome_audio)} 字节")
+                else:
+                    print("欢迎语超拟人TTS生成失败: 生成的音频数据无效或过小")
+            except Exception as e:
+                print(f"生成欢迎语超拟人语音时出错: {e}")
+        
+        audio_base64 = base64.b64encode(welcome_audio).decode('ascii') if welcome_audio else ''
         
         return JSONResponse(
             content={

@@ -251,18 +251,6 @@ class MainAgent:
         Returns:
             Tuple[str, str]: (回复内容, 表情)
         """
-        # 过滤无意义内容
-        if not is_category and self._is_meaningless_input(message):
-            print(f"检测到无意义输入: '{message}'，返回模板回复")
-            # 根据当前智能体选择合适的模板回复
-            template_replies = {
-                "nanaA": "喵~？你在说什么呀，我听不懂...",
-                "nanaB": "抱歉，我没有理解你的意思。能请你说得更清楚一些吗？",
-                "nanaC": "咦？这是什么意思呀？再说一次好不好~"
-            }
-            reply_content = template_replies.get(self.current_agent, "我没明白你的意思，能说得更清楚些吗？")
-            return reply_content, "疑惑"
-        
         # 记录用户消息
         self._log_conversation('user', message)
         
@@ -287,7 +275,7 @@ class MainAgent:
         
         # 处理回复，添加到对话历史
         if reply_content:
-            await self._handle_successful_reply(message, reply_content)
+            await self._handle_successful_reply(message, reply_content, is_category)
 
         # 检查是否需要发送对话总结 (每10轮对话)
         if turns_count % 10 == 0 and turns_count >= 10 and message != "SYSTEM_GUIDANCE":
@@ -347,10 +335,98 @@ class MainAgent:
         if personality:
             personality_prompt = f"\n请以以下性格特点回复: {personality}"
         
-        # 如果是快捷提问类别，添加相应的指导
+        # 如果是快捷提问类别，使用xinli_agent作为提示词
         category_prompt = ""
         if is_category:
-            category_prompt = f"\n用户点击了快捷提问类别按钮：{message}。请针对该类别提供专业且详细的回答，字数不限。如果用户信息中包含与该类别相关的内容，请重点针对这些信息进行深入分析并给出专业建议。请使用专业咨询师的语气，确保回答全面、有针对性且对用户有实际帮助。不要在回答中引导用户做出决策。"
+            # 读取xinli_agent提示词
+            xinli_agent_path = os.path.join("prompts", "xinli_agent.txt")
+            with open(xinli_agent_path, "r", encoding="utf-8") as f:
+                xinli_prompt = f.read()
+            
+            # 检查是否是用户回复了无关内容
+            is_off_topic = self._is_meaningless_input(message) or self._is_off_topic(message, context)
+            consecutive_off_topic = self._count_consecutive_off_topic(context)
+            
+            # 检查是否是用户表示想要停止话题
+            exit_guidance_keywords = ["结束话题", "结束引导", "不想聊了", "换个话题", "不想继续", "结束对话", "不想讨论这个", "不讨论", "换话题", "算了", "不聊了"]
+            is_exit_request = any(keyword in message for keyword in exit_guidance_keywords)
+            
+            if is_exit_request:
+                # 用户请求结束，直接生成总结
+                off_topic_hint = """
+用户表示想要结束话题。请生成一个简短的总结，包括以下内容：
+1. 对讨论内容的简要回顾
+2. 给出的主要建议或观点
+3. 一个友好的结束语，表示用户随时可以重新讨论这个话题
+
+请确保将is_summary设置为true，以便系统知道对话已经结束。
+"""
+            elif is_off_topic:
+                if consecutive_off_topic >= 2:  # 连续3次偏离主题（当前这次+之前2次）
+                    off_topic_hint = """
+当前检测到用户已连续多次回复了无关内容或离题内容。用户可能对当前的主题不感兴趣或有其他顾虑。
+请尝试以下几种策略之一（每次只选择一种，避免重复之前已尝试的策略）：
+
+1. 直接询问用户是否想结束当前话题，例如："我注意到您似乎对这个话题不太感兴趣，是否想换一个话题讨论？"
+2. 尝试理解用户可能不想讨论当前话题的原因，例如："您是否有什么顾虑让您不想讨论这个话题？"
+3. 提供一个完全不同的思路或角度，例如："也许我们可以从一个全新的角度来思考这个问题..."
+4. 分享一个相关的小故事或案例，引起用户兴趣
+5. 尝试将用户的无关话题与当前主题建立某种联系，顺着用户的思路稍微引导
+
+请确保您的回应是真诚的、尊重的，并且避免显得过于坚持或重复。每次只使用一种新的策略，不要重复使用同一种策略。
+"""
+                else:
+                    off_topic_hint = """
+当前检测到用户可能回复了无关内容或离题内容。请先温和地回应用户的话题，然后巧妙地将对话引导回主题。
+例如："我理解您现在想讨论[离题内容]，这确实是个有趣的话题。不过，为了更好地帮助您解决当前的问题，我们可以先回到刚才的讨论..."
+
+千万不要表现出不耐烦或指责用户离题，而是要理解并尊重用户的想法，然后自然地引导回来。
+"""
+            else:
+                off_topic_hint = ""
+            
+            category_prompt = f"""
+{xinli_prompt}
+
+## 当前任务
+用户点击了快捷提问类别按钮：{message}。请以专业心理医生的身份，通过引导式提问帮助用户逐步明确和解决他们的问题。
+{off_topic_hint}
+### 引导式提问规则
+1. 每次只提出一个问题，等待用户回答
+2. 根据用户的回答，逐步深入探究问题的核心
+3. 使用开放式问题，避免引导性提问
+4. 保持专业、温和的语气
+5. 当用户偏离主题时，温和地将话题拉回
+6. 当用户明确表示要结束话题时，直接生成总结并结束引导
+7. 即使用户回复无关内容，也不要放弃引导，而是要温和地将话题拉回
+8. 当用户连续多次偏离主题时，不要重复相同的提问方式，而要尝试新的引导策略
+
+### 输出格式
+请严格按照以下JSON格式输出，不要添加任何额外文本或说明。确保输出有效的JSON格式：
+{{
+  "reply": "<回复内容>",
+  "expression": "<表情>",
+  "is_question": <是否是提问>,
+  "is_summary": <是否是总结>,
+  "question_type": "<问题类型>"
+}}
+
+注意事项：
+1. 不要输出任何解释、注释或额外文本，只输出JSON格式内容
+2. "reply"字段应包含你对用户的回复内容
+3. "expression"字段必须从以下表情中选择一个：吐舌,黑脸,眼泪,脸红,nn眼,生气瘪嘴,死鱼眼,生气,咪咪眼,嘟嘴,钱钱眼,爱心,泪眼
+4. "is_question"和"is_summary"必须是布尔值（true或false）
+5. "question_type"必须是以下之一：initial, follow_up, clarification, summary, refocus, meta
+
+举例：
+{{
+  "reply": "您好，我是李梅医生。您能告诉我您在职业规划方面面临的具体挑战吗？",
+  "expression": "咪咪眼",
+  "is_question": true,
+  "is_summary": false,
+  "question_type": "initial"
+}}
+"""
         
         # 检查是否是用户对建议的回复/决策
         is_user_decision, decision_type, decision_content = self.intent_extractor.recognizer.check_if_user_decision(message, context)
@@ -372,19 +448,120 @@ class MainAgent:
         # 添加提示词，请求只在必要时更新用户信息
         update_info_prompt = "\n注意：当用户明确提供新的个人信息，或对建议做出选择和决策时，才在'user_info'字段中返回更新后的用户信息。如果用户没有提供新信息或没有做出明确决策，请不要在回复中包含'user_info'字段。"
         
-        prompt = self.prompt_template.format(
-            chat_history=context,
-            user_message=message,
-            memory=memory_text,
-            user_info=self.user_info
-        ) + personality_prompt + category_prompt + decision_prompt + update_info_prompt
+        # 在快速提问模式下，使用xinli_agent提示词；否则使用原agent提示词
+        if is_category:
+            # 不使用模板，直接构建promot
+            prompt = f"""
+请以专业心理医生的身份回答用户问题。
+
+对话记录：
+{context}
+
+用户的最新问题：
+{message}
+
+相关记忆：
+{memory_text}
+
+注意：必须严格按照要求的JSON格式输出，不要在JSON前后添加任何说明性文字。直接输出有效的JSON结构。
+""" + personality_prompt + category_prompt + decision_prompt
+        else:
+            # 使用原模板
+            prompt = self.prompt_template.format(
+                chat_history=context,
+                user_message=message,
+                memory=memory_text,
+                user_info=self.user_info
+            ) + personality_prompt + category_prompt + decision_prompt + update_info_prompt
         
         # 获取LLM回复
-        reply = await self.llm_service.generate_response(prompt, is_json=True)
-        if not reply:
-            return "对不起，我现在有点累了，能稍后再聊吗？", "生气"
+        retry_count = 0
+        max_retries = 2
         
-        # 检查是否有用户信息更新，只有在有更新时才保存
+        while retry_count <= max_retries:
+            reply = await self.llm_service.generate_response(prompt, is_json=True)
+            if not reply:
+                return "对不起，我现在有点累了，能稍后再聊吗？", "生气"
+            
+            # 如果快速提问模式下出错或格式不对，尝试再生成一次
+            if is_category:
+                if all(k in reply for k in ["reply", "expression", "is_question", "question_type"]):
+                    break  # 格式正确，跳出循环
+                
+                retry_count += 1
+                print(f"第{retry_count}次尝试修复回复格式，当前回复：{reply}")
+                
+                try:
+                    # 尝试解析现有回复中的内容
+                    content = reply.get("reply", "")
+                    expression = reply.get("expression", "咪咪眼")
+                    
+                    # 重新构建更严格的prompt
+                    strict_prompt = f"""
+作为一名专业心理医生，请根据以下信息生成一个符合JSON格式的回复：
+
+用户点击的快捷提问类别：{message}
+用户的最新输入："{message}"
+
+请直接生成JSON格式的回复，不要添加任何额外的解释或说明。回复必须是有效的JSON格式，包含以下字段：
+- reply: 您对用户的回复内容
+- expression: 表情（从以下选择之一：吐舌,黑脸,眼泪,脸红,nn眼,生气瘪嘴,死鱼眼,生气,咪咪眼,嘟嘴,钱钱眼,爱心,泪眼）
+- is_question: 布尔值，表示是否是提问
+- is_summary: 布尔值，表示是否是总结
+- question_type: 问题类型（从以下选择之一：initial, follow_up, clarification, summary, refocus, meta）
+
+示例输出：
+{{
+  "reply": "您好，我是李梅医生。您能告诉我您在职业规划方面面临的具体挑战吗？",
+  "expression": "咪咪眼",
+  "is_question": true,
+  "is_summary": false,
+  "question_type": "initial"
+}}
+
+请确保输出的是标准的、有效的、可以被JSON解析器解析的JSON格式。不要输出任何其他文本，只输出JSON对象。
+"""
+                    # 重新生成回复
+                    retry_reply = await self.llm_service.generate_response(strict_prompt, is_json=True)
+                    if all(k in retry_reply for k in ["reply", "expression", "is_question", "question_type"]):
+                        reply = retry_reply
+                        break  # 格式正确，跳出循环
+                except Exception as e:
+                    print(f"修复回复格式时出错：{e}")
+            else:
+                break  # 非引导式提问模式，不需要特殊处理
+        
+        # 所有重试都失败，使用手动构建的回复
+        if is_category and not all(k in reply for k in ["reply", "expression", "is_question", "question_type"]):
+            try:
+                # 尝试提取已有内容
+                if isinstance(reply, dict) and "reply" in reply:
+                    content = reply["reply"]
+                elif isinstance(reply, str):
+                    content = reply
+                else:
+                    content = "您好，我是李梅医生。您能告诉我您面临的具体问题吗？"
+                
+                # 手动构建JSON回复
+                print(f"所有重试都失败，手动构建回复。提取的内容: {content}")
+                reply = {
+                    "reply": content,
+                    "expression": "咪咪眼",
+                    "is_question": True,
+                    "is_summary": False,
+                    "question_type": "follow_up"
+                }
+            except Exception as e:
+                print(f"手动构建回复出错：{e}")
+                reply = {
+                    "reply": "您好，我是李梅医生。您能告诉我您面临的具体问题吗？",
+                    "expression": "咪咪眼",
+                    "is_question": True,
+                    "is_summary": False,
+                    "question_type": "initial"
+                }
+        
+        # 处理用户信息更新
         if "user_info" in reply:
             user_info_value = reply["user_info"]
             # 检查user_info是否为字典类型（可能是直接返回了JSON对象）
@@ -532,62 +709,61 @@ class MainAgent:
             
         return "无补充信息"
 
-    async def _handle_successful_reply(self, message: str, reply_content: str) -> None:
+    async def _handle_successful_reply(self, message: str, reply_content: str, is_category: bool) -> None:
         """处理成功的回复"""
         # 记录助手回复并添加到对话历史
         self._log_conversation('assistant', reply_content)
         await self.conversation_history.add_dialog(message, reply_content, self.user_info_processor)
         
-        # 检查是否需要发送引导决策的消息
-        context = self.conversation_history.get_context()
-        is_user_decision, _, _ = self.intent_extractor.recognizer.check_if_user_decision(message, context)
-        is_category = any(category in message for category in [
-            "情感咨询师", "人际关系", "学业问题", "就业与职业规划压力", 
-            "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"
-        ])
-        
-        # 如果是类别提问且不是用户决策的回复，则发送引导决策消息
-        if is_category and not is_user_decision:
-            # 准备引导决策的消息模板
-            guidance_templates = {
-                "nanaA": [
-                    "你打算怎么做？", 
-                    "你会选择哪种方式？", 
-                    "你是打算接受还是拒绝？",
-                    "你想要尝试一下吗？"
-                ],
-                "nanaB": [
-                    "接下来你打算采取什么行动呢？", 
-                    "在这些选择中，你更倾向于哪一种方案？",
-                    "你对这个建议有什么想法呢？",
-                    "听完我的建议，你是否已经有了决定？"
-                ],
-                "nanaC": [
-                    "你觉得怎么样呀？想不想试试看这个方法？", 
-                    "你会选择哪种方式处理这个问题呢？告诉我吧！",
-                    "听完我说的，你有什么想法呀？快告诉我吧~",
-                    "你决定好要怎么做了吗？分享给我听听吧！"
-                ]
-            }
+        # 在快速提问模式下不发送引导决策消息，因为现在使用xinli_agent管理整个引导过程
+        if not is_category:
+            # 检查是否需要发送引导决策的消息
+            context = self.conversation_history.get_context()
+            is_user_decision, _, _ = self.intent_extractor.recognizer.check_if_user_decision(message, context)
             
-            # 根据当前使用的智能体选择合适的引导模板
-            templates = guidance_templates.get(self.current_agent, guidance_templates["nanaA"])
-            import random
-            guidance_message = random.choice(templates)
-            
-            # 记录引导决策的消息
-            self._log_conversation('assistant', guidance_message)
-            
-            # 将引导消息信息保存到conversation_history中的临时属性中，供后续TTS使用
-            self.conversation_history.last_guidance_message = guidance_message
-            
-            # 将引导消息添加到对话历史
-            # 注意：这里不触发归档，所以不传递user_info_processor
-            await self.conversation_history.add_dialog(message="SYSTEM_GUIDANCE", reply=guidance_message)
+            # 如果是类别提问且不是用户决策的回复，则发送引导决策消息
+            if message in ["情感咨询师", "人际关系", "学业问题", "就业与职业规划压力", 
+                          "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"] and not is_user_decision:
+                # 准备引导决策的消息模板
+                guidance_templates = {
+                    "nanaA": [
+                        "你打算怎么做？", 
+                        "你会选择哪种方式？", 
+                        "你是打算接受还是拒绝？",
+                        "你想要尝试一下吗？"
+                    ],
+                    "nanaB": [
+                        "接下来你打算采取什么行动呢？", 
+                        "在这些选择中，你更倾向于哪一种方案？",
+                        "你对这个建议有什么想法呢？",
+                        "听完我的建议，你是否已经有了决定？"
+                    ],
+                    "nanaC": [
+                        "你觉得怎么样呀？想不想试试看这个方法？", 
+                        "你会选择哪种方式处理这个问题呢？告诉我吧！",
+                        "听完我说的，你有什么想法呀？快告诉我吧~",
+                        "你决定好要怎么做了吗？分享给我听听吧！"
+                    ]
+                }
+                
+                # 根据当前使用的智能体选择合适的引导模板
+                templates = guidance_templates.get(self.current_agent, guidance_templates["nanaA"])
+                import random
+                guidance_message = random.choice(templates)
+                
+                # 记录引导决策的消息
+                self._log_conversation('assistant', guidance_message)
+                
+                # 将引导消息信息保存到conversation_history中的临时属性中，供后续TTS使用
+                self.conversation_history.last_guidance_message = guidance_message
+                
+                # 将引导消息添加到对话历史
+                # 注意：这里不触发归档，所以不传递user_info_processor
+                await self.conversation_history.add_dialog(message="SYSTEM_GUIDANCE", reply=guidance_message)
         
         # 启动异步任务处理用户信息同步
         import asyncio
-        asyncio.create_task(self._process_user_info_sync(message, is_user_decision))
+        asyncio.create_task(self._process_user_info_sync(message, False))  # 在快速提问模式中不更新用户画像
 
     async def _process_user_info_sync(self, message, is_user_decision):
         """异步处理用户信息同步，不阻塞主回复流程
@@ -616,3 +792,87 @@ class MainAgent:
                     print(self.user_info)
         except Exception as e:
             print(f"同步用户信息时出错: {e}")
+
+    def _is_off_topic(self, message: str, context: str) -> bool:
+        """检测用户回复是否偏离主题
+        
+        Args:
+            message: 用户消息
+            context: 对话上下文
+            
+        Returns:
+            bool: 是否偏离主题
+        """
+        # 获取对话上下文的最后几轮
+        lines = context.strip().split('\n')
+        last_turns = []
+        for i in range(len(lines)-1, -1, -1):
+            if i > 0 and lines[i].startswith('用户：') and lines[i-1].startswith('助手：'):
+                last_turns.append((lines[i-1][3:].strip(), lines[i][3:].strip()))
+                if len(last_turns) >= 3:  # 增加到3轮，用于检测连续逃避
+                    break
+        
+        # 如果没有足够的上下文，无法判断是否偏离主题
+        if not last_turns:
+            return False
+        
+        # 检查最新的回复是否与主题相关
+        last_assistant_msg = last_turns[0][0]
+        
+        # 主题关键词
+        topic_keywords = {
+            "情感咨询师": ["情感", "恋爱", "喜欢", "爱情", "失恋", "伴侣", "关系"],
+            "人际关系": ["朋友", "同学", "关系", "相处", "冲突", "沟通", "欺负", "孤立"],
+            "学业问题": ["考试", "成绩", "学习", "课程", "作业", "论文", "学校"],
+            "就业与职业规划压力": ["工作", "就业", "面试", "职业", "简历", "职场", "压力"],
+            "精神健康障碍": ["焦虑", "抑郁", "失眠", "疲惫", "压力", "精神", "心理"],
+            "自我认同与价值观冲突": ["自我", "价值", "意义", "冲突", "困惑", "方向", "认同"],
+            "突发事件与危机情景": ["危机", "紧急", "突发", "事故", "创伤", "危险"]
+        }
+        
+        # 检测助手上一条消息的问题类型
+        for category, keywords in topic_keywords.items():
+            if any(keyword in last_assistant_msg.lower() for keyword in keywords):
+                # 检查用户回复是否包含相关关键词
+                if not any(keyword in message.lower() for keyword in keywords):
+                    # 如果用户回复不包含任何主题关键词，可能偏离主题
+                    
+                    # 最后检查是否是明显的离题内容
+                    off_topic_indicators = ["今天天气", "吃什么", "你是谁", "打游戏", "玩", "睡觉"]
+                    if any(indicator in message.lower() for indicator in off_topic_indicators):
+                        return True
+        
+        return False
+
+    def _count_consecutive_off_topic(self, context: str) -> int:
+        """计算用户连续几次偏离主题
+        
+        Args:
+            context: 对话上下文
+            
+        Returns:
+            int: 连续偏离主题的次数
+        """
+        # 获取最近的对话轮次
+        lines = context.strip().split('\n')
+        turns = []
+        for i in range(len(lines)-1, -1, -1):
+            if i > 0 and lines[i].startswith('用户：') and lines[i-1].startswith('助手：'):
+                turns.append((lines[i-1][3:].strip(), lines[i][3:].strip()))
+                if len(turns) >= 5:  # 检查最近5轮对话
+                    break
+        
+        # 如果轮次不足，返回0
+        if len(turns) < 2:
+            return 0
+        
+        # 检查连续的refocus信息
+        refocus_count = 0
+        for i in range(min(len(turns), 3)):  # 只检查最近3轮
+            assistant_msg = turns[i][0]
+            if "我们之前讨论的是" in assistant_msg and "你觉得" in assistant_msg:
+                refocus_count += 1
+            else:
+                break
+        
+        return refocus_count
