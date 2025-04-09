@@ -32,6 +32,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useChatStore } from './stores/chat'
+import { useAssessmentStore } from './stores/assessment'
 import Live2DModel from './components/Live2DModel.vue'
 import AgentSelector from './components/AgentSelector.vue'
 import ChatPanel from './components/ChatPanel.vue'
@@ -41,6 +42,7 @@ import SettingsButton from './components/SettingsButton.vue'
 import AssessmentButtons from './components/AssessmentButtons.vue'
 
 const chatStore = useChatStore()
+const assessmentStore = useAssessmentStore()
 const live2dRef = ref(null)
 const isDarkMode = ref(false)
 
@@ -263,6 +265,9 @@ onMounted(() => {
   
   // 初始化音频上下文
   initAudioContext()
+  
+  // 初始化评估状态
+  assessmentStore.initialize()
   
   // 监听系统主题变化
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {

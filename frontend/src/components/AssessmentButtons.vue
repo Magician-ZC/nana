@@ -15,6 +15,20 @@
         </span>
       </button>
       
+      <!-- 视频评估按钮 -->
+      <button 
+        @click="openVideoAssessment" 
+        class="flex items-center gap-2 px-4 py-2 bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 shadow-md hover:shadow-lg transition-all duration-200 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700"
+        :class="{ 'opacity-60 cursor-not-allowed': assessmentStore.videoProcessing }"
+        :title="assessmentStore.videoProcessing ? '视频评估分析中，请稍候' : '视频情绪评估'"
+      >
+        <i class="fa-solid fa-video text-blue-500 dark:text-blue-400"></i>
+        <span>{{ assessmentStore.videoProcessing ? '视频评估 (处理中)' : '视频评估' }}</span>
+        <span v-if="assessmentStore.videoAssessmentComplete" class="ml-1 px-1.5 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-xs rounded-full">
+          <i class="fa-solid fa-check"></i>
+        </span>
+      </button>
+      
       <button 
         @click="openPsychologicalAssessment" 
         class="flex items-center gap-2 px-4 py-2 bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 shadow-md hover:shadow-lg transition-all duration-200 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700"
@@ -261,25 +275,136 @@
         </div>
       </div>
     </div>
+    
+    <!-- 视频评估弹窗 -->
+    <div v-if="showVideoModal" class="fixed inset-0 bg-neutral-900/70 backdrop-blur-sm z-[1100] flex items-center justify-center transition-all duration-300 ease-in-out">
+      <div class="w-full max-w-2xl h-[70vh] bg-white dark:bg-neutral-800 rounded-xl shadow-2xl transition-all duration-300 ease-in-out transform animate-fade-in overflow-hidden">
+        <VideoRecorder @close="showVideoModal = false" @recording-complete="handleVideoRecordingComplete" />
+      </div>
+    </div>
+    
+    <!-- 视频分析结果弹窗 -->
+    <div v-if="showVideoAnalysisModal" class="fixed inset-0 bg-neutral-900/70 backdrop-blur-sm z-[1100] flex items-center justify-center transition-all duration-300 ease-in-out">
+      <div class="w-full max-w-5xl max-h-[90vh] overflow-hidden bg-white dark:bg-neutral-800 rounded-xl shadow-2xl transition-all duration-300 ease-in-out transform animate-fade-in flex flex-col">
+        <!-- 顶部标题栏 -->
+        <div class="flex items-center justify-between p-5 border-b border-neutral-200 dark:border-neutral-700">
+          <h3 class="text-xl font-semibold text-neutral-800 dark:text-white flex items-center gap-2">
+            <i class="fa-solid fa-video text-blue-500"></i>
+            视频情绪评估结果
+          </h3>
+          <button 
+            @click="showVideoAnalysisModal = false" 
+            class="w-8 h-8 flex items-center justify-center rounded-full bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-700 dark:hover:bg-neutral-600 text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-white transition-all duration-200 hover:scale-110"
+          >
+            <i class="fa-solid fa-xmark text-lg"></i>
+          </button>
+        </div>
+        
+        <!-- 内容区域 -->
+        <div class="flex-1 overflow-auto p-6">
+          <div v-if="assessmentStore.videoAssessmentData" class="space-y-8">
+            <!-- 情绪状态分析 -->
+            <div class="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-5 border border-blue-100 dark:border-blue-800/30">
+              <h4 class="text-lg font-semibold text-blue-700 dark:text-blue-300 mb-4 flex items-center gap-2">
+                <i class="fa-solid fa-face-smile"></i>
+                情绪状态分析
+              </h4>
+              
+              <div class="space-y-3">
+                <div class="flex flex-col">
+                  <span class="text-sm text-blue-600 dark:text-blue-400 font-medium">主要情绪</span>
+                  <span class="text-neutral-700 dark:text-neutral-300">{{ assessmentStore.videoAssessmentData['情绪状态分析']?.['主要情绪'] || '未检测到明显情绪' }}</span>
+                </div>
+                
+                <div class="flex flex-col">
+                  <span class="text-sm text-blue-600 dark:text-blue-400 font-medium">情绪强度</span>
+                  <span class="text-neutral-700 dark:text-neutral-300">{{ assessmentStore.videoAssessmentData['情绪状态分析']?.['情绪强度'] || '未知' }}</span>
+                </div>
+                
+                <div class="flex flex-col">
+                  <span class="text-sm text-blue-600 dark:text-blue-400 font-medium">情绪稳定性</span>
+                  <span class="text-neutral-700 dark:text-neutral-300">{{ assessmentStore.videoAssessmentData['情绪状态分析']?.['情绪稳定性'] || '未知' }}</span>
+                </div>
+              </div>
+            </div>
+            
+            <!-- 面部表情分析 -->
+            <div class="bg-purple-50 dark:bg-purple-900/20 rounded-lg p-5 border border-purple-100 dark:border-purple-800/30">
+              <h4 class="text-lg font-semibold text-purple-700 dark:text-purple-300 mb-4 flex items-center gap-2">
+                <i class="fa-solid fa-face-grin"></i>
+                面部表情分析
+              </h4>
+              
+              <div class="space-y-3">
+                <div class="flex flex-col">
+                  <span class="text-sm text-purple-600 dark:text-purple-400 font-medium">主要表情</span>
+                  <span class="text-neutral-700 dark:text-neutral-300">{{ assessmentStore.videoAssessmentData['面部表情分析']?.['主要表情'] || '未检测到明显表情' }}</span>
+                </div>
+                
+                <div class="flex flex-col">
+                  <span class="text-sm text-purple-600 dark:text-purple-400 font-medium">表情变化</span>
+                  <span class="text-neutral-700 dark:text-neutral-300">{{ assessmentStore.videoAssessmentData['面部表情分析']?.['表情变化'] || '未知' }}</span>
+                </div>
+                
+                <div class="flex flex-col">
+                  <span class="text-sm text-purple-600 dark:text-purple-400 font-medium">微表情检测</span>
+                  <span class="text-neutral-700 dark:text-neutral-300">{{ assessmentStore.videoAssessmentData['面部表情分析']?.['微表情检测'] || '未检测到明显微表情' }}</span>
+                </div>
+              </div>
+            </div>
+            
+            <!-- 综合评估 -->
+            <div class="bg-amber-50 dark:bg-amber-900/20 rounded-lg p-5 border border-amber-100 dark:border-amber-800/30">
+              <h4 class="text-lg font-semibold text-amber-700 dark:text-amber-300 mb-4 flex items-center gap-2">
+                <i class="fa-solid fa-clipboard-check"></i>
+                综合评估
+              </h4>
+              
+              <div class="space-y-3">
+                <div class="flex flex-col">
+                  <span class="text-sm text-amber-600 dark:text-amber-400 font-medium">总体心理状态</span>
+                  <span class="text-neutral-700 dark:text-neutral-300">{{ assessmentStore.videoAssessmentData['综合评估']?.['总体心理状态'] || '未知' }}</span>
+                </div>
+                
+                <div class="flex flex-col">
+                  <span class="text-sm text-amber-600 dark:text-amber-400 font-medium">建议</span>
+                  <span class="text-neutral-700 dark:text-neutral-300">{{ assessmentStore.videoAssessmentData['综合评估']?.['建议'] || '暂无具体建议' }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <div v-else class="flex flex-col items-center justify-center h-64 text-neutral-500 dark:text-neutral-400">
+            <i class="fa-solid fa-file-circle-exclamation text-4xl mb-4"></i>
+            <p>暂无视频评估数据</p>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue';
+import VideoRecorder from './VideoRecorder.vue'
+import { useAssessmentStore } from '../stores/assessment'
 
 const psychAssessmentReady = ref(false);
 const showEmotionalModal = ref(false);
 const showParseModal = ref(false);
 const showAnalysisModal = ref(false);
+const showVideoModal = ref(false);
+const showVideoAnalysisModal = ref(false);
 const fileInput = ref(null);
 const selectedFile = ref(null);
 const isUploading = ref(false);
 const uploadStatus = ref('');
 const parseResult = ref('');
-const assessmentCompleted = ref(false);
 const processingAssessment = ref(false);
+const assessmentCompleted = ref(false);
 const analysisData = ref(null);
 const latestAssessmentFile = ref(null);
+const assessmentStore = useAssessmentStore();
 
 // 打开情绪评估弹窗
 const openEmotionalAssessment = () => {
@@ -608,6 +733,55 @@ onUnmounted(() => {
   
   if (statusCheckInterval) {
     clearInterval(statusCheckInterval);
+  }
+});
+
+// 视频评估相关
+// 打开视频评估弹窗
+const openVideoAssessment = () => {
+  showVideoModal.value = true;
+}
+
+// 处理视频录制完成
+const handleVideoRecordingComplete = () => {
+  showVideoModal.value = false;
+  
+  if (assessmentStore.videoAssessmentComplete) {
+    showVideoAnalysisModal.value = true;
+  }
+}
+
+// 查看视频评估结果
+const viewVideoAssessmentResults = () => {
+  if (assessmentStore.videoAssessmentComplete) {
+    showVideoAnalysisModal.value = true;
+  }
+}
+
+onMounted(async () => {
+  try {
+    // 初始化评估状态
+    await assessmentStore.initialize();
+    
+    // 获取评估状态
+    const response = await fetch('http://localhost:8666/api/assessment_status');
+    const data = await response.json();
+    
+    if (data.success) {
+      psychAssessmentReady.value = data.assessment_ready;
+      processingAssessment.value = data.processing_assessment;
+    }
+    
+    // 获取最新的评估状态
+    const assessmentResponse = await fetch('http://localhost:8666/api/latest_assessment');
+    const assessmentData = await assessmentResponse.json();
+    
+    if (assessmentData.success && assessmentData.has_assessment) {
+      assessmentCompleted.value = true;
+      latestAssessmentFile.value = assessmentData.file_name;
+    }
+  } catch (e) {
+    console.error('获取评估状态失败:', e);
   }
 });
 </script>
