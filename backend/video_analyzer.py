@@ -11,6 +11,7 @@ import aiohttp
 import time
 import traceback
 import logging
+import subprocess
 
 # 创建日志记录器
 logger = logging.getLogger("video_analyzer")
@@ -39,6 +40,49 @@ PROCESSING_STATUS = {
     "current_video": None,
     "start_time": None
 }
+
+def convert_to_avi(input_path, output_path):
+    """
+    将视频转换为AVI格式
+    
+    Args:
+        input_path: 输入视频路径
+        output_path: 输出AVI视频路径
+        
+    Returns:
+        bool: 转换是否成功
+    """
+    try:
+        # 检查是否已经是AVI格式
+        if input_path.lower().endswith('.avi'):
+            shutil.copy(input_path, output_path)
+            logger.info(f"视频已经是AVI格式，直接复制: {output_path}")
+            return True
+            
+        # 使用ffmpeg转换格式
+        cmd = [
+            'ffmpeg',
+            '-i', input_path,
+            '-c:v', 'libx264',
+            '-c:a', 'aac',
+            '-q:v', '0',  # 最高质量
+            '-y',  # 覆盖输出文件
+            output_path
+        ]
+        
+        logger.info(f"开始转换视频为AVI格式: {' '.join(cmd)}")
+        process = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        
+        if os.path.exists(output_path):
+            logger.info(f"视频转换成功: {output_path} (大小: {os.path.getsize(output_path)} 字节)")
+            return True
+        else:
+            logger.error(f"视频转换失败: 输出文件不存在")
+            return False
+    except Exception as e:
+        logger.error(f"视频转换为AVI失败: {str(e)}")
+        logger.error(traceback.format_exc())
+        return False
 
 @video_router.post("/video_analysis")
 async def analyze_video(video: UploadFile = File(...)):
@@ -77,17 +121,27 @@ async def analyze_video(video: UploadFile = File(...)):
         
         logger.info(f"接收到视频: {video.filename}")
         
-        # 生成唯一文件名
+        # 生成唯一文件名 - 确保使用AVI扩展名
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         unique_id = str(uuid.uuid4().hex[:8])
-        video_filename = f"video_{timestamp}_{unique_id}.webm"
-        temp_video_path = os.path.join(TEMP_DIR, video_filename)
         
-        # 保存视频到临时目录
-        with open(temp_video_path, "wb") as buffer:
+        # 保存原始上传文件
+        original_ext = os.path.splitext(video.filename)[1].lower() or '.webm'
+        temp_original_path = os.path.join(TEMP_DIR, f"original_{timestamp}_{unique_id}{original_ext}")
+        
+        with open(temp_original_path, "wb") as buffer:
             shutil.copyfileobj(video.file, buffer)
         
-        logger.info(f"视频保存到临时文件: {temp_video_path}")
+        logger.info(f"原始视频保存到临时文件: {temp_original_path}")
+        
+        # 转换为AVI格式
+        video_filename = f"video_{timestamp}_{unique_id}.avi"
+        temp_video_path = os.path.join(TEMP_DIR, video_filename)
+        
+        if not convert_to_avi(temp_original_path, temp_video_path):
+            # 如果转换失败，使用原始文件
+            logger.warning("转换AVI失败，将使用原始文件进行分析")
+            temp_video_path = temp_original_path
         
         # 异步分析视频
         analysis_result = await process_video(temp_video_path)
@@ -103,9 +157,10 @@ async def analyze_video(video: UploadFile = File(...)):
         
         # 清理临时文件
         try:
-            if os.path.exists(temp_video_path):
-                os.remove(temp_video_path)
-                logger.info(f"临时文件已删除: {temp_video_path}")
+            for path in [temp_original_path, temp_video_path]:
+                if os.path.exists(path) and path != temp_original_path:
+                    os.remove(path)
+                    logger.info(f"临时文件已删除: {path}")
         except Exception as e:
             logger.error(f"清理临时文件失败: {e}")
         
@@ -184,10 +239,12 @@ async def send_to_remote_server(video_path):
             # 准备表单数据
             with open(video_path, 'rb') as f:
                 form_data = aiohttp.FormData()
+                # 使用正确的content_type
+                content_type = 'video/avi' if video_path.lower().endswith('.avi') else 'video/webm'
                 form_data.add_field('video',
                                    f,
                                    filename=os.path.basename(video_path),
-                                   content_type='video/webm')
+                                   content_type=content_type)
                 
                 # 发送请求
                 async with session.post(REMOTE_ANALYSIS_SERVER, data=form_data) as response:
@@ -207,47 +264,33 @@ async def send_to_remote_server(video_path):
         raise
 
 def generate_mock_result():
-    """生成模拟的分析结果（当远程服务器不可用时使用）
+    """生成模拟的情绪分析结果
     
     Returns:
-        dict: 模拟的分析结果
+        dict: 模拟的情绪分析结果
     """
     logger.info("生成模拟分析结果")
-    
     return {
-        "情绪状态分析": {
-            "主要情绪": "平静",
-            "情绪强度": "中等",
-            "情绪稳定性": "稳定",
-            "情绪变化": "情绪波动较小，整体保持平稳",
-            "压力指数": "较低"
+        "emotions": {
+            "happy": 0.65,
+            "sad": 0.05,
+            "angry": 0.03,
+            "surprised": 0.12,
+            "fearful": 0.02,
+            "disgusted": 0.01,
+            "neutral": 0.12
         },
-        "面部表情分析": {
-            "主要表情": "自然/中性",
-            "表情变化": "表情变化较少，主要保持自然状态",
-            "微表情检测": "未检测到明显的负面微表情",
-            "特征点分析": "面部肌肉放松，无明显紧张状态"
-        },
-        "生理指标推断": {
-            "心率估计": "正常范围",
-            "呼吸模式": "规律",
-            "交感神经活动": "活动水平适中"
-        },
-        "综合评估": {
-            "总体心理状态": "健康/平衡",
-            "注意力状态": "集中",
-            "情绪调节能力": "良好",
-            "社交互动倾向": "开放",
-            "建议": "当前心理状态良好，建议保持规律作息和适当运动以维持情绪稳定。"
-        },
-        "分析时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "分析版本": "1.0 模拟数据"
+        "dominant_emotion": "happy",
+        "confidence": 0.65,
+        "analysis": "视频中的人物表现出较明显的积极情绪，主要为高兴。这可能表明当前心情状态良好，处于积极的情绪状态中。",
+        "suggestions": [
+            "继续保持当前积极的情绪状态",
+            "可以进行一些创造性活动来延续当前情绪",
+            "与亲友分享喜悦可以进一步增强积极情绪"
+        ],
+        "timestamp": datetime.now().isoformat()
     }
 
 def init_router():
-    """初始化路由器
-    
-    Returns:
-        APIRouter: 配置好的路由器
-    """
+    """初始化路由器"""
     return video_router 

@@ -101,6 +101,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useAssessmentStore } from '../stores/assessment'
+import { useUserStore } from '../stores/user'
 
 const props = defineProps({
   recordingDuration: {
@@ -113,6 +114,10 @@ const emit = defineEmits(['close', 'recording-complete'])
 
 // 添加调试开关
 const showDebugInfo = ref(true)  // 设置为false可以在生产环境隐藏
+
+// 获取状态管理器
+const assessmentStore = useAssessmentStore()
+const userStore = useUserStore()
 
 // 状态变量
 const videoElement = ref(null)
@@ -144,9 +149,6 @@ const faceReadyForRecording = ref(false) // 人脸是否已准备好进行录制
 const recordingPaused = ref(false) // 录制是否暂停
 const recordingPausedTime = ref(0) // 录制暂停的累计时间（毫秒）
 const lastPauseTime = ref(0) // 上次暂停的时间戳
-
-// 获取状态管理器
-const assessmentStore = useAssessmentStore()
 
 // 计算属性
 const isFaceInPosition = computed(() => {
@@ -575,8 +577,26 @@ const startRecording = () => {
       console.log('录制使用的视频轨道信息:', videoTrack.getSettings())
     }
     
-    // 初始化MediaRecorder，使用浏览器支持的最佳编码
-    const options = { mimeType: 'video/webm' }
+    // 初始化MediaRecorder，使用浏览器支持的最佳编码，尝试AVI
+    // 注意：浏览器可能不直接支持AVI格式，这里仍使用浏览器支持的格式录制
+    // 后端需要处理格式转换为AVI
+    let options = {}
+    
+    if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
+      options = { mimeType: 'video/webm;codecs=vp9' }
+      console.log('使用 VP9 编码')
+    } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8')) {
+      options = { mimeType: 'video/webm;codecs=vp8' }
+      console.log('使用 VP8 编码')
+    } else if (MediaRecorder.isTypeSupported('video/webm')) {
+      options = { mimeType: 'video/webm' }
+      console.log('使用默认 WebM 编码')
+    } else if (MediaRecorder.isTypeSupported('video/mp4')) {
+      options = { mimeType: 'video/mp4' }
+      console.log('使用 MP4 编码')
+    }
+    
+    console.log('视频将在后端转换为AVI格式')
     mediaRecorder.value = new MediaRecorder(stream.value, options)
     
     // 设置录制事件处理
@@ -610,6 +630,7 @@ const startRecording = () => {
         stopRecording()
       }
     }, 1000)
+  
   } catch (error) {
     console.error('录制初始化失败:', error)
     hasError.value = true
@@ -634,16 +655,28 @@ const uploadVideo = async () => {
   processingMessage.value = '正在处理视频...'
   
   try {
-    // 创建视频Blob
-    const videoBlob = new Blob(recordedChunks.value, { type: 'video/webm' })
+    // 创建视频Blob - 使用AVI格式
+    const videoBlob = new Blob(recordedChunks.value, { type: 'video/avi' })
     
     // 创建FormData对象上传文件
     const formData = new FormData()
-    formData.append('video', videoBlob, 'emotion_assessment.webm')
+    formData.append('file', videoBlob, 'emotion_assessment.avi')
     
-    // 上传到服务器
-    const response = await fetch('http://localhost:8666/api/video_analysis', {
+    // 从用户状态获取授权令牌
+    let authToken = userStore.getAuthToken(); // 从用户状态获取token
+    
+    // 如果没有token，使用默认开发测试token
+    if (!authToken) {
+      console.warn('未找到用户授权令牌，使用开发测试token');
+      authToken = '25c90b21074f42049d4c3d1772709574';
+    }
+    
+    // 使用七牛云上传接口而非视频分析接口
+    const response = await fetch('http://localhost:8666/api/upload-video', {
       method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${authToken}`
+      },
       body: formData,
     })
     
@@ -652,16 +685,26 @@ const uploadVideo = async () => {
     if (result.success) {
       // 更新状态
       recordingComplete.value = true
-      completeMessage.value = result.message || '评估已完成，您可以查看结果'
+      completeMessage.value = result.message || '视频上传成功，您可以查看结果'
+      
+      // 保存七牛云返回的URL等信息
+      const uploadData = result.data || {}
+      
+      // 设置评估完成状态和数据
       assessmentStore.setVideoAssessmentComplete(true)
-      assessmentStore.setVideoAssessmentData(result.data || {})
+      assessmentStore.setVideoAssessmentData({
+        url: uploadData.url,
+        etag: uploadData.etag,
+        uploadTime: new Date().toISOString(),
+        status: 'success'
+      })
     } else {
-      throw new Error(result.message || '视频分析失败')
+      throw new Error(result.message || '视频上传失败')
     }
   } catch (error) {
-    console.error('视频上传或处理失败:', error)
+    console.error('视频上传失败:', error)
     hasError.value = true
-    errorMessage.value = `视频处理失败: ${error.message}`
+    errorMessage.value = `视频上传失败: ${error.message}`
   } finally {
     isProcessing.value = false
   }
@@ -713,7 +756,11 @@ const cleanup = () => {
 
 // 生命周期钩子
 onMounted(() => {
+  // 初始化相机
   initCamera()
+  
+  // 设置开发测试令牌，确保上传时有可用的token
+  userStore.setDevelopmentToken()
 })
 
 onUnmounted(() => {

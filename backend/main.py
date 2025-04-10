@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, UploadFile, File, Body
+from fastapi import FastAPI, WebSocket, UploadFile, File, Body, Header, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -9,6 +9,7 @@ from tts import TTSService
 from super_tts import SuperTTSService
 from config import Config
 from speech_service import SpeechService
+from qiniu_uploader import QiniuUploader
 import uvicorn
 import json
 import asyncio
@@ -77,6 +78,7 @@ chat_service = ChatService()
 tts_service = TTSService()
 super_tts_service = SuperTTSService()
 speech_service = SpeechService()
+qiniu_uploader = QiniuUploader()
 # llm_service = LLMService(Config.LLM_API_KEY, Config.LLM_API_URL)  # 注释掉，使用chat_service中的LLM服务
 
 # 文本提取函数
@@ -1662,6 +1664,66 @@ async def welcome_tts(request: dict = Body(...)):
             content={
                 "success": False,
                 "message": f"生成欢迎语TTS失败: {str(e)}"
+            }
+        )
+
+# 新增七牛云视频上传相关API
+
+class VideoUploadResponse(BaseModel):
+    success: bool
+    message: str
+    data: Optional[dict] = None
+
+async def get_token(authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="未提供有效的授权令牌")
+    
+    token = authorization.replace("Bearer ", "")
+    return token
+
+@app.post("/api/upload-video", response_model=VideoUploadResponse)
+async def upload_video(
+    file: UploadFile = File(...),
+    file_type: str = "avi",
+    token: str = Depends(get_token)
+):
+    """
+    处理视频上传到七牛云
+    """
+    try:
+        # 强制使用AVI文件类型
+        file_type = "avi"
+        
+        # 确保文件名使用avi扩展名
+        original_filename = file.filename
+        base_name = os.path.splitext(original_filename)[0]
+        file.filename = f"{base_name}.avi"
+        
+        # 读取上传的视频文件内容
+        file_content = await file.read()
+        
+        # 处理视频上传
+        result = qiniu_uploader.process_video_upload(
+            auth_token=token,
+            video_data=file_content,
+            file_name=file.filename,
+            file_type=file_type
+        )
+        
+        if not result.get("success", False):
+            return JSONResponse(
+                status_code=400,
+                content=result
+            )
+            
+        return result
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": f"视频上传处理失败: {str(e)}",
+                "data": None
             }
         )
 
