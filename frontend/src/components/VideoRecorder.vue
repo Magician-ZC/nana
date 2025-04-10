@@ -29,7 +29,7 @@
           </div>
           <h3>情绪状态视频评估</h3>
           <p>{{ guidanceText }}</p>
-          <p>系统将会自动录制30秒视频进行情绪评估</p>
+          <p>系统将会自动录制60秒视频进行情绪评估</p>
           
           <!-- 人脸在框内时间进度条 -->
           <div class="face-timer-progress" v-if="!faceReadyForRecording">
@@ -106,7 +106,7 @@ import { useUserStore } from '../stores/user'
 const props = defineProps({
   recordingDuration: {
     type: Number,
-    default: 30
+    default: 60
   }
 })
 
@@ -235,9 +235,14 @@ const initCameraWithDeviceId = async (deviceId) => {
         attempts++
         console.log(`尝试访问摄像头: 第 ${attempts} 次尝试`)
         
-        // 获取摄像头，使用宽松的参数
+        // 获取摄像头，保持原始分辨率但降低码率
         const mediaStream = await navigator.mediaDevices.getUserMedia({
-          video: deviceId ? { deviceId: { ideal: deviceId } } : true,
+          video: {
+            deviceId: deviceId ? { ideal: deviceId } : undefined,
+            width: { ideal: 720 },          // 恢复原始宽度720
+            height: { ideal: 1280 },        // 恢复原始高度1280
+            frameRate: { ideal: 25 }        // 指定帧率为25fps
+          },
           audio: false  // 不请求音频以简化初始化
         })
         
@@ -250,6 +255,8 @@ const initCameraWithDeviceId = async (deviceId) => {
           const settings = videoTrack.getSettings()
           console.log('成功访问摄像头，当前设置:', settings)
           console.log('实际使用的设备ID:', settings.deviceId)
+          console.log('实际分辨率:', settings.width, 'x', settings.height)
+          console.log('实际帧率:', settings.frameRate)
         }
         
         // 设置视频源
@@ -267,6 +274,45 @@ const initCameraWithDeviceId = async (deviceId) => {
       } catch (err) {
         error = err
         console.warn(`第 ${attempts} 次尝试失败:`, err)
+        
+        // 如果分辨率约束失败，尝试使用更宽松的约束
+        if (attempts === maxAttempts - 1) {
+          console.log('尝试使用更宽松的约束...')
+          try {
+            // 使用更宽松的约束，仅指定帧率
+            const mediaStream = await navigator.mediaDevices.getUserMedia({
+              video: {
+                deviceId: deviceId ? { ideal: deviceId } : undefined,
+                frameRate: { ideal: 25 }
+              },
+              audio: false
+            })
+            
+            // 成功获取流
+            stream.value = mediaStream
+            
+            // 获取视频轨道信息
+            const videoTrack = mediaStream.getVideoTracks()[0]
+            if (videoTrack) {
+              console.log('使用宽松约束成功，当前设置:', videoTrack.getSettings())
+            }
+            
+            // 设置视频源
+            if (videoElement.value) {
+              videoElement.value.srcObject = mediaStream
+              videoElement.value.onloadedmetadata = () => {
+                cameraReady.value = true
+                // 初始化人脸检测
+                initFaceDetection()
+              }
+            }
+            
+            return
+          } catch (fallbackErr) {
+            console.error('宽松约束也失败:', fallbackErr)
+            error = fallbackErr
+          }
+        }
         
         // 等待一段时间再重试
         if (attempts < maxAttempts) {
@@ -574,26 +620,56 @@ const startRecording = () => {
     // 获取当前流的能力信息
     const videoTrack = stream.value.getVideoTracks()[0]
     if (videoTrack) {
-      console.log('录制使用的视频轨道信息:', videoTrack.getSettings())
+      const settings = videoTrack.getSettings()
+      console.log('录制使用的视频轨道信息:', settings)
+      
+      // 检查当前流是否符合所需参数
+      console.log(`录制分辨率: ${settings.width}x${settings.height}，帧率: ${settings.frameRate}fps`)
+      
+      // 约束记录器，确保使用所需参数
+      const idealSettings = {
+        width: 720,     // 恢复原始宽度720
+        height: 1280,   // 恢复原始高度1280
+        frameRate: 25
+      }
+      
+      // 记录与理想设置的差异
+      if (settings.width !== idealSettings.width || settings.height !== idealSettings.height) {
+        console.warn(`注意: 实际分辨率(${settings.width}x${settings.height})与目标(${idealSettings.width}x${idealSettings.height})不同`)
+      }
+      
+      if (settings.frameRate && Math.abs(settings.frameRate - idealSettings.frameRate) > 1) {
+        console.warn(`注意: 实际帧率(${settings.frameRate})与目标(${idealSettings.frameRate})不同`)
+      }
     }
     
-    // 初始化MediaRecorder，使用浏览器支持的最佳编码，尝试AVI
-    // 注意：浏览器可能不直接支持AVI格式，这里仍使用浏览器支持的格式录制
-    // 后端需要处理格式转换为AVI
+    // 初始化MediaRecorder，使用浏览器支持的最佳编码
     let options = {}
     
     if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
-      options = { mimeType: 'video/webm;codecs=vp9' }
-      console.log('使用 VP9 编码')
+      options = { 
+        mimeType: 'video/webm;codecs=vp9',
+        videoBitsPerSecond: 1000000 // 降低到1Mbps
+      }
+      console.log('使用 VP9 编码, 1Mbps 码率')
     } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8')) {
-      options = { mimeType: 'video/webm;codecs=vp8' }
-      console.log('使用 VP8 编码')
+      options = { 
+        mimeType: 'video/webm;codecs=vp8',
+        videoBitsPerSecond: 1000000
+      }
+      console.log('使用 VP8 编码, 1Mbps 码率')
     } else if (MediaRecorder.isTypeSupported('video/webm')) {
-      options = { mimeType: 'video/webm' }
-      console.log('使用默认 WebM 编码')
+      options = { 
+        mimeType: 'video/webm',
+        videoBitsPerSecond: 1000000
+      }
+      console.log('使用默认 WebM 编码, 1Mbps 码率')
     } else if (MediaRecorder.isTypeSupported('video/mp4')) {
-      options = { mimeType: 'video/mp4' }
-      console.log('使用 MP4 编码')
+      options = { 
+        mimeType: 'video/mp4',
+        videoBitsPerSecond: 1000000
+      }
+      console.log('使用 MP4 编码, 1Mbps 码率')
     }
     
     console.log('视频将在后端转换为AVI格式')
@@ -655,12 +731,27 @@ const uploadVideo = async () => {
   processingMessage.value = '正在处理视频...'
   
   try {
-    // 创建视频Blob - 使用AVI格式
-    const videoBlob = new Blob(recordedChunks.value, { type: 'video/avi' })
+    // 获取录制的正确MIME类型
+    let mimeType = 'video/webm'; // 默认类型
     
-    // 创建FormData对象上传文件
+    // 尝试从MediaRecorder获取实际MIME类型
+    if (mediaRecorder.value && mediaRecorder.value.mimeType) {
+      mimeType = mediaRecorder.value.mimeType;
+    } else if (recordedChunks.value.length > 0 && recordedChunks.value[0].type) {
+      // 从第一个数据块获取类型
+      mimeType = recordedChunks.value[0].type;
+    }
+    
+    console.log(`使用实际MIME类型创建Blob: ${mimeType}`);
+    
+    // 创建视频Blob - 使用实际录制格式，不强制标记为AVI
+    const videoBlob = new Blob(recordedChunks.value, { type: mimeType })
+    
+    // 创建FormData对象上传文件 - 使用实际扩展名
     const formData = new FormData()
-    formData.append('file', videoBlob, 'emotion_assessment.avi')
+    const fileExtension = mimeType.includes('webm') ? 'webm' : 
+                         mimeType.includes('mp4') ? 'mp4' : 'avi';
+    formData.append('file', videoBlob, `emotion_assessment.${fileExtension}`)
     
     // 从用户状态获取授权令牌
     let authToken = userStore.getAuthToken(); // 从用户状态获取token
@@ -671,7 +762,11 @@ const uploadVideo = async () => {
       authToken = '25c90b21074f42049d4c3d1772709574';
     }
     
-    // 使用七牛云上传接口而非视频分析接口
+    // 确保token存储在localStorage中，以便轮询功能使用
+    localStorage.setItem('auth_token', authToken);
+    console.log('授权令牌已存储到localStorage:', authToken);
+    
+    // 使用七牛云上传接口
     const response = await fetch('http://localhost:8666/api/upload-video', {
       method: 'POST',
       headers: {
@@ -698,6 +793,33 @@ const uploadVideo = async () => {
         uploadTime: new Date().toISOString(),
         status: 'success'
       })
+      
+      // 显示上传成功通知
+      const successNotification = document.createElement('div')
+      successNotification.className = 'fixed bottom-4 right-4 bg-green-500 text-white px-6 py-3 rounded-lg shadow-lg z-[1100] animate-fade-in flex items-center gap-2'
+      successNotification.innerHTML = `
+        <i class="fa-solid fa-check-circle"></i>
+        <div>
+          <div class="font-medium">视频上传成功</div>
+          <div class="text-sm opacity-90">视频已成功上传到云端</div>
+        </div>
+      `
+      document.body.appendChild(successNotification)
+      
+      // 3秒后移除通知
+      setTimeout(() => {
+        successNotification.classList.add('animate-fade-out')
+        setTimeout(() => {
+          successNotification.remove()
+        }, 500)
+      }, 3000)
+      
+      // 启动轮询检查视频评估报告是否生成
+      console.log('开始启动视频报告轮询检查...');
+      assessmentStore.startVideoReportPolling()
+      
+      // 发送上传完成事件，以便关闭视频评估界面
+      emit('recording-complete')
     } else {
       throw new Error(result.message || '视频上传失败')
     }

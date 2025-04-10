@@ -22,7 +22,6 @@ import re
 import math
 from collections import Counter
 import assessment_api  # 导入评估API模块
-import video_analyzer  # 导入视频分析模块
 # from llm import LLMService  # 注释掉，因为我们使用chat_service中的LLM服务
 
 app = FastAPI()
@@ -511,9 +510,6 @@ def is_meaningless_input(message: str) -> bool:
 assessment_api.init_router(chat_service, extract_text_from_file, is_meaningless_input)
 app.include_router(assessment_api.assessment_router, prefix="/api")
 
-# 初始化视频分析API
-video_router = video_analyzer.init_router()
-app.include_router(video_router, prefix="/api")
 
 # 确保保存自定义角色的目录存在
 CUSTOM_AGENTS_DIR = "save/custom_agents"

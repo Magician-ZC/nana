@@ -319,6 +319,103 @@ class QiniuUploader:
         logger.info(f"文件已保存到本地: {local_path}")
         return local_path
     
+    def convert_to_avi(self, input_path: str) -> str:
+        """
+        将视频转换为AVI格式，并确保与手机录制的视频属性相同
+        
+        Args:
+            input_path: 输入视频路径
+            
+        Returns:
+            转换后的AVI视频路径
+        """
+        try:
+            import subprocess
+            import cv2
+            output_path = os.path.splitext(input_path)[0] + "_converted.avi"
+            
+            # 使用ffmpeg强制设置为标准手机录制参数
+            # 视频分辨率720x1280，帧率25fps，降低码率以减小文件大小
+            cmd = [
+                'ffmpeg', '-y', '-i', input_path,
+                '-vf', 'scale=720:1280', # 强制设置分辨率为720x1280
+                '-r', '25',              # 强制设置帧率为25fps
+                '-vcodec', 'mjpeg',      # 使用MJPEG编码器，OpenCV兼容性最好
+                '-pix_fmt', 'yuvj420p',  # 确保像素格式兼容
+                '-q:v', '20',            # 降低质量参数 (2-31,越大质量越低，文件越小)
+                '-b:v', '800k',          # 降低视频码率至800kbps
+                '-maxrate', '1000k',     # 最大码率
+                '-bufsize', '1000k',     # 缓冲区大小
+                '-acodec', 'pcm_s16le',  # 标准音频编码
+                '-ar', '22050',          # 降低音频采样率
+                '-ac', '1',              # 单声道音频
+                '-vsync', '1',           # 确保帧同步
+                output_path
+            ]
+            
+            # 输出命令用于调试
+            logger.info(f"执行ffmpeg命令: {' '.join(cmd)}")
+            
+            # 执行转换
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            logger.info(f"ffmpeg输出: {result.stdout}")
+            if result.stderr:
+                logger.warning(f"ffmpeg警告: {result.stderr}")
+            
+            # 验证转换后的视频能被OpenCV正确读取
+            cap = cv2.VideoCapture(output_path)
+            if not cap.isOpened():
+                logger.error("转换后的视频无法被OpenCV打开，回退到原始文件")
+                return input_path
+            
+            # 检查视频属性是否正确
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+            logger.info(f"转换后视频属性: 宽={width}, 高={height}, FPS={fps}, 总帧数={frame_count}")
+            
+            # 检查帧数是否正确
+            if frame_count <= 0:
+                logger.error(f"转换后的视频帧数仍然有问题: {frame_count}")
+                return input_path
+            
+            # 手动验证帧数
+            actual_frames = 0
+            while True:
+                ret, _ = cap.read()
+                if not ret:
+                    break
+                actual_frames += 1
+                # 只检查前100帧，避免太慢
+                if actual_frames >= 100:
+                    break
+            
+            logger.info(f"实际读取帧数(前100帧): {actual_frames}")
+            cap.release()
+            
+            # 检查文件大小
+            original_size = os.path.getsize(input_path)
+            converted_size = os.path.getsize(output_path)
+            
+            logger.info(f"原始文件大小: {original_size/1024/1024:.2f}MB, 转换后文件大小: {converted_size/1024/1024:.2f}MB")
+            logger.info(f"压缩率: {(1 - converted_size/original_size) * 100:.2f}%")
+            
+            if actual_frames > 0:
+                logger.info(f"视频转换成功: {output_path}")
+                return output_path
+            else:
+                logger.error("转换后的视频无法读取帧，回退到原始文件")
+                return input_path
+            
+        except Exception as e:
+            logger.error(f"视频转换失败: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            # 转换失败时返回原始文件路径
+            return input_path
+            
     def calculate_file_etag(self, file_path: str) -> str:
         """
         计算文件的七牛云eTag
@@ -502,19 +599,26 @@ class QiniuUploader:
             # 2. 保存临时文件
             local_path = self.save_temp_file(video_data, file_name)
             
-            # 3. 计算eTag
+            # 3. 转换视频为标准AVI格式
+            logger.info("开始转换视频为标准AVI格式...")
+            converted_path = self.convert_to_avi(local_path)
+            if converted_path != local_path:
+                logger.info(f"视频转换成功: {converted_path}")
+                local_path = converted_path
+            
+            # 4. 计算eTag
             etag = self.calculate_file_etag(local_path)
             
-            # 4. 上传文件到七牛云
+            # 5. 上传文件到七牛云
             upload_result = self.upload_to_qiniu(local_path, upload_token, etag, domain)
             
             if upload_result["status"] != 1:
                 return {"success": False, "message": "上传到七牛云失败", "data": upload_result}
             
-            # 5. 通知服务端上传结果
+            # 6. 通知服务端上传结果
             notify_result = self.notify_upload_result(auth_token, etag, local_path, file_type)
             
-            # 6. 返回最终结果
+            # 7. 返回最终结果
             return {
                 "success": True,
                 "message": "视频上传成功",
