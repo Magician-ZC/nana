@@ -74,7 +74,10 @@
           </div>
           <h3>出现错误</h3>
           <p>{{ errorMessage }}</p>
-          <button @click="retryCamera" class="retry-btn">重试</button>
+          <div class="error-buttons">
+            <button v-if="savedVideoBlob" @click="retryUpload" class="retry-btn">重新上传</button>
+            <button @click="retryCamera" class="retry-btn secondary">重试摄像头</button>
+          </div>
         </div>
       </div>
     </div>
@@ -125,6 +128,7 @@ const faceCanvas = ref(null)
 const stream = ref(null)
 const mediaRecorder = ref(null)
 const recordedChunks = ref([])
+const savedVideoBlob = ref(null) // 保存视频Blob用于重试上传
 const isRecording = ref(false)
 const recordingStartTime = ref(0)
 const recordingTimeLeft = ref(props.recordingDuration)
@@ -334,7 +338,7 @@ const initCameraWithDeviceId = async (deviceId) => {
 // 方法
 const initCamera = async () => {
   try {
-    resetStates()
+    resetStates(true)  // 清除保存的视频数据
     
     // 枚举可用设备
     await enumerateDevices()
@@ -747,6 +751,9 @@ const uploadVideo = async () => {
     // 创建视频Blob - 使用实际录制格式，不强制标记为AVI
     const videoBlob = new Blob(recordedChunks.value, { type: mimeType })
     
+    // 保存视频Blob用于重试上传
+    savedVideoBlob.value = videoBlob;
+    
     // 创建FormData对象上传文件 - 使用实际扩展名
     const formData = new FormData()
     const fileExtension = mimeType.includes('webm') ? 'webm' : 
@@ -754,17 +761,18 @@ const uploadVideo = async () => {
     formData.append('file', videoBlob, `emotion_assessment.${fileExtension}`)
     
     // 从用户状态获取授权令牌
-    let authToken = userStore.getAuthToken(); // 从用户状态获取token
+    let authToken = userStore.getAuthToken();
     
     // 如果没有token，使用默认开发测试token
     if (!authToken) {
       console.warn('未找到用户授权令牌，使用开发测试token');
-      authToken = '25c90b21074f42049d4c3d1772709574';
+      authToken = userStore.setDevelopmentToken();
+    } else {
+      // 确保token正确存储在userStore中
+      userStore.setAuthToken(authToken);
     }
     
-    // 确保token存储在localStorage中，以便轮询功能使用
-    localStorage.setItem('auth_token', authToken);
-    console.log('授权令牌已存储到localStorage:', authToken);
+    console.log('授权令牌已存储:', authToken);
     
     // 使用七牛云上传接口
     const response = await fetch('http://localhost:8666/api/upload-video', {
@@ -784,14 +792,58 @@ const uploadVideo = async () => {
       
       // 保存七牛云返回的URL等信息
       const uploadData = result.data || {}
+      const etag = uploadData.etag
       
-      // 设置评估完成状态和数据
-      assessmentStore.setVideoAssessmentComplete(true)
+      // 表示视频正在处理中
+      assessmentStore.setVideoProcessing(true)
+      
+      // 更新视频上传状态管理
+      if (etag) {
+        console.log(`设置并保存视频上传状态: etag=${etag}`)
+        // 设置视频上传etag值和处理状态
+        assessmentStore.setVideoUploadEtag(etag)
+        assessmentStore.setUploadCallbackComplete(uploadData.upload_callback_status || false)
+        assessmentStore.setAssessmentComplete(uploadData.assessment_status || false)
+        
+        // 保存状态到localStorage
+        assessmentStore.saveVideoUploadState()
+        
+        // 根据上传回调状态决定是否启动轮询
+        if (uploadData.upload_callback_status === true) {
+          console.log('上传回调已完成，启动视频评估状态轮询')
+          assessmentStore.startStatusPolling(etag)
+        } else {
+          console.warn('上传回调未完成，不启动轮询')
+          // 显示警告通知
+          const warningNotification = document.createElement('div')
+          warningNotification.className = 'fixed bottom-4 right-4 bg-yellow-500 text-white px-6 py-3 rounded-lg shadow-lg z-[1100] animate-fade-in flex items-center gap-2'
+          warningNotification.innerHTML = `
+            <i class="fa-solid fa-exclamation-triangle"></i>
+            <div>
+              <div class="font-medium">视频上传回调未完成</div>
+              <div class="text-sm opacity-90">视频已上传但处理未完成，请稍后刷新页面</div>
+            </div>
+          `
+          document.body.appendChild(warningNotification)
+          
+          // 5秒后移除通知
+          setTimeout(() => {
+            warningNotification.classList.add('animate-fade-out')
+            setTimeout(() => {
+              warningNotification.remove()
+            }, 500)
+          }, 5000)
+        }
+      } else {
+        console.warn('未获取到视频etag，无法启动状态轮询')
+      }
+      
+      // 设置视频评估数据
       assessmentStore.setVideoAssessmentData({
         url: uploadData.url,
-        etag: uploadData.etag,
+        etag: etag,
         uploadTime: new Date().toISOString(),
-        status: 'success'
+        status: 'processing'
       })
       
       // 显示上传成功通知
@@ -801,7 +853,7 @@ const uploadVideo = async () => {
         <i class="fa-solid fa-check-circle"></i>
         <div>
           <div class="font-medium">视频上传成功</div>
-          <div class="text-sm opacity-90">视频已成功上传到云端</div>
+          <div class="text-sm opacity-90">视频已成功上传到云端，正在分析中...</div>
         </div>
       `
       document.body.appendChild(successNotification)
@@ -814,10 +866,6 @@ const uploadVideo = async () => {
         }, 500)
       }, 3000)
       
-      // 启动轮询检查视频评估报告是否生成
-      console.log('开始启动视频报告轮询检查...');
-      assessmentStore.startVideoReportPolling()
-      
       // 发送上传完成事件，以便关闭视频评估界面
       emit('recording-complete')
     } else {
@@ -826,9 +874,27 @@ const uploadVideo = async () => {
   } catch (error) {
     console.error('视频上传失败:', error)
     hasError.value = true
-    errorMessage.value = `视频上传失败: ${error.message}`
+    
+    // 根据错误类型判断失败原因
+    let errorType = 'general';
+    if (error.message && error.message.includes('503')) {
+      errorType = 'server_unavailable';
+      errorMessage.value = '服务器暂时不可用，请稍后再次尝试重新上传';
+    } else if (error.message && (error.message.includes('timeout') || error.message.includes('timed out'))) {
+      errorType = 'timeout';
+      errorMessage.value = '上传超时，请稍后再次尝试重新上传';
+    } else if (error.message && (error.message.includes('network') || error.message.includes('disconnected'))) {
+      errorType = 'network';
+      errorMessage.value = '网络连接错误，请检查网络连接后再次尝试重新上传';
+    } else {
+      errorMessage.value = `视频上传失败: ${error.message}`;
+    }
+    
+    assessmentStore.setVideoProcessing(false);
+    // 使用适当的错误类型显示通知
+    assessmentStore.showUploadFailureNotification(errorType);
   } finally {
-    isProcessing.value = false
+    isProcessing.value = false;
   }
 }
 
@@ -838,12 +904,17 @@ const retryCamera = () => {
   initCamera()
 }
 
-const resetStates = () => {
+const resetStates = (clearSavedVideo = false) => {
   hasError.value = false
   errorMessage.value = ''
   isRecording.value = false
   recordingComplete.value = false
   isProcessing.value = false
+  
+  // 只有在明确指定时才清除保存的视频
+  if (clearSavedVideo) {
+    savedVideoBlob.value = null
+  }
 }
 
 const closeRecorder = () => {
@@ -876,13 +947,165 @@ const cleanup = () => {
   }
 }
 
+// 重试上传视频
+const retryUpload = async () => {
+  if (!savedVideoBlob.value) {
+    console.error('没有保存的视频可以重新上传');
+    return;
+  }
+  
+  // 重置错误状态
+  hasError.value = false;
+  errorMessage.value = '';
+  isProcessing.value = true;
+  processingMessage.value = '正在重新上传视频...';
+  
+  try {
+    // 从用户状态获取授权令牌
+    let authToken = userStore.getAuthToken();
+    
+    // 如果没有token，使用默认开发测试token
+    if (!authToken) {
+      console.warn('未找到用户授权令牌，使用开发测试token');
+      authToken = userStore.setDevelopmentToken();
+    } else {
+      // 确保token正确存储在userStore中
+      userStore.setAuthToken(authToken);
+    }
+    
+    console.log('授权令牌已存储:', authToken);
+    
+    // 获取保存的视频MIME类型
+    const mimeType = savedVideoBlob.value.type || 'video/webm';
+    const fileExtension = mimeType.includes('webm') ? 'webm' : 
+                         mimeType.includes('mp4') ? 'mp4' : 'avi';
+    
+    // 创建FormData对象
+    const formData = new FormData();
+    formData.append('file', savedVideoBlob.value, `emotion_assessment.${fileExtension}`);
+    
+    // 使用七牛云上传接口
+    const response = await fetch('http://localhost:8666/api/upload-video', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${authToken}`
+      },
+      body: formData,
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      // 更新状态
+      recordingComplete.value = true;
+      completeMessage.value = result.message || '视频上传成功，您可以查看结果';
+      
+      // 保存七牛云返回的URL等信息
+      const uploadData = result.data || {};
+      const etag = uploadData.etag;
+      
+      // 表示视频正在处理中
+      assessmentStore.setVideoProcessing(true);
+      
+      // 更新视频上传状态管理
+      if (etag) {
+        console.log(`设置并保存视频上传状态: etag=${etag}`);
+        // 设置视频上传etag值和处理状态
+        assessmentStore.setVideoUploadEtag(etag);
+        assessmentStore.setUploadCallbackComplete(uploadData.upload_callback_status || false);
+        assessmentStore.setAssessmentComplete(uploadData.assessment_status || false);
+        
+        // 保存状态到localStorage
+        assessmentStore.saveVideoUploadState();
+        
+        // 根据上传回调状态决定是否启动轮询
+        if (uploadData.upload_callback_status === true) {
+          console.log('上传回调已完成，启动视频评估状态轮询');
+          assessmentStore.startStatusPolling(etag);
+        } else {
+          console.warn('上传回调未完成，不启动轮询');
+          // 显示警告通知
+          const warningNotification = document.createElement('div');
+          warningNotification.className = 'fixed bottom-4 right-4 bg-yellow-500 text-white px-6 py-3 rounded-lg shadow-lg z-[1100] animate-fade-in flex items-center gap-2';
+          warningNotification.innerHTML = `
+            <i class="fa-solid fa-exclamation-triangle"></i>
+            <div>
+              <div class="font-medium">视频上传回调未完成</div>
+              <div class="text-sm opacity-90">视频已上传但处理未完成，请稍后刷新页面</div>
+            </div>
+          `;
+          document.body.appendChild(warningNotification);
+          
+          // 5秒后移除通知
+          setTimeout(() => {
+            warningNotification.classList.add('animate-fade-out');
+            setTimeout(() => {
+              warningNotification.remove();
+            }, 500);
+          }, 5000);
+        }
+      }
+      
+      // 设置视频评估数据
+      assessmentStore.setVideoAssessmentData({
+        url: uploadData.url,
+        etag: etag,
+        uploadTime: new Date().toISOString(),
+        status: 'processing'
+      });
+      
+      // 显示上传成功通知
+      const successNotification = document.createElement('div');
+      successNotification.className = 'fixed bottom-4 right-4 bg-green-500 text-white px-6 py-3 rounded-lg shadow-lg z-[1100] animate-fade-in flex items-center gap-2';
+      successNotification.innerHTML = `
+        <i class="fa-solid fa-check-circle"></i>
+        <div>
+          <div class="font-medium">视频上传成功</div>
+          <div class="text-sm opacity-90">视频已成功上传到云端，正在分析中...</div>
+        </div>
+      `;
+      document.body.appendChild(successNotification);
+      
+      // 3秒后移除通知
+      setTimeout(() => {
+        successNotification.classList.add('animate-fade-out');
+        setTimeout(() => {
+          successNotification.remove();
+        }, 500);
+      }, 3000);
+      
+      // 发送上传完成事件，以便关闭视频评估界面
+      emit('recording-complete');
+    } else {
+      throw new Error(result.message || '视频重新上传失败');
+    }
+  } catch (error) {
+    console.error('视频重新上传失败:', error);
+    hasError.value = true;
+    errorMessage.value = `视频重新上传失败: ${error.message}`;
+    assessmentStore.setVideoProcessing(false);
+  } finally {
+    isProcessing.value = false;
+  }
+}
+
 // 生命周期钩子
 onMounted(() => {
-  // 初始化相机
+  // 初始化摄像头
   initCamera()
   
-  // 设置开发测试令牌，确保上传时有可用的token
-  userStore.setDevelopmentToken()
+  // 加载localStorage中保存的视频上传状态
+  assessmentStore.loadVideoUploadState()
+  
+  // 检查是否有未完成的评估
+  if (assessmentStore.videoUploadEtag && assessmentStore.uploadCallbackComplete) {
+    console.log('检测到未完成的视频评估任务')
+    // 如果上传回调已完成但评估尚未完成，自动启动状态轮询
+    if (assessmentStore.uploadCallbackComplete && !assessmentStore.assessmentComplete) {
+      console.log('启动未完成视频的状态轮询')
+      assessmentStore.startStatusPolling(assessmentStore.videoUploadEtag)
+    }
+  }
 })
 
 onUnmounted(() => {
@@ -1139,6 +1362,21 @@ video {
 
 .retry-btn:hover {
   background-color: #d32f2f;
+}
+
+.error-buttons {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 24px;
+}
+
+.retry-btn.secondary {
+  background-color: #607D8B;
+}
+
+.retry-btn.secondary:hover {
+  background-color: #455A64;
 }
 
 /* 处理中动画 */

@@ -33,6 +33,7 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useChatStore } from './stores/chat'
 import { useAssessmentStore } from './stores/assessment'
+import { useUserStore } from './stores/user'
 import Live2DModel from './components/Live2DModel.vue'
 import AgentSelector from './components/AgentSelector.vue'
 import ChatPanel from './components/ChatPanel.vue'
@@ -43,6 +44,7 @@ import AssessmentButtons from './components/AssessmentButtons.vue'
 
 const chatStore = useChatStore()
 const assessmentStore = useAssessmentStore()
+const userStore = useUserStore()
 const live2dRef = ref(null)
 const isDarkMode = ref(false)
 
@@ -255,7 +257,17 @@ const handleKeyPress = (e) => {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
+  // 确保用户token已初始化
+  const token = userStore.getAuthToken()
+  if (!token) {
+    // 如果没有token，应用开发环境的默认token
+    userStore.setDevelopmentToken()
+    console.log('已在组件挂载时设置开发测试token')
+  } else {
+    console.log('用户token已存在:', token.substring(0, 8) + '...')
+  }
+  
   window.addEventListener('keydown', handleKeyPress)
   // 加载自定义角色列表
   chatStore.loadCustomAgents()
@@ -267,7 +279,11 @@ onMounted(() => {
   initAudioContext()
   
   // 初始化评估状态
-  assessmentStore.initialize()
+  try {
+    await assessmentStore.initialize()
+  } catch (e) {
+    console.error('初始化评估状态失败:', e)
+  }
   
   // 监听系统主题变化
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {

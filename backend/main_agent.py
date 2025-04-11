@@ -348,8 +348,8 @@ class MainAgent:
             consecutive_off_topic = self._count_consecutive_off_topic(context)
             
             # 检查是否是用户表示想要停止话题
-            exit_guidance_keywords = ["结束话题", "结束引导", "不想聊了", "换个话题", "不想继续", "结束对话", "不想讨论这个", "不讨论", "换话题", "算了", "不聊了"]
-            is_exit_request = any(keyword in message for keyword in exit_guidance_keywords)
+            exit_guidance_keywords = ["结束话题", "结束引导", "不想聊了", "换个话题", "不想继续", "结束对话", "不想讨论这个", "不讨论", "换话题", "算了", "不聊了", "结束"]
+            is_exit_request = any(keyword in message for keyword in exit_guidance_keywords) or message.strip() == "结束"
             
             if is_exit_request:
                 # 用户请求结束，直接生成总结

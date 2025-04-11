@@ -119,9 +119,9 @@ class ChatService:
                 self.change_agent(agent_type, session_id)
             
             # 检查是否是结束引导的明确指令
-            exit_guidance_keywords = ["结束话题", "结束引导", "不想聊了", "换个话题", "不想继续", "结束对话", "不想讨论这个", "不讨论", "换话题", "算了", "不聊了"]
+            exit_guidance_keywords = ["结束话题", "结束引导", "不想聊了", "换个话题", "不想继续", "结束对话", "不想讨论这个", "不讨论", "换话题", "算了", "不聊了", "结束"]
             is_exit_guidance = (self.guidance_state["is_guiding"] and 
-                              any(keyword in message for keyword in exit_guidance_keywords))
+                              (any(keyword in message for keyword in exit_guidance_keywords) or message.strip() == "结束"))
             
             # 如果用户表示想要结束话题，直接结束引导
             if is_exit_guidance:

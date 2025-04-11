@@ -21,7 +21,7 @@ markdown>=3.4.4
 aiohttp>=3.8.5
 qiniu>=7.10.0
 ffmpeg-python>=0.2.0
-pycryptodome>=3.18.0
+pycryptodome>=3.18.0 
 fastapi==0.95.2
 uvicorn==0.22.0
 python-multipart==0.0.6

@@ -1,30 +1,47 @@
-from fastapi import FastAPI, WebSocket, UploadFile, File, Body, Header, HTTPException, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
-from typing import Optional, List
+import os
+import json
+import time
+import threading
 import base64
+import uuid
+import shutil
+import tempfile
+import re
+import math
+import io
+from collections import Counter
+from typing import Optional, List, Dict, Any, Union
+import asyncio
+import logging
+
+import uvicorn
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Form, File, UploadFile, Body, Header, Depends, HTTPException, Response
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+from qiniu_uploader import QiniuUploader
 from chat_service import ChatService
 from tts import TTSService
 from super_tts import SuperTTSService
 from config import Config
 from speech_service import SpeechService
-from qiniu_uploader import QiniuUploader
-import uvicorn
-import json
-import asyncio
-import os
-import uuid
-import shutil
-import tempfile
-import time
-import re
-import math
-from collections import Counter
+from conversation import ConversationHistory
 import assessment_api  # 导入评估API模块
 # from llm import LLMService  # 注释掉，因为我们使用chat_service中的LLM服务
 
+# 初始化七牛云上传器
+qiniu_uploader = QiniuUploader()
+
+# 设置日志级别
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("main")
+
 app = FastAPI()
+
+# 设置日志记录器
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("main")
 
 # CORS设置
 app.add_middleware(
@@ -34,6 +51,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 在文件顶部加入全局缓存变量
+REPORT_LIST_CACHE = {
+    "data": None,
+    "timestamp": 0,
+    "auth_token": None
+}
+CACHE_TTL = 5  # 缓存有效期，5秒
 
 class ChatRequest(BaseModel):
     message: str
@@ -1624,34 +1649,83 @@ async def welcome_tts(request: dict = Body(...)):
         welcome_text = message
         welcome_audio = None
         
+        # 设置重试次数和超时控制
+        max_attempts = 2
+        tts_timeout = 10  # 10秒超时
+        
+        # 首先尝试使用首选TTS方式
+        primary_tts_success = False
+        tts_error = None
+        
         # 根据配置决定使用哪个TTS服务
-        if Config.is_tts_enabled() and chat_service.tts_service:
+        if Config.is_super_tts_enabled() and chat_service.super_tts_service:
+            # 优先尝试超拟人TTS
+            try:
+                print("欢迎语TTS: 尝试使用超拟人TTS生成语音...")
+                
+                # 启动超时控制
+                import asyncio
+                from concurrent.futures import ThreadPoolExecutor
+                
+                with ThreadPoolExecutor() as executor:
+                    # 创建一个超时任务
+                    tts_task = asyncio.get_event_loop().run_in_executor(
+                        executor, 
+                        chat_service.super_tts_service.generate_audio, 
+                        welcome_text
+                    )
+                    
+                    try:
+                        # 等待任务完成，有超时限制
+                        welcome_audio = await asyncio.wait_for(tts_task, timeout=tts_timeout)
+                        
+                        if welcome_audio and len(welcome_audio) > 100:
+                            print(f"欢迎语超拟人TTS生成成功，音频大小: {len(welcome_audio)} 字节")
+                            primary_tts_success = True
+                        else:
+                            print("欢迎语超拟人TTS生成失败: 生成的音频数据无效或过小")
+                            tts_error = "音频数据无效或过小"
+                    except asyncio.TimeoutError:
+                        print(f"欢迎语超拟人TTS生成超时（{tts_timeout}秒）")
+                        tts_error = f"超时（{tts_timeout}秒）"
+                        
+            except Exception as e:
+                print(f"生成欢迎语超拟人语音时出错: {e}")
+                tts_error = str(e)
+        
+        # 如果超拟人TTS失败且普通TTS可用，则降级使用普通TTS
+        if not primary_tts_success and Config.is_tts_enabled() and chat_service.tts_service:
+            try:
+                print(f"欢迎语超拟人TTS失败（{tts_error}），降级使用普通TTS...")
+                welcome_audio = chat_service.tts_service.generate_audio(welcome_text)
+                
+                if welcome_audio and len(welcome_audio) > 100:
+                    print(f"欢迎语普通TTS生成成功，音频大小: {len(welcome_audio)} 字节")
+                else:
+                    print("欢迎语普通TTS生成失败: 生成的音频数据无效或过小")
+            except Exception as e:
+                print(f"生成欢迎语普通语音时也失败: {e}")
+        
+        # 如果首选方式是普通TTS
+        elif not primary_tts_success and not Config.is_super_tts_enabled() and Config.is_tts_enabled() and chat_service.tts_service:
             try:
                 print("欢迎语TTS: 尝试使用普通TTS生成语音...")
                 welcome_audio = chat_service.tts_service.generate_audio(welcome_text)
+                
                 if welcome_audio and len(welcome_audio) > 100:
                     print(f"欢迎语普通TTS生成成功，音频大小: {len(welcome_audio)} 字节")
                 else:
                     print("欢迎语普通TTS生成失败: 生成的音频数据无效或过小")
             except Exception as e:
                 print(f"生成欢迎语普通语音时出错: {e}")
-        elif Config.is_super_tts_enabled() and chat_service.super_tts_service:
-            try:
-                print("欢迎语TTS: 尝试使用超拟人TTS生成语音...")
-                welcome_audio = chat_service.super_tts_service.generate_audio(welcome_text)
-                if welcome_audio and len(welcome_audio) > 100:
-                    print(f"欢迎语超拟人TTS生成成功，音频大小: {len(welcome_audio)} 字节")
-                else:
-                    print("欢迎语超拟人TTS生成失败: 生成的音频数据无效或过小")
-            except Exception as e:
-                print(f"生成欢迎语超拟人语音时出错: {e}")
         
         audio_base64 = base64.b64encode(welcome_audio).decode('ascii') if welcome_audio else ''
         
         return JSONResponse(
             content={
-                "success": True,
-                "audio": audio_base64
+                "success": bool(welcome_audio),
+                "audio": audio_base64,
+                "message": "TTS生成成功" if welcome_audio else "TTS生成失败，请检查语音服务配置"
             }
         )
     except Exception as e:
@@ -1685,6 +1759,8 @@ async def upload_video(
 ):
     """
     处理视频上传到七牛云
+    
+    返回包含etag和report_id的响应，前端可以使用report_id查询状态
     """
     try:
         # 强制使用AVI文件类型
@@ -1712,8 +1788,22 @@ async def upload_video(
                 content=result
             )
             
+        # 确保结果中包含report_id信息
+        if "data" in result:
+            # 检查report_id是否已经包含在结果中
+            if "report_id" not in result["data"] and "etag" in result["data"]:
+                etag = result["data"]["etag"]
+                report_id = qiniu_uploader.etag_to_report_id.get(etag)
+                if report_id:
+                    result["data"]["report_id"] = report_id
+                    logger.info(f"上传响应中添加report_id: {report_id}")
+        
+        logger.info(f"视频上传成功，返回数据: {result}")
         return result
     except Exception as e:
+        logger.error(f"视频上传处理失败: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return JSONResponse(
             status_code=500,
             content={
@@ -1722,6 +1812,735 @@ async def upload_video(
                 "data": None
             }
         )
+
+@app.post("/api/download-video-report")
+async def download_video_report(request: Request):
+    """
+    代理情绪评估报告下载请求
+    
+    前端通过这个接口下载情绪评估报告，后端负责处理加密和授权
+    """
+    try:
+        # 获取请求表单
+        form_data = await request.form()
+        sign = form_data.get("sign")
+        content = form_data.get("content")
+        timestamp = form_data.get("timestamp")
+        
+        # 获取授权头
+        auth_header = request.headers.get("Authorization", "")
+        auth_token = ""
+        
+        # 从Authorization头解析token
+        if auth_header and auth_header.startswith("Bearer "):
+            auth_token = auth_header.replace("Bearer ", "")
+        
+        # 如果没有token，使用默认测试token
+        if not auth_token:
+            auth_token = "25c90b21074f42049d4c3d1772709574"
+        
+        if not content:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "message": "缺少必要的请求参数",
+                    "data": None
+                }
+            )
+            
+        try:
+            # 解密content参数
+            decrypted_content = qiniu_uploader.decrypt_des(content)
+            params = json.loads(decrypted_content)
+            report_id = params.get("id")
+            
+            if not report_id:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "success": False,
+                        "message": "缺少报告ID参数",
+                        "data": None
+                    }
+                )
+            
+            # 设置保存目录
+            save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "save", "assessments")
+            os.makedirs(save_dir, exist_ok=True)
+            
+            # 调用下载方法
+            logger.info(f"请求下载情绪评估报告: ID={report_id}")
+            report_path = qiniu_uploader.download_emotion_report(auth_token, report_id, save_dir)
+            
+            if not report_path:
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "success": False,
+                        "message": "报告下载失败或不存在",
+                        "data": None
+                    }
+                )
+            
+            # 返回PDF文件
+            with open(report_path, "rb") as f:
+                file_content = f.read()
+            
+            # 返回文件内容
+            return Response(
+                content=file_content,
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": f"attachment; filename=emotion_report_{report_id}.pdf"
+                }
+            )
+            
+        except Exception as decrypt_error:
+            logger.error(f"解密请求参数失败: {str(decrypt_error)}")
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "message": f"解析请求参数失败: {str(decrypt_error)}",
+                    "data": None
+                }
+            )
+            
+    except Exception as e:
+        logger.error(f"下载情绪评估报告失败: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": f"下载情绪评估报告失败: {str(e)}",
+                "data": None
+            }
+        )
+
+@app.get("/api/check-latest-report")
+async def check_latest_report(request: Request, etag: str = None, token: str = None, report_id: int = None):
+    """
+    检查最新报告状态并更新
+    
+    仅检查列表中的第一条报告状态，更高效地更新报告下载状态
+    使用report_id替代etag作为状态字典的主键
+    """
+    try:
+        # 获取授权令牌
+        auth_token = token or ""
+        if not auth_token:
+            # 从Authorization头获取token
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header and auth_header.startswith("Bearer "):
+                auth_token = auth_header.replace("Bearer ", "")
+        
+        # 如果没有token，返回错误
+        if not auth_token:
+            auth_token = "25c90b21074f42049d4c3d1772709574"  # 默认测试token
+        
+        # 检查参数 - 至少需要etag或report_id中的一个
+        if not etag and not report_id:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "message": "缺少etag或report_id参数",
+                    "data": None
+                }
+            )
+        
+        # 如果提供了etag但没有report_id，尝试从映射中查找report_id
+        if etag and not report_id:
+            mapped_report_id = qiniu_uploader.etag_to_report_id.get(etag)
+            if mapped_report_id:
+                report_id = mapped_report_id
+                logger.info(f"从etag={etag}映射获取到report_id={report_id}")
+
+        # 如果有report_id或etag，记录到日志
+        logger.info(f"检查最新报告状态: etag={etag}, report_id={report_id}")
+        
+        # 调用更新评估状态方法，如果有etag
+        if etag:
+            await update_assessment_status(auth_token, etag)
+        
+        # 使用新的get_latest_assessment_status方法获取状态
+        status_result = qiniu_uploader.get_latest_assessment_status(report_id=report_id, etag=etag)
+        
+        if not status_result["success"]:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "success": False,
+                    "message": status_result["message"],
+                    "data": None
+                }
+            )
+        
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": "检查最新报告状态成功",
+                "data": {
+                    "etag": status_result.get("etag"),
+                    "report_id": status_result.get("report_id"),
+                    "upload_callback_status": status_result.get("upload_callback_status"),
+                    "assessment_status": status_result.get("assessment_status"),
+                    "report_downloaded": status_result.get("report_downloaded")
+                }
+            }
+        )
+    except Exception as e:
+        logger.error(f"检查最新报告状态失败: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": f"检查最新报告状态失败: {str(e)}",
+                "data": None
+            }
+        )
+
+@app.post("/api/video/update_report_status")
+async def update_report_status(request: Request):
+    """
+    更新报告下载状态
+    
+    前端可以通过这个接口告知后端报告已经被下载，更新状态
+    使用report_id替代etag作为状态字典的主键
+    """
+    try:
+        # 获取请求体
+        data = await request.json()
+        etag = data.get("etag")
+        downloaded = data.get("downloaded", True)  # 默认为True
+        report_id = data.get("report_id")  # 新增report_id参数
+        
+        if not etag and not report_id:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "message": "缺少etag或report_id参数",
+                    "data": None
+                }
+            )
+        
+        # 如果提供了etag但没有report_id，尝试查找report_id
+        if etag and not report_id:
+            report_id = qiniu_uploader.etag_to_report_id.get(etag)
+            
+            # 如果找不到映射，可以尝试用临时ID
+            if not report_id:
+                # 查看是否有临时ID对应这个etag
+                for temp_id, mapped_etag in list(qiniu_uploader.report_id_to_etag.items()):
+                    if mapped_etag == etag and isinstance(temp_id, str) and temp_id.startswith("temp_"):
+                        report_id = temp_id
+                        break
+                
+                # 如果还是没有，创建一个临时ID
+                if not report_id:
+                    report_id = f"temp_{int(time.time())}"
+                    qiniu_uploader.etag_to_report_id[etag] = report_id
+                    qiniu_uploader.report_id_to_etag[report_id] = etag
+                    logger.info(f"为etag={etag}创建临时ID: {report_id}")
+        
+        if report_id:
+            # 优先使用report_id更新状态
+            qiniu_uploader.report_downloaded_status[report_id] = downloaded
+            
+            # 同时更新其他相关状态
+            if downloaded:
+                qiniu_uploader.upload_callback_status[report_id] = True
+                # 当手动设置报告下载状态为true时，将assessment_status设为2
+                qiniu_uploader.assessment_status[report_id] = 2
+            
+            logger.info(f"使用report_id={report_id}更新报告下载状态: downloaded={downloaded}")
+            
+            return JSONResponse(
+                content={
+                    "success": True,
+                    "message": "更新报告下载状态成功",
+                    "data": {
+                        "report_id": report_id,
+                        "etag": etag,
+                        "report_downloaded": qiniu_uploader.report_downloaded_status.get(report_id, False),
+                        "assessment_status": qiniu_uploader.assessment_status.get(report_id, False)
+                    }
+                }
+            )
+        elif etag:
+            # 使用etag更新状态
+            qiniu_uploader.report_downloaded_status[etag] = downloaded
+            logger.info(f"使用etag={etag}更新报告下载状态: downloaded={downloaded}")
+            
+            return JSONResponse(
+                content={
+                    "success": True,
+                    "message": "更新报告下载状态成功",
+                    "data": {
+                        "etag": etag,
+                        "report_downloaded": qiniu_uploader.report_downloaded_status.get(etag, False)
+                    }
+                }
+            )
+    except Exception as e:
+        logger.error(f"更新报告下载状态失败: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": f"更新报告下载状态失败: {str(e)}",
+                "data": None
+            }
+        )
+
+# 全局轮询线程管理器
+POLLING_THREADS = {}  # 键: etag/report_id, 值: {thread: Thread, start_time: timestamp}
+
+@app.post("/api/video/status")
+async def video_status(request: Request):
+    """
+    统一的视频状态接口 - 合并上传状态查询和启动轮询功能
+    
+    功能：
+    1. 获取视频上传和评估状态
+    2. 可选择性地启动后端轮询检查视频评估状态
+    
+    支持参数：
+    - etag：视频文件标识
+    - report_id：报告ID（优先）
+    - auth_token：授权令牌
+    - start_polling：是否启动轮询
+    """
+    try:
+        # 获取请求体
+        data = await request.json()
+        etag = data.get("etag")
+        report_id = data.get("report_id")
+        
+        if not etag and not report_id:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "message": "缺少etag或report_id参数",
+                    "data": None
+                }
+            )
+            
+        # 获取授权令牌 - 如果请求中包含则使用，否则使用默认测试令牌
+        auth_token = data.get("auth_token", "")
+        
+        # 检查是否需要启动轮询
+        start_polling = data.get("start_polling", False)
+        
+        # 使用新的get_latest_assessment_status方法获取状态
+        status_result = qiniu_uploader.get_latest_assessment_status(report_id=report_id, etag=etag)
+        
+        if not status_result["success"]:
+            logger.warning(f"获取状态失败: {status_result['message']}")
+            # 如果获取状态失败但有etag，尝试使用临时ID
+            if etag:
+                # 创建临时ID
+                temp_id = f"temp_{int(time.time())}"
+                qiniu_uploader.etag_to_report_id[etag] = temp_id
+                qiniu_uploader.report_id_to_etag[temp_id] = etag
+                # 重新尝试获取状态
+                status_result = qiniu_uploader.get_latest_assessment_status(report_id=temp_id)
+                if not status_result["success"]:
+                    return JSONResponse(
+                        status_code=404,
+                        content={
+                            "success": False,
+                            "message": "无法获取视频状态",
+                            "data": None
+                        }
+                    )
+        
+        # 从状态结果中获取信息
+        current_report_id = status_result.get("report_id")
+        current_etag = status_result.get("etag")
+        upload_callback_status = status_result.get("upload_callback_status", False)
+        assessment_status = status_result.get("assessment_status", False)
+        report_downloaded = status_result.get("report_downloaded", False)
+        
+        # 只有在状态未完成时才考虑更新状态
+        update_needed = (
+            not assessment_status or 
+            not report_downloaded or 
+            not upload_callback_status or
+            start_polling
+        )
+        
+        # 检查是否需要更新状态
+        current_time = time.time()
+        cache_key = current_report_id or etag
+        last_check_time = getattr(video_status, f"last_check_{cache_key}", 0)
+        update_interval = 8  # 查询间隔8秒
+        
+        # 仅在以下情况更新状态:
+        # 1. 距离上次检查已经超过间隔时间
+        # 2. 状态未完成
+        # 3. 明确请求启动轮询
+        if update_needed and current_time - last_check_time > update_interval:
+            # 记录本次检查时间
+            setattr(video_status, f"last_check_{cache_key}", current_time)
+            
+            # 向服务器请求最新状态
+            if etag or current_report_id:
+                await update_assessment_status(auth_token, etag, current_report_id)
+                
+                # 更新后再次获取状态
+                status_result = qiniu_uploader.get_latest_assessment_status(report_id=current_report_id, etag=etag)
+                
+                if status_result["success"]:
+                    # 更新状态变量
+                    upload_callback_status = status_result.get("upload_callback_status", False)
+                    assessment_status = status_result.get("assessment_status", False)
+                    report_downloaded = status_result.get("report_downloaded", False)
+                    current_report_id = status_result.get("report_id")
+                    current_etag = status_result.get("etag")
+                    
+                    logger.info(f"更新后获取状态: report_id={current_report_id}, 上传状态={upload_callback_status}, 评估状态={assessment_status}, 报告下载状态={report_downloaded}")
+        else:
+            if not update_needed:
+                logger.info(f"状态已完成，无需更新: report_id={current_report_id}")
+            else:
+                logger.info(f"上次查询时间较近，跳过查询: 间隔={int(current_time - last_check_time)}秒")
+        
+        # 处理启动轮询请求 - 只有当明确请求启动轮询且状态未完成时才启动
+        polling_started = False
+        thread_id = None
+        
+        # 全局轮询管理 - 仅在需要轮询且状态未完成时启动
+        if start_polling and upload_callback_status and not assessment_status:
+            # 创建唯一的轮询键 - 优先使用report_id
+            polling_key = current_report_id or etag
+            
+            if not polling_key:
+                logger.warning("无法创建轮询键，跳过轮询")
+            else:
+                # 检查是否已有轮询线程
+                thread_info = POLLING_THREADS.get(polling_key)
+                
+                if thread_info and isinstance(thread_info.get("thread"), threading.Thread) and thread_info["thread"].is_alive():
+                    logger.info(f"已有轮询线程正在运行: polling_key={polling_key}, thread_id={thread_info['thread'].ident}, 运行时间={int(current_time - thread_info['start_time'])}秒")
+                    polling_started = True
+                    thread_id = thread_info["thread"].ident
+                else:
+                    # 启动新的轮询线程
+                    logger.info(f"为键{polling_key}创建新的轮询线程")
+                    
+                    # 如果有旧的死亡线程，清理它
+                    if thread_info:
+                        logger.info(f"清理旧的轮询线程: polling_key={polling_key}, thread_id={thread_info['thread'].ident if thread_info.get('thread') else 'None'}")
+                        POLLING_THREADS.pop(polling_key, None)
+                    
+                    # 创建新的轮询线程
+                    if etag:
+                        polling_thread = threading.Thread(
+                            target=qiniu_uploader.poll_report_status,
+                            args=(auth_token, etag, current_report_id),
+                            daemon=True
+                        )
+                    else:
+                        polling_thread = threading.Thread(
+                            target=qiniu_uploader.poll_report_status,
+                            args=(auth_token, None, current_report_id),
+                            daemon=True
+                        )
+                        
+                    # 启动线程
+                    polling_thread.start()
+                    thread_id = polling_thread.ident
+                    
+                    # 保存线程信息到全局管理器
+                    POLLING_THREADS[polling_key] = {
+                        "thread": polling_thread,
+                        "start_time": current_time
+                    }
+                    
+                    logger.info(f"启动轮询线程: polling_key={polling_key}, thread_id={thread_id}")
+                    polling_started = True
+                    
+                    # 清理过期的线程 - 检查所有已记录线程
+                    for key, info in list(POLLING_THREADS.items()):
+                        if key != polling_key and info.get("thread") and not info["thread"].is_alive():
+                            logger.info(f"清理过期线程: key={key}, thread_id={info['thread'].ident}")
+                            POLLING_THREADS.pop(key, None)
+        
+        # 返回最终状态
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": "获取状态成功",
+                "data": {
+                    "etag": current_etag,
+                    "report_id": current_report_id,
+                    "upload_callback_status": upload_callback_status,
+                    "assessment_status": assessment_status,
+                    "report_downloaded": report_downloaded,
+                    "polling_started": polling_started,
+                    "polling_thread_id": thread_id
+                }
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"获取视频状态失败: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": f"获取视频状态失败: {str(e)}",
+                "data": None
+            }
+        )
+
+@app.post("/api/video/upload_status")
+async def get_video_upload_status(request: Request):
+    """
+    获取视频上传和情绪评估状态（兼容旧API）
+    
+    前端可以通过这个接口查询特定etag的上传和评估状态，
+    后端会定期向七牛服务器请求最新状态
+    
+    注意：此API是为兼容性保留，新代码应使用/api/video/status
+    """
+    # 直接调用统一API，不启动轮询
+    data = await request.json()
+    data["start_polling"] = False
+    request._body = json.dumps(data).encode()
+    return await video_status(request)
+
+@app.post("/api/video/start_polling")
+async def start_video_polling(request: Request):
+    """
+    启动后端轮询检查视频评估状态（兼容旧API）
+    
+    当前端检测到上传回调完成但评估未完成时，可以调用此接口请求后端启动轮询
+    
+    注意：此API是为兼容性保留，新代码应使用/api/video/status
+    """
+    # 直接调用统一API，强制启动轮询
+    data = await request.json()
+    data["start_polling"] = True
+    request._body = json.dumps(data).encode()
+    return await video_status(request)
+
+# 全局缓存报告列表
+REPORT_LIST_CACHE = {
+    "data": None,
+    "timestamp": 0,
+    "auth_token": None
+}
+CACHE_TTL = 5  # 缓存有效期，5秒
+
+async def get_cached_report_list(auth_token: str):
+    """获取缓存的报告列表，如果缓存过期则重新获取"""
+    global REPORT_LIST_CACHE
+    
+    current_time = time.time()
+    # 如果缓存未过期且auth_token一致，使用缓存
+    if (REPORT_LIST_CACHE["data"] and 
+        current_time - REPORT_LIST_CACHE["timestamp"] < CACHE_TTL and
+        REPORT_LIST_CACHE["auth_token"] == auth_token):
+        logger.info("使用缓存的报告列表")
+        return REPORT_LIST_CACHE["data"]
+    
+    # 重新获取报告列表
+    report_list = qiniu_uploader.get_emotion_report_list(auth_token)
+    
+    # 更新缓存
+    REPORT_LIST_CACHE["data"] = report_list
+    REPORT_LIST_CACHE["timestamp"] = current_time
+    REPORT_LIST_CACHE["auth_token"] = auth_token
+    
+    return report_list
+
+async def update_assessment_status(auth_token: str, etag: str = None, report_id: str = None):
+    """
+    更新情绪评估状态
+    
+    从七牛云服务器获取最新状态并更新本地状态
+    
+    Args:
+        auth_token: 授权令牌
+        etag: 文件唯一标识 (可选，与report_id二选一)
+        report_id: 报告ID (可选，优先使用)
+    """
+    if not etag and not report_id:
+        logger.error("更新评估状态失败: 必须提供etag或report_id参数")
+        return
+        
+    logger.info(f"更新情绪评估状态: etag={etag}, report_id={report_id}")
+    
+    # 如果提供了report_id，尝试获取对应的etag
+    if report_id and not etag:
+        etag = qiniu_uploader.report_id_to_etag.get(str(report_id))
+        if not etag:
+            logger.warning(f"无法找到report_id={report_id}对应的etag")
+    
+    # 确定当前使用的report_id (如果有的话)
+    current_report_id = report_id
+    if not current_report_id and etag:
+        current_report_id = qiniu_uploader.etag_to_report_id.get(etag)
+    
+    # 读取当前状态 - 使用report_id或etag
+    upload_callback_status = False
+    assessment_status = False
+    report_downloaded = False
+    
+    if current_report_id:
+        str_report_id = str(current_report_id)
+        upload_callback_status = qiniu_uploader.upload_callback_status.get(str_report_id, False)
+        assessment_status = qiniu_uploader.assessment_status.get(str_report_id, False)
+        report_downloaded = qiniu_uploader.report_downloaded_status.get(str_report_id, False)
+    
+    # 如果状态已完成，无需更新
+    if assessment_status and report_downloaded:
+        logger.info(f"状态已完成，无需更新: etag={etag}, report_id={current_report_id}")
+        return
+    
+    try:
+        # 获取报告列表
+        report_list = await get_cached_report_list(auth_token)
+        
+        if not report_list:
+            logger.warning("未获取到报告列表")
+            return
+            
+        # 找到最新报告 - 不支持多个报告，这是简化版逻辑
+        if len(report_list) > 0:
+            latest_report = report_list[0]
+            logger.info(f"最新报告: {latest_report}")
+            
+            # 获取最新报告的信息
+            latest_status = latest_report.get("status")
+            latest_report_id = latest_report.get("id")
+            latest_url = latest_report.get("url")
+            
+            if latest_report_id is not None:
+                latest_report_id_str = str(latest_report_id)
+            else:
+                latest_report_id_str = None
+                
+            # 尝试从URL或其他字段提取etag (如果当前没有etag)
+            latest_etag = None
+            if "key" in latest_report:
+                latest_etag = latest_report.get("key")
+            elif "etag" in latest_report:
+                latest_etag = latest_report.get("etag")
+            elif latest_url:
+                # 尝试从URL提取
+                try:
+                    latest_etag = latest_url.split('/')[-1].split('?')[0]
+                except:
+                    pass
+            
+            # 判断是否为当前关注的报告
+            is_current_report = False
+            
+            # 如果有明确的report_id匹配，则为当前报告
+            if latest_report_id_str and current_report_id and str(current_report_id) == latest_report_id_str:
+                is_current_report = True
+                logger.info(f"通过report_id匹配到当前报告: {latest_report_id_str}")
+            
+            # 如果有etag匹配，则为当前报告
+            elif etag and latest_etag and etag == latest_etag:
+                is_current_report = True
+                logger.info(f"通过etag匹配到当前报告: {etag}")
+                
+                # 如果当前没有report_id或使用的是临时ID，更新映射关系
+                if (not current_report_id or 
+                    (isinstance(current_report_id, str) and current_report_id.startswith("temp_")) and 
+                    latest_report_id_str):
+                    logger.info(f"更新report_id: {current_report_id} -> {latest_report_id_str}")
+                    
+                    # 更新映射关系
+                    qiniu_uploader.etag_to_report_id[etag] = latest_report_id_str
+                    qiniu_uploader.report_id_to_etag[latest_report_id_str] = etag
+                    
+                    # 如果有旧的report_id，转移状态
+                    if current_report_id:
+                        str_old_report_id = str(current_report_id)
+                        # 转移状态
+                        if str_old_report_id in qiniu_uploader.upload_callback_status:
+                            qiniu_uploader.upload_callback_status[latest_report_id_str] = qiniu_uploader.upload_callback_status[str_old_report_id]
+                            del qiniu_uploader.upload_callback_status[str_old_report_id]
+                        if str_old_report_id in qiniu_uploader.assessment_status:
+                            qiniu_uploader.assessment_status[latest_report_id_str] = qiniu_uploader.assessment_status[str_old_report_id]
+                            del qiniu_uploader.assessment_status[str_old_report_id]
+                        if str_old_report_id in qiniu_uploader.report_downloaded_status:
+                            qiniu_uploader.report_downloaded_status[latest_report_id_str] = qiniu_uploader.report_downloaded_status[str_old_report_id]
+                            del qiniu_uploader.report_downloaded_status[str_old_report_id]
+                        
+                        # 删除旧的映射
+                        if str_old_report_id in qiniu_uploader.report_id_to_etag:
+                            del qiniu_uploader.report_id_to_etag[str_old_report_id]
+                    
+                    # 更新当前使用的report_id
+                    current_report_id = latest_report_id_str
+            
+            # 如果可能是当前报告但没有明确匹配，根据后台轮询线程和线程记录的报告数量来判断
+            elif not etag and not current_report_id and len(report_list) == 1:
+                # 如果只有一个报告且没有指定etag和report_id，假定就是当前报告
+                is_current_report = True
+                logger.info("只有一个报告，假定为当前报告")
+                
+                # 如果能获取新的etag和report_id，建立映射关系
+                if latest_etag and latest_report_id_str:
+                    qiniu_uploader.etag_to_report_id[latest_etag] = latest_report_id_str
+                    qiniu_uploader.report_id_to_etag[latest_report_id_str] = latest_etag
+                    logger.info(f"建立新的映射关系: etag={latest_etag}, report_id={latest_report_id_str}")
+                    
+                    # 更新当前使用的值
+                    etag = latest_etag
+                    current_report_id = latest_report_id_str
+            
+            # 如果确定为当前报告，更新状态
+            if is_current_report and current_report_id:
+                str_report_id = str(current_report_id)
+                
+                # 更新状态
+                if latest_status == 1:  # 完成状态
+                    # 上传回调必然完成
+                    qiniu_uploader.upload_callback_status[str_report_id] = True
+                    # 评估状态设为2
+                    qiniu_uploader.assessment_status[str_report_id] = 2
+                    logger.info(f"更新评估状态: report_id={str_report_id}, status=2 (完成)")
+                    
+                    # 尝试下载报告
+                    save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "save", "assessments")
+                    os.makedirs(save_dir, exist_ok=True)
+                    
+                    # 下载报告
+                    report_path = qiniu_uploader.download_emotion_report(auth_token, latest_report_id, save_dir)
+                    
+                    if report_path:
+                        logger.info(f"报告下载成功: {report_path}")
+                        qiniu_uploader.report_downloaded_status[str_report_id] = True
+                    else:
+                        logger.warning(f"报告下载失败: {latest_report_id}")
+                else:
+                    # 上传回调已完成，但评估尚未完成
+                    qiniu_uploader.upload_callback_status[str_report_id] = True
+                    qiniu_uploader.assessment_status[str_report_id] = False
+                    logger.info(f"更新评估状态: report_id={str_report_id}, status=0 (处理中)")
+        else:
+            logger.warning("报告列表为空")
+            
+    except Exception as e:
+        logger.error(f"更新评估状态出错: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8666, reload=True)

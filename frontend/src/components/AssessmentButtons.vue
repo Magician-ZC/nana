@@ -9,8 +9,8 @@
         :title="processingAssessment ? '情绪评估分析中，请稍候' : '情绪评估'"
       >
         <i class="fa-solid fa-heart-pulse text-rose-500 dark:text-rose-400"></i>
-        <span>{{ processingAssessment ? '情绪评估 (处理中)' : '情绪评估' }}</span>
-        <span v-if="assessmentCompleted" class="ml-1 px-1.5 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-xs rounded-full">
+        <span>情绪评估</span>
+        <span v-if="assessmentStore.assessmentComplete" class="ml-1 px-1.5 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-xs rounded-full">
           <i class="fa-solid fa-check"></i>
         </span>
       </button>
@@ -19,14 +19,25 @@
       <button 
         @click="openVideoAssessment" 
         class="flex items-center gap-2 px-4 py-2 bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 shadow-md hover:shadow-lg transition-all duration-200 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700"
-        :class="{ 'opacity-60 cursor-not-allowed': assessmentStore.videoProcessing }"
-        :title="assessmentStore.videoProcessing ? '视频评估分析中，请稍候' : '视频情绪评估'"
+        :class="{ 'opacity-60 cursor-not-allowed': assessmentStore.uploadCallbackComplete }"
+        :title="assessmentStore.uploadCallbackComplete ? '视频已上传处理中' : '视频评估'"
       >
         <i class="fa-solid fa-video text-blue-500 dark:text-blue-400"></i>
-        <span>{{ assessmentStore.videoProcessing ? '视频评估 (处理中)' : '视频评估' }}</span>
-        <span v-if="assessmentStore.videoAssessmentComplete" class="ml-1 px-1.5 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-xs rounded-full">
+        <span>视频评估</span>
+        <span v-if="assessmentStore.uploadCallbackComplete" class="ml-1 px-1.5 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-xs rounded-full">
           <i class="fa-solid fa-check"></i>
         </span>
+      </button>
+      
+      <!-- 测试上传按钮 -->
+      <button 
+        @click="uploadTestVideo" 
+        class="flex items-center gap-2 px-4 py-2 bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 shadow-md hover:shadow-lg transition-all duration-200 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700"
+        :class="{ 'opacity-60 cursor-not-allowed': assessmentStore.uploadCallbackComplete }"
+        :title="assessmentStore.uploadCallbackComplete ? '视频已上传处理中' : '测试视频上传'"
+      >
+        <i class="fa-solid fa-vial text-purple-500 dark:text-purple-400"></i>
+        <span>测试上传</span>
       </button>
       
       <button 
@@ -388,6 +399,7 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 import VideoRecorder from './VideoRecorder.vue'
 import { useAssessmentStore } from '../stores/assessment'
+import { useUserStore } from '../stores/user'
 
 const psychAssessmentReady = ref(false);
 const showEmotionalModal = ref(false);
@@ -405,6 +417,10 @@ const assessmentCompleted = ref(false);
 const analysisData = ref(null);
 const latestAssessmentFile = ref(null);
 const assessmentStore = useAssessmentStore();
+const userStore = useUserStore();
+
+// 定义状态检查间隔变量
+let statusCheckInterval = null;
 
 // 打开情绪评估弹窗
 const openEmotionalAssessment = () => {
@@ -646,41 +662,35 @@ const parseFile = async () => {
   }
 };
 
-// 获取对话轮数和评估状态
-const checkAssessmentStatus = async () => {
-  try {
-    const response = await fetch('http://localhost:8666/api/assessment_status');
-    const data = await response.json();
-    
-    if (data.success) {
-      psychAssessmentReady.value = data.assessment_ready;
-    }
-  } catch (error) {
-    console.error('获取评估状态失败:', error);
-  }
+// 定期检查评估状态的函数 - 使用store中的方法
+const checkAssessmentStatus = () => {
+  assessmentStore.loadAssessmentStatus().then(() => {
+    // 从store中更新本地状态
+    psychAssessmentReady.value = assessmentStore.psychologicalAssessmentReady.value;
+    processingAssessment.value = assessmentStore.psychologicalProcessing.value;
+  }).catch(error => {
+    console.error('通过store获取评估状态失败:', error);
+  });
 };
 
-// 定期检查评估状态的函数
-let statusCheckInterval = null;
-
+// 定期检查情绪评估状态
 const startAssessmentStatusCheck = () => {
-  // 清除之前的检查间隔（如果有）
-  if (statusCheckInterval) {
-    clearInterval(statusCheckInterval);
-  }
-  
   // 每10秒检查一次状态，直到评估完成
-  statusCheckInterval = setInterval(async () => {
-    // 检查评估状态
-    try {
-      const response = await fetch('http://localhost:8666/api/latest_assessment');
-      const data = await response.json();
+  const checkForCompletion = () => {
+    assessmentStore.loadLatestEmotionalAssessment().then(() => {
+      // 从store中获取完成状态
+      const isComplete = assessmentStore.emotionalAssessmentComplete.value;
       
-      if (data.success && data.has_assessment) {
-        // 评估已完成
+      if (isComplete) {
+        // 更新本地状态
         assessmentCompleted.value = true;
         processingAssessment.value = false;
-        latestAssessmentFile.value = data.file_path;
+        
+        // 如果有评估数据，获取文件名
+        if (assessmentStore.emotionalAssessmentData.value && 
+            assessmentStore.emotionalAssessmentData.value.file_name) {
+          latestAssessmentFile.value = assessmentStore.emotionalAssessmentData.value.file_name;
+        }
         
         // 显示完成通知
         const completionNotification = document.createElement('div');
@@ -703,26 +713,54 @@ const startAssessmentStatusCheck = () => {
         }, 5000);
         
         // 停止检查
-        clearInterval(statusCheckInterval);
-        statusCheckInterval = null;
+        if (statusCheckInterval) {
+          clearInterval(statusCheckInterval);
+          statusCheckInterval = null;
+        }
       }
-    } catch (error) {
-      console.error('检查评估状态失败:', error);
-    }
-  }, 10000); // 每10秒检查一次
+    }).catch(error => {
+      console.error('检查情绪评估状态失败:', error);
+    });
+  };
+  
+  // 清除之前的检查间隔（如果有）
+  if (statusCheckInterval) {
+    clearInterval(statusCheckInterval);
+  }
+  
+  // 立即检查一次
+  checkForCompletion();
+  
+  // 设置定时检查
+  statusCheckInterval = setInterval(checkForCompletion, 10000); // 每10秒检查一次
 };
 
 // 设置定时检查
 let checkInterval = null;
 
-onMounted(() => {
-  // 初始检查
-  checkAssessmentStatus();
-  
-  // 每2分钟检查一次整体状态
-  checkInterval = setInterval(() => {
-    checkAssessmentStatus();
-  }, 2 * 60 * 1000);
+onMounted(async () => {
+  try {
+    // 加载心理评估状态
+    await assessmentStore.initialize()
+    // 检查心理评估是否就绪
+    psychAssessmentReady.value = assessmentStore.psychologicalAssessmentReady
+    
+    // 加载情绪评估状态
+    await assessmentStore.loadAssessmentStatus()
+    assessmentCompleted.value = assessmentStore.emotionalAssessmentComplete
+    
+    // 加载视频上传状态（通过localStorage）
+    assessmentStore.loadVideoUploadState()
+    
+    // 如果视频上传回调成功但评估未完成，启动轮询
+    if (assessmentStore.videoUploadEtag && 
+        assessmentStore.uploadCallbackComplete && 
+        !assessmentStore.assessmentComplete) {
+      assessmentStore.startStatusPolling(assessmentStore.videoUploadEtag)
+    }
+  } catch (e) {
+    console.error('初始化评估状态失败:', e);
+  }
 });
 
 onUnmounted(() => {
@@ -739,6 +777,10 @@ onUnmounted(() => {
 // 视频评估相关
 // 打开视频评估弹窗
 const openVideoAssessment = () => {
+  // 如果已经上传过视频并在处理中，则不允许再次录制
+  if (assessmentStore.uploadCallbackComplete) {
+    return;
+  }
   showVideoModal.value = true;
 }
 
@@ -758,32 +800,170 @@ const viewVideoAssessmentResults = () => {
   }
 }
 
-onMounted(async () => {
-  try {
-    // 初始化评估状态
-    await assessmentStore.initialize();
-    
-    // 获取评估状态
-    const response = await fetch('http://localhost:8666/api/assessment_status');
-    const data = await response.json();
-    
-    if (data.success) {
-      psychAssessmentReady.value = data.assessment_ready;
-      processingAssessment.value = data.processing_assessment;
-    }
-    
-    // 获取最新的评估状态
-    const assessmentResponse = await fetch('http://localhost:8666/api/latest_assessment');
-    const assessmentData = await assessmentResponse.json();
-    
-    if (assessmentData.success && assessmentData.has_assessment) {
-      assessmentCompleted.value = true;
-      latestAssessmentFile.value = assessmentData.file_name;
-    }
-  } catch (e) {
-    console.error('获取评估状态失败:', e);
+// 获取视频按钮的提示文本
+function getVideoButtonTitle() {
+  if (assessmentStore.videoProcessing) {
+    return '视频分析处理中，请稍候'
+  } else if (assessmentStore.assessmentComplete) {
+    return '查看视频评估结果'
+  } else if (assessmentStore.uploadCallbackComplete && !assessmentStore.assessmentComplete) {
+    return '视频已上传，评估中...'
+  } else {
+    return '视频评估'
   }
-});
+}
+
+// 测试上传视频
+const uploadTestVideo = async () => {
+  try {
+    // 如果已有上传进行中，显示提示
+    if (assessmentStore.uploadCallbackComplete) {
+      showNotification({
+        type: 'warning',
+        title: '上传已在进行中',
+        message: '请等待当前上传完成'
+      });
+      return;
+    }
+    
+    // 显示加载中通知
+    showNotification({
+      type: 'info',
+      title: '准备测试视频',
+      message: '正在获取本地测试视频...'
+    });
+    
+    // 获取授权令牌
+    const authToken = userStore.getAuthToken();
+    
+    // 确保token存储在userStore中
+    if (authToken) {
+      userStore.setAuthToken(authToken);
+    }
+    
+    // 获取测试视频文件
+    // 使用本地测试视频文件
+    const testVideoUrl = '/videos/emotion_assessment.avi';
+    const response = await fetch(testVideoUrl);
+    
+    if (!response.ok) {
+      throw new Error(`无法获取测试视频: ${response.status} ${response.statusText}`);
+    }
+    
+    const videoBlob = await response.blob();
+    
+    // 显示上传中通知
+    showNotification({
+      type: 'info',
+      title: '上传测试视频',
+      message: '正在上传视频到服务器...'
+    });
+
+    // 创建FormData对象
+    const formData = new FormData();
+    formData.append('file', videoBlob, 'emotion_assessment.avi');
+    
+    // 上传视频
+    const uploadResponse = await fetch('http://localhost:8666/api/upload-video', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${authToken}`
+      },
+      body: formData,
+    });
+    
+    const result = await uploadResponse.json();
+    
+    if (result.success) {
+      // 成功通知
+      showNotification({
+        type: 'success',
+        title: '测试视频上传成功',
+        message: '视频已上传，开始处理和评估'
+      });
+      
+      // 获取上传数据
+      const uploadData = result.data;
+      const etag = uploadData?.etag;
+      
+      if (etag) {
+        console.log(`设置并保存视频上传状态: etag=${etag}`);
+        // 设置视频上传etag值和处理状态
+        assessmentStore.setVideoUploadEtag(etag);
+        assessmentStore.setUploadCallbackComplete(uploadData.upload_callback_status || false);
+        assessmentStore.setAssessmentComplete(uploadData.assessment_status || false);
+        
+        // 保存状态到localStorage
+        assessmentStore.saveVideoUploadState();
+        
+        // 根据上传回调状态决定是否启动轮询
+        if (uploadData.upload_callback_status === true) {
+          console.log('上传回调已完成，启动视频评估状态轮询');
+          assessmentStore.startStatusPolling(etag);
+        }
+      } else {
+        console.warn('未获取到视频etag，无法启动状态轮询');
+      }
+    } else {
+      throw new Error(result.message || '视频上传失败');
+    }
+  } catch (error) {
+    console.error('测试视频上传失败:', error);
+    
+    // 显示错误通知
+    showNotification({
+      type: 'error',
+      title: '测试视频上传失败',
+      message: error.message || '请检查网络连接并重试'
+    });
+  }
+}
+
+// 通用通知函数
+const showNotification = ({ type = 'info', title, message, duration = 3000 }) => {
+  try {
+    const notification = document.createElement('div');
+    notification.className = `fixed bottom-4 right-4 px-6 py-3 rounded-lg shadow-lg z-[1100] animate-fade-in flex items-center gap-2`;
+    
+    // 根据类型设置样式
+    if (type === 'success') {
+      notification.classList.add('bg-green-500', 'text-white');
+    } else if (type === 'error') {
+      notification.classList.add('bg-red-500', 'text-white');
+    } else if (type === 'warning') {
+      notification.classList.add('bg-yellow-500', 'text-white');
+    } else {
+      notification.classList.add('bg-blue-500', 'text-white');
+    }
+    
+    // 设置图标
+    let icon = '';
+    if (type === 'success') icon = 'fa-check-circle';
+    else if (type === 'error') icon = 'fa-exclamation-circle';
+    else if (type === 'warning') icon = 'fa-exclamation-triangle';
+    else icon = 'fa-info-circle';
+    
+    notification.innerHTML = `
+      <i class="fa-solid ${icon}"></i>
+      <div>
+        <div class="font-medium">${title}</div>
+        <div class="text-sm opacity-90">${message}</div>
+      </div>
+    `;
+    
+    document.body.appendChild(notification);
+    
+    // 设置超时移除通知
+    setTimeout(() => {
+      notification.classList.add('animate-fade-out');
+      setTimeout(() => {
+        notification.remove();
+      }, 500);
+    }, duration);
+  } catch (e) {
+    console.error('显示通知出错:', e);
+  }
+}
 </script>
 
 <style scoped>
