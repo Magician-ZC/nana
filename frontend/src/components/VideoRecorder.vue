@@ -786,65 +786,84 @@ const uploadVideo = async () => {
     const result = await response.json()
     
     if (result.success) {
-      // 更新状态
-      recordingComplete.value = true
-      completeMessage.value = result.message || '视频上传成功，您可以查看结果'
+      console.log('[DEBUG] 视频上传成功，返回数据:', result);
       
-      // 保存七牛云返回的URL等信息
-      const uploadData = result.data || {}
-      const etag = uploadData.etag
+      // 获取上传数据
+      const uploadData = result.data;
       
-      // 表示视频正在处理中
-      assessmentStore.setVideoProcessing(true)
+      // 记录后端传来的状态
+      console.log(`[DEBUG] 后端返回的状态信息: 上传回调=${uploadData.upload_callback_status}, 评估=${uploadData.assessment_status}, 报告ID=${uploadData.report_id || 'none'}`);
       
-      // 更新视频上传状态管理
-      if (etag) {
-        console.log(`设置并保存视频上传状态: etag=${etag}`)
-        // 设置视频上传etag值和处理状态
-        assessmentStore.setVideoUploadEtag(etag)
-        assessmentStore.setUploadCallbackComplete(uploadData.upload_callback_status || false)
-        assessmentStore.setAssessmentComplete(uploadData.assessment_status || false)
-        
-        // 保存状态到localStorage
-        assessmentStore.saveVideoUploadState()
-        
-        // 根据上传回调状态决定是否启动轮询
-        if (uploadData.upload_callback_status === true) {
-          console.log('上传回调已完成，启动视频评估状态轮询')
-          assessmentStore.startStatusPolling(etag)
-        } else {
-          console.warn('上传回调未完成，不启动轮询')
-          // 显示警告通知
-          const warningNotification = document.createElement('div')
-          warningNotification.className = 'fixed bottom-4 right-4 bg-yellow-500 text-white px-6 py-3 rounded-lg shadow-lg z-[1100] animate-fade-in flex items-center gap-2'
-          warningNotification.innerHTML = `
-            <i class="fa-solid fa-exclamation-triangle"></i>
-            <div>
-              <div class="font-medium">视频上传回调未完成</div>
-              <div class="text-sm opacity-90">视频已上传但处理未完成，请稍后刷新页面</div>
-            </div>
-          `
-          document.body.appendChild(warningNotification)
-          
-          // 5秒后移除通知
-          setTimeout(() => {
-            warningNotification.classList.add('animate-fade-out')
-            setTimeout(() => {
-              warningNotification.remove()
-            }, 500)
-          }, 5000)
-        }
+      // 保存报告ID（如果有）
+      if (uploadData.report_id) {
+        console.log(`[DEBUG] 获取到report_id: ${uploadData.report_id}`);
+        assessmentStore.setReportId(uploadData.report_id);
       } else {
-        console.warn('未获取到视频etag，无法启动状态轮询')
+        console.log('[DEBUG] 返回数据中没有report_id，稍后将从report列表获取');
       }
+      
+      // 明确设置上传回调状态
+      const hasCallback = uploadData.upload_callback_status || false;
+      console.log(`[DEBUG] 设置上传回调状态: ${hasCallback}`);
+      assessmentStore.setUploadCallbackComplete(hasCallback);
+      
+      // 明确设置评估状态
+      const isAssessmentComplete = uploadData.assessment_status || false;
+      console.log(`[DEBUG] 设置评估状态: ${isAssessmentComplete}`);
+      assessmentStore.setAssessmentComplete(isAssessmentComplete);
+      
+      // 手动保存状态到localStorage
+      console.log('[DEBUG] 主动调用saveVideoUploadState保存状态');
+      assessmentStore.saveVideoUploadState();
+      
+      // 验证localStorage中的状态
+      setTimeout(() => {
+        try {
+          const savedState = localStorage.getItem('video_upload_state');
+          if (savedState) {
+            const parsedState = JSON.parse(savedState);
+            console.log('[DEBUG] 验证localStorage中保存的状态:', parsedState);
+            console.log(`[DEBUG] localStorage状态验证: reportId=${parsedState.reportId}, 上传回调=${parsedState.uploadCallbackComplete}`);
+            
+            // 如果localStorage中的状态与期望的不符，尝试再次保存
+            if ((uploadData.report_id && parsedState.reportId !== uploadData.report_id) || 
+                parsedState.uploadCallbackComplete !== hasCallback) {
+              console.warn('[DEBUG] 警告: localStorage中的状态与预期不符，再次尝试保存');
+              assessmentStore.saveVideoUploadState();
+            }
+          } else {
+            console.error('[DEBUG] 错误: localStorage中未找到video_upload_state');
+            console.log('[DEBUG] 尝试再次保存状态');
+            assessmentStore.saveVideoUploadState();
+          }
+        } catch (err) {
+          console.error('[DEBUG] 读取localStorage状态失败:', err);
+        }
+      }, 200);
+      
+      // 根据上传回调状态决定是否启动轮询
+      if (uploadData.upload_callback_status === true) {
+        console.log('[DEBUG] 上传回调已完成，启动视频评估状态轮询');
+        // 启动主轮询
+        assessmentStore.startMasterPolling();
+      } else {
+        console.log('[DEBUG] 上传回调未完成，启动状态轮询');
+        // 启动状态轮询检查
+        assessmentStore.startStatusPolling();
+      }
+      
+      // 重置 UI 状态
+      isProcessing.value = false;
+      recordingComplete.value = true;
+      completeMessage.value = result.message || '视频上传成功，您可以查看结果';
       
       // 设置视频评估数据
       assessmentStore.setVideoAssessmentData({
         url: uploadData.url,
-        etag: etag,
+        reportId: uploadData.report_id,
         uploadTime: new Date().toISOString(),
         status: 'processing'
-      })
+      });
       
       // 显示上传成功通知
       const successNotification = document.createElement('div')
@@ -869,7 +888,8 @@ const uploadVideo = async () => {
       // 发送上传完成事件，以便关闭视频评估界面
       emit('recording-complete')
     } else {
-      throw new Error(result.message || '视频上传失败')
+      console.error('[DEBUG] 视频上传失败:', result.message);
+      throw new Error(result.message || '视频上传失败');
     }
   } catch (error) {
     console.error('视频上传失败:', error)
@@ -890,11 +910,9 @@ const uploadVideo = async () => {
       errorMessage.value = `视频上传失败: ${error.message}`;
     }
     
-    assessmentStore.setVideoProcessing(false);
+    isProcessing.value = false;
     // 使用适当的错误类型显示通知
     assessmentStore.showUploadFailureNotification(errorType);
-  } finally {
-    isProcessing.value = false;
   }
 }
 
@@ -996,60 +1014,81 @@ const retryUpload = async () => {
     const result = await response.json();
     
     if (result.success) {
-      // 更新状态
+      console.log('[DEBUG] 视频上传成功，返回数据:', result);
+      
+      // 获取上传数据
+      const uploadData = result.data;
+      
+      // 记录后端传来的状态
+      console.log(`[DEBUG] 后端返回的状态信息: 上传回调=${uploadData.upload_callback_status}, 评估=${uploadData.assessment_status}, 报告ID=${uploadData.report_id || 'none'}`);
+      
+      // 保存报告ID（如果有）
+      if (uploadData.report_id) {
+        console.log(`[DEBUG] 获取到report_id: ${uploadData.report_id}`);
+        assessmentStore.setReportId(uploadData.report_id);
+      } else {
+        console.log('[DEBUG] 返回数据中没有report_id，稍后将从report列表获取');
+      }
+      
+      // 明确设置上传回调状态
+      const hasCallback = uploadData.upload_callback_status || false;
+      console.log(`[DEBUG] 设置上传回调状态: ${hasCallback}`);
+      assessmentStore.setUploadCallbackComplete(hasCallback);
+      
+      // 明确设置评估状态
+      const isAssessmentComplete = uploadData.assessment_status || false;
+      console.log(`[DEBUG] 设置评估状态: ${isAssessmentComplete}`);
+      assessmentStore.setAssessmentComplete(isAssessmentComplete);
+      
+      // 手动保存状态到localStorage
+      console.log('[DEBUG] 主动调用saveVideoUploadState保存状态');
+      assessmentStore.saveVideoUploadState();
+      
+      // 验证localStorage中的状态
+      setTimeout(() => {
+        try {
+          const savedState = localStorage.getItem('video_upload_state');
+          if (savedState) {
+            const parsedState = JSON.parse(savedState);
+            console.log('[DEBUG] 验证localStorage中保存的状态:', parsedState);
+            console.log(`[DEBUG] localStorage状态验证: reportId=${parsedState.reportId}, 上传回调=${parsedState.uploadCallbackComplete}`);
+            
+            // 如果localStorage中的状态与期望的不符，尝试再次保存
+            if ((uploadData.report_id && parsedState.reportId !== uploadData.report_id) || 
+                parsedState.uploadCallbackComplete !== hasCallback) {
+              console.warn('[DEBUG] 警告: localStorage中的状态与预期不符，再次尝试保存');
+              assessmentStore.saveVideoUploadState();
+            }
+          } else {
+            console.error('[DEBUG] 错误: localStorage中未找到video_upload_state');
+            console.log('[DEBUG] 尝试再次保存状态');
+            assessmentStore.saveVideoUploadState();
+          }
+        } catch (err) {
+          console.error('[DEBUG] 读取localStorage状态失败:', err);
+        }
+      }, 200);
+      
+      // 根据上传回调状态决定是否启动轮询
+      if (uploadData.upload_callback_status === true) {
+        console.log('[DEBUG] 上传回调已完成，启动视频评估状态轮询');
+        // 启动主轮询
+        assessmentStore.startMasterPolling();
+      } else {
+        console.log('[DEBUG] 上传回调未完成，启动状态轮询');
+        // 启动状态轮询检查
+        assessmentStore.startStatusPolling();
+      }
+      
+      // 重置 UI 状态
+      isProcessing.value = false;
       recordingComplete.value = true;
       completeMessage.value = result.message || '视频上传成功，您可以查看结果';
-      
-      // 保存七牛云返回的URL等信息
-      const uploadData = result.data || {};
-      const etag = uploadData.etag;
-      
-      // 表示视频正在处理中
-      assessmentStore.setVideoProcessing(true);
-      
-      // 更新视频上传状态管理
-      if (etag) {
-        console.log(`设置并保存视频上传状态: etag=${etag}`);
-        // 设置视频上传etag值和处理状态
-        assessmentStore.setVideoUploadEtag(etag);
-        assessmentStore.setUploadCallbackComplete(uploadData.upload_callback_status || false);
-        assessmentStore.setAssessmentComplete(uploadData.assessment_status || false);
-        
-        // 保存状态到localStorage
-        assessmentStore.saveVideoUploadState();
-        
-        // 根据上传回调状态决定是否启动轮询
-        if (uploadData.upload_callback_status === true) {
-          console.log('上传回调已完成，启动视频评估状态轮询');
-          assessmentStore.startStatusPolling(etag);
-        } else {
-          console.warn('上传回调未完成，不启动轮询');
-          // 显示警告通知
-          const warningNotification = document.createElement('div');
-          warningNotification.className = 'fixed bottom-4 right-4 bg-yellow-500 text-white px-6 py-3 rounded-lg shadow-lg z-[1100] animate-fade-in flex items-center gap-2';
-          warningNotification.innerHTML = `
-            <i class="fa-solid fa-exclamation-triangle"></i>
-            <div>
-              <div class="font-medium">视频上传回调未完成</div>
-              <div class="text-sm opacity-90">视频已上传但处理未完成，请稍后刷新页面</div>
-            </div>
-          `;
-          document.body.appendChild(warningNotification);
-          
-          // 5秒后移除通知
-          setTimeout(() => {
-            warningNotification.classList.add('animate-fade-out');
-            setTimeout(() => {
-              warningNotification.remove();
-            }, 500);
-          }, 5000);
-        }
-      }
       
       // 设置视频评估数据
       assessmentStore.setVideoAssessmentData({
         url: uploadData.url,
-        etag: etag,
+        reportId: uploadData.report_id,
         uploadTime: new Date().toISOString(),
         status: 'processing'
       });
@@ -1083,8 +1122,6 @@ const retryUpload = async () => {
     console.error('视频重新上传失败:', error);
     hasError.value = true;
     errorMessage.value = `视频重新上传失败: ${error.message}`;
-    assessmentStore.setVideoProcessing(false);
-  } finally {
     isProcessing.value = false;
   }
 }

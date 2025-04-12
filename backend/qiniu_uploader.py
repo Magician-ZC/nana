@@ -132,14 +132,13 @@ class QiniuUploader:
     def __init__(self):
         self.temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_uploads")
         os.makedirs(self.temp_dir, exist_ok=True)
-        # Status tracking variables
-        self.upload_callback_status = {}  # Key: report_id
-        self.assessment_status = {}       # Key: report_id
-        self.report_downloaded_status = {}  # Key: report_id
-        # etag与report_id的映射关系
-        self.etag_to_report_id = {}       # Key: etag, Value: report_id
-        self.report_id_to_etag = {}       # Key: report_id, Value: etag
         
+        # 统一状态管理字典 - 键为report_id
+        self.report_status = {}  # {report_id: {"upload_callback": bool, "assessment": bool/int, "downloaded": bool}}
+        
+        # 记录正在轮询的任务
+        self._active_polling = {}
+    
     def get_upload_info(self, auth_token: str) -> Dict[str, Any]:
         """
         获取七牛云上传配置信息，使用加密方式请求
@@ -562,26 +561,7 @@ class QiniuUploader:
             is_success = result.get("code") == 200
             result["success"] = is_success
             
-            # 确保使用report_id而不是etag作为状态字典键
-            # 查找或创建report_id
-            report_id = self.etag_to_report_id.get(etag)
-            if not report_id:
-                # 创建临时ID
-                report_id = f"temp_{int(time.time())}"
-                self.etag_to_report_id[etag] = report_id
-                self.report_id_to_etag[report_id] = etag
-                logger.info(f"创建新的临时report_id: {report_id} -> etag={etag}")
-            
-            # 立即更新上传回调状态
-            if is_success:
-                self.upload_callback_status[report_id] = True
-                logger.info(f"更新上传回调状态为成功: report_id={report_id}")
-            else:
-                self.upload_callback_status[report_id] = False
-                logger.warning(f"上传回调失败: report_id={report_id}, 响应状态码: {result.get('code')}")
-                
-            # 添加report_id到结果中
-            result["report_id"] = report_id
+        
             return result
             
         except Exception as e:
@@ -646,57 +626,38 @@ class QiniuUploader:
             upload_result = self.upload_to_qiniu(local_path, upload_token, etag, domain)
             
             if upload_result["status"] != 1:
-                # 初始化状态 - 使用临时ID
-                temp_id = f"temp_{int(time.time())}"
-                self.upload_callback_status[temp_id] = False
-                self.assessment_status[temp_id] = False
-                self.report_downloaded_status[temp_id] = False
-                self.etag_to_report_id[etag] = temp_id
-                self.report_id_to_etag[temp_id] = etag
-                
+                # 上传失败，不设置状态
                 return {"success": False, "message": "上传到七牛云失败", "data": upload_result}
             
             # 6. 通知服务端上传结果
             notify_result = self.notify_upload_result(auth_token, etag, local_path, file_type)
             
-            # 获取通知回调返回的report_id或创建临时ID
-            report_id = notify_result.get("report_id")
-            if not report_id:
-                report_id = f"temp_{int(time.time())}"
-                # 设置映射关系
-                self.etag_to_report_id[etag] = report_id
-                self.report_id_to_etag[report_id] = etag
-                logger.info(f"创建临时ID作为report_id: {report_id}")
-            
             # 获取上传回调状态
             upload_callback_success = notify_result.get("success", False)
             
-            # 确保状态字典使用report_id作为键
-            if report_id not in self.upload_callback_status:
-                self.upload_callback_status[report_id] = upload_callback_success
+            # 初始化状态 - 但不设置report_id，因为此时还没有
+            # 前端需要在获取报告列表后设置report_id
+            initial_status = {
+                "upload_callback": upload_callback_success,
+                "assessment": False,
+                "downloaded": False,
+                "etag": etag  # 保存etag用于调试
+            }
             
-            # 初始化其他状态
-            if report_id not in self.assessment_status:
-                self.assessment_status[report_id] = False
-            
-            if report_id not in self.report_downloaded_status:
-                self.report_downloaded_status[report_id] = False
-            
-            logger.info(f"上传状态设置完成: report_id={report_id}, etag={etag}, 上传回调={upload_callback_success}, 评估状态={self.assessment_status[report_id]}")
+            logger.info(f"上传状态设置完成: 上传回调={upload_callback_success}, 评估状态=False, 报告下载状态=False")
             
             # 返回最终结果
             return {
                 "success": True,
                 "message": "视频上传成功",
                 "data": {
-                    "etag": etag,
-                    "report_id": report_id,
                     "url": f"{domain}{etag}",
                     "upload_result": upload_result,
                     "notify_result": notify_result,
                     "upload_callback_status": upload_callback_success,
-                    "assessment_status": self.assessment_status[report_id],
-                    "reportDownloaded": self.report_downloaded_status[report_id]
+                    "assessment_status": False,
+                    "reportDownloaded": False,
+                    "initial_status": initial_status
                 }
             }
             
@@ -710,25 +671,26 @@ class QiniuUploader:
                 "data": None
             }
             
-    def poll_report_status(self, auth_token: str, etag: str = None, report_id: str = None):
+    def poll_report_status(self, auth_token: str, report_id: str = None):
         """
         轮询检查报告状态，当status为1时下载报告
         
         Args:
             auth_token: 授权令牌
-            etag: 文件唯一标识 (可选)
-            report_id: 报告ID (可选，优先使用)
+            report_id: 报告ID
         """
         import time
         
-        # 创建轮询标识符
-        poll_key = report_id or etag
-        if not poll_key:
-            logger.error("无法创建轮询标识符，必须提供etag或report_id其中之一")
+        # 如果没有提供report_id，无法轮询
+        if not report_id:
+            logger.error("轮询需要提供report_id参数")
             return
+        
+        # 创建轮询标识符
+        poll_key = report_id
             
         # 检查是否已在轮询中
-        if hasattr(self, '_active_polling') and poll_key in getattr(self, '_active_polling', {}):
+        if poll_key in self._active_polling:
             poll_info = self._active_polling[poll_key]
             current_time = time.time()
             if current_time - poll_info['start_time'] < 180:  # 3分钟内的重复请求
@@ -738,22 +700,13 @@ class QiniuUploader:
                 # 超过3分钟的轮询认为可能已经失效，允许创建新轮询
                 logger.info(f"发现可能已失效的轮询任务: poll_key={poll_key}, thread={poll_info['thread_id']}, 开始于{int(current_time - poll_info['start_time'])}秒前")
         
-        # 初始化活跃轮询字典（如果不存在）
-        if not hasattr(self, '_active_polling'):
-            self._active_polling = {}
-            
         # 记录当前轮询信息
         self._active_polling[poll_key] = {
             'start_time': time.time(),
             'thread_id': threading.current_thread().ident
         }
         
-        logger.info(f"开始轮询检查报告状态 [thread_id={threading.current_thread().ident}]: poll_key={poll_key}")
-        
-        if report_id:
-            logger.info(f"轮询参数: report_id={report_id}")
-        if etag:
-            logger.info(f"轮询参数: etag={etag}")
+        logger.info(f"开始轮询检查报告状态 [thread_id={threading.current_thread().ident}]: report_id={report_id}")
             
         try:
             # 轮询设置
@@ -767,75 +720,31 @@ class QiniuUploader:
             
             poll_count = 0
             
-            # 确定使用的report_id
-            str_report_id = None
-            
-            # 如果提供了report_id，优先使用
-            if report_id:
-                str_report_id = str(report_id)
-                # 如果没有对应的etag，尝试获取
-                if str_report_id in self.report_id_to_etag:
-                    etag = self.report_id_to_etag[str_report_id]
-                else:
-                    # 没有etag信息，但有report_id，将report_id加入跟踪状态
-                    self.upload_callback_status[str_report_id] = True  # 假设上传已完成
-                    self.assessment_status[str_report_id] = False  # 假设评估未完成
-                    self.report_downloaded_status[str_report_id] = False  # 假设报告未下载
-            # 如果只提供了etag
-            elif etag:
-                # 检查初始状态 - 尝试获取report_id
-                str_report_id = self.etag_to_report_id.get(etag)
-                
-                # 如果没有report_id，尝试查找临时ID
-                if not str_report_id:
-                    for temp_id, mapped_etag in self.report_id_to_etag.items():
-                        if mapped_etag == etag and isinstance(temp_id, str) and temp_id.startswith("temp_"):
-                            str_report_id = temp_id
-                            logger.info(f"使用临时ID作为report_id: {str_report_id}")
-                            break
-                            
-                # 如果仍然没有report_id，创建一个临时ID
-                if not str_report_id:
-                    str_report_id = f"temp_{int(time.time())}"
-                    self.etag_to_report_id[etag] = str_report_id
-                    self.report_id_to_etag[str_report_id] = etag
-                    logger.info(f"创建临时ID作为report_id: {str_report_id}")
+            # 获取当前状态
+            if report_id in self.report_status:
+                upload_callback_status = self.report_status[report_id].get("upload_callback", False)
+                assessment_status = self.report_status[report_id].get("assessment", False)
+                report_downloaded = self.report_status[report_id].get("downloaded", False)
             else:
-                logger.error("必须提供etag或report_id其中之一")
-                # 清理轮询状态
-                if poll_key in self._active_polling:
-                    del self._active_polling[poll_key]
-                return
-            
-            # 获取上传回调状态和评估状态
-            upload_callback_status = self.upload_callback_status.get(str_report_id, False)
-            assessment_status = self.assessment_status.get(str_report_id, False)
-            report_downloaded = self.report_downloaded_status.get(str_report_id, False)
+                # 初始化状态
+                self.report_status[report_id] = {
+                    "upload_callback": True,
+                    "assessment": False,
+                    "downloaded": False
+                }
+                upload_callback_status = True
+                assessment_status = False
+                report_downloaded = False
             
             # 如果状态已完成，直接返回
             if assessment_status and report_downloaded:
-                logger.info(f"状态已完成，无需轮询: report_id={str_report_id}")
+                logger.info(f"状态已完成，无需轮询: report_id={report_id}")
                 # 清理轮询状态
                 if poll_key in self._active_polling:
                     del self._active_polling[poll_key]
                 return
             
-            # 确保至少有一个初始状态
-            if str_report_id not in self.upload_callback_status:
-                self.upload_callback_status[str_report_id] = True  # 假设上传已完成
-                upload_callback_status = True
-                logger.info(f"初始化上传回调状态: report_id={str_report_id}, status=True")
-                
-            if str_report_id not in self.assessment_status:
-                self.assessment_status[str_report_id] = False  # 假设评估未完成
-                assessment_status = False
-                logger.info(f"初始化评估状态: report_id={str_report_id}, status=False")
-                
-            if str_report_id not in self.report_downloaded_status:
-                self.report_downloaded_status[str_report_id] = False  # 假设报告未下载
-                logger.info(f"初始化报告下载状态: report_id={str_report_id}, status=False")
-            
-            logger.info(f"轮询初始状态: report_id={str_report_id}, upload_callback_status={upload_callback_status}, assessment_status={assessment_status}")
+            logger.info(f"轮询初始状态: report_id={report_id}, upload_callback_status={upload_callback_status}, assessment_status={assessment_status}")
             
             # 记录上次请求时间
             last_request_time = 0
@@ -854,7 +763,7 @@ class QiniuUploader:
                         logger.info(f"等待请求间隔: {wait_time:.1f}秒")
                         time.sleep(wait_time)
                     
-                    logger.info(f"轮询检查报告 [第{poll_count}次]: etag={etag}, report_id={str_report_id}")
+                    logger.info(f"轮询检查报告 [第{poll_count}次]: report_id={report_id}")
                     last_request_time = time.time()
                     
                     # 获取情绪评估列表
@@ -864,93 +773,54 @@ class QiniuUploader:
                         time.sleep(poll_interval)
                         continue
                     
-                    # 检查第一条报告状态
-                    if len(report_list) > 0:
-                        latest_report = report_list[0]
-                        logger.info(f"最新报告: {latest_report}")
-                        
-                        # 检查报告状态
-                        report_status = latest_report.get("status")
-                        latest_report_id = latest_report.get("id")
-                        
-                        # 将latest_report_id转换为字符串
-                        if latest_report_id is not None:
-                            latest_report_id_str = str(latest_report_id)
-                        else:
-                            latest_report_id_str = None
-                        
-                        # 如果获取到了真实的report_id，更新映射
-                        is_temp_id = isinstance(str_report_id, str) and str_report_id.startswith("temp_")
-                        
-                        if latest_report_id_str and latest_report_id_str != str_report_id and not is_temp_id:
-                            # 已有非临时ID，但与最新报告不同，可能是有多个报告
-                            logger.info(f"发现新的report_id: {latest_report_id_str}，当前使用: {str_report_id}")
-                        elif latest_report_id_str and (is_temp_id or latest_report_id_str != str_report_id):
-                            # 临时ID或不同ID，更新为真实ID
-                            logger.info(f"更新report_id: {str_report_id} -> {latest_report_id_str}")
-                            
-                            # 转移状态
-                            if str_report_id in self.upload_callback_status:
-                                self.upload_callback_status[latest_report_id_str] = self.upload_callback_status[str_report_id]
-                                del self.upload_callback_status[str_report_id]
-                            if str_report_id in self.assessment_status:
-                                self.assessment_status[latest_report_id_str] = self.assessment_status[str_report_id]
-                                del self.assessment_status[str_report_id]
-                            if str_report_id in self.report_downloaded_status:
-                                self.report_downloaded_status[latest_report_id_str] = self.report_downloaded_status[str_report_id]
-                                del self.report_downloaded_status[str_report_id]
-                            
-                            # 更新映射
-                            if str_report_id in self.report_id_to_etag:
-                                del self.report_id_to_etag[str_report_id]
-                            self.etag_to_report_id[etag] = latest_report_id_str
-                            self.report_id_to_etag[latest_report_id_str] = etag
-                            
-                            # 更新当前使用的report_id
-                            str_report_id = latest_report_id_str
-                            logger.info(f"成功更新report_id: {str_report_id}")
+                    # 检查报告列表中是否有匹配的report_id
+                    found_report = None
+                    for report in report_list:
+                        if str(report.get("id", "")) == str(report_id):
+                            found_report = report
+                            break
+                    
+                    # 如果找到了匹配的报告
+                    if found_report:
+                        report_status = found_report.get("status")
                         
                         # 如果状态为1(完成)，下载报告
-                        if report_status == 1 and latest_report_id:
-                            logger.info(f"发现已生成的报告: id={latest_report_id}")
+                        if report_status == 1:
+                            logger.info(f"发现已生成的报告: id={report_id}")
                             
                             # 下载报告
-                            report_path = self.download_emotion_report(auth_token, latest_report_id, save_dir)
+                            report_path = self.download_emotion_report(auth_token, report_id, save_dir)
                             
                             if report_path:
                                 logger.info(f"报告下载成功: {report_path}")
                                 
-                                # 下载成功后，状态应该已经被 download_emotion_report 方法更新为 True
-                                # 这里检查一下状态，如果没有被正确更新，则手动更新
-                                if str_report_id not in self.assessment_status or not self.assessment_status[str_report_id]:
-                                    self.assessment_status[str_report_id] = True
-                                    logger.info(f"手动更新评估状态: report_id={str_report_id}, assessment_status=True")
-                                    
-                                if str_report_id not in self.report_downloaded_status or not self.report_downloaded_status[str_report_id]:
-                                    self.report_downloaded_status[str_report_id] = True
-                                    logger.info(f"手动更新报告下载状态: report_id={str_report_id}, report_downloaded=True")
+                                # 更新状态
+                                self.report_status[report_id] = {
+                                    "upload_callback": True,
+                                    "assessment": True,  # 2表示报告已生成
+                                    "downloaded": True
+                                }
                                 
-                                # 解析报告内容
-                                parse_result = self.parse_emotion_report(report_path)
-                                if parse_result:
-                                    logger.info(f"报告解析成功: {report_path}")
-                                else:
-                                    logger.error(f"报告解析失败: {report_path}")
-                                    
+                                # 轮询成功完成，不再解析报告
+                                logger.info(f"报告下载完成: {report_path}")
+                                
                                 # 无论是否解析成功，都更新状态为完成
                                 assessment_status = True
                                 report_downloaded = True
                                 break
                             else:
-                                logger.error(f"报告下载失败: id={latest_report_id}")
+                                logger.error(f"报告下载失败: id={report_id}")
+                    else:
+                        logger.warning(f"在报告列表中未找到匹配的报告ID: {report_id}")
                     
                     # 更新轮询状态变量
-                    assessment_status = self.assessment_status.get(str_report_id, False)
-                    report_downloaded = self.report_downloaded_status.get(str_report_id, False)
+                    if report_id in self.report_status:
+                        assessment_status = self.report_status[report_id].get("assessment", False)
+                        report_downloaded = self.report_status[report_id].get("downloaded", False)
                     
                     # 如果状态已完成，退出循环
                     if assessment_status and report_downloaded:
-                        logger.info(f"评估状态已更新为完成，停止轮询: report_id={str_report_id}")
+                        logger.info(f"评估状态已更新为完成，停止轮询: report_id={report_id}")
                         break
                     
                     # 等待下一次轮询
@@ -965,24 +835,26 @@ class QiniuUploader:
                 
             # 检查轮询退出的原因
             if time.time() - polling_start_time >= max_polling_time:
-                logger.warning(f"轮询达到最大时间限制({max_polling_time/60:.1f}分钟)，停止轮询: report_id={str_report_id}")
+                logger.warning(f"轮询达到最大时间限制({max_polling_time/60:.1f}分钟)，停止轮询: report_id={report_id}")
             
-            logger.info(f"轮询结束: report_id={str_report_id}, assessment_status={assessment_status}, report_downloaded={report_downloaded}")
+            logger.info(f"轮询结束: report_id={report_id}, assessment_status={assessment_status}, report_downloaded={report_downloaded}")
             
             # 确保轮询结束时状态一致
-            if str_report_id:
+            if report_id:
                 # 确保所有状态都为True
-                self.upload_callback_status[str_report_id] = True
-                self.assessment_status[str_report_id] = True
-                self.report_downloaded_status[str_report_id] = True
-                logger.info(f"轮询结束，确保所有状态一致: report_id={str_report_id}, 所有状态=True")
+                self.report_status[report_id] = {
+                    "upload_callback": True,
+                    "assessment": True,
+                    "downloaded": True
+                }
+                logger.info(f"轮询结束，确保所有状态一致: report_id={report_id}, 所有状态=True")
         except Exception as e:
             logger.error(f"轮询过程中发生错误: {str(e)}")
             import traceback
             traceback.print_exc()
         finally:
             # 清理轮询状态
-            if hasattr(self, '_active_polling') and poll_key in self._active_polling:
+            if poll_key in self._active_polling:
                 del self._active_polling[poll_key]
             logger.info(f"轮询任务结束: poll_key={poll_key}")
     
@@ -1053,7 +925,7 @@ class QiniuUploader:
         
         Args:
             auth_token: 授权令牌
-            report_id: 报告ID (优先使用该ID，若为None则获取最新报告)
+            report_id: 报告ID
             save_dir: 保存目录
             
         Returns:
@@ -1075,7 +947,7 @@ class QiniuUploader:
                 logger.error("未获取到任何报告")
                 return None
             
-            # 如果指定了report_id，尝试找到对应的报告
+            # 尝试找到对应的报告
             target_report = None
             if report_id:
                 for report in report_list:
@@ -1085,7 +957,7 @@ class QiniuUploader:
                         logger.info(f"找到指定ID的报告: id={report_id}")
                         break
             
-            # 如果没有找到指定ID的报告或没有指定report_id，找最新的状态为1的报告
+            # 如果没有找到指定ID的报告，找最新的状态为1的报告
             if not target_report:
                 for report in report_list:
                     if report.get("status") == 1:
@@ -1161,60 +1033,17 @@ class QiniuUploader:
                     if delete_response.status_code == 200:
                         logger.info(f"远程报告删除成功: id={found_report_id}")
                         
-                        # 尝试从URL或其他标识中提取etag
-                        etag = None
-                        if "key" in target_report:
-                            etag = target_report.get("key")
-                        elif "etag" in target_report:
-                            etag = target_report.get("etag")
-                        elif report_url:
-                            # 尝试从URL中提取
-                            try:
-                                # 假设URL格式为domain/etag
-                                etag = report_url.split('/')[-1].split('?')[0]
-                            except:
-                                logger.warning("无法从URL中提取etag")
-                        
-                        # 将所有状态更新为已完成
-                        # 使用report_id作为状态字典的键
+                        # 更新状态
                         if found_report_id_str:
-                            # 确保使用字符串类型作为字典键
-                            self.upload_callback_status[found_report_id_str] = True
-                            self.assessment_status[found_report_id_str] = 2  # 设置为2表示报告已生成
-                            self.report_downloaded_status[found_report_id_str] = True
+                            self.report_status[found_report_id_str] = {
+                                "upload_callback": True,
+                                "assessment": 2,  # 2表示报告已生成
+                                "downloaded": True
+                            }
                             logger.info(f"已更新报告状态: report_id={found_report_id_str}, assessment_status=2, 报告下载状态=True")
-                            
-                            if etag:
-                                # 更新etag与report_id的映射关系
-                                self.etag_to_report_id[etag] = found_report_id_str
-                                self.report_id_to_etag[found_report_id_str] = etag
-                                logger.info(f"已更新etag与report_id的映射关系: etag={etag}, report_id={found_report_id_str}")
-                                
-                                # 检查是否有对应的临时ID，如果有则将状态转移到实际report_id
-                                for temp_id, mapped_etag in list(self.report_id_to_etag.items()):
-                                    if mapped_etag == etag and isinstance(temp_id, str) and temp_id.startswith("temp_"):
-                                        # 将临时ID的状态转移到report_id
-                                        logger.info(f"将临时ID的状态转移到实际report_id: temp_id={temp_id}, report_id={found_report_id_str}, etag={etag}")
-                                        
-                                        # 删除临时ID的映射和状态
-                                        del self.report_id_to_etag[temp_id]
-                                        if temp_id in self.upload_callback_status:
-                                            del self.upload_callback_status[temp_id]
-                                        if temp_id in self.assessment_status:
-                                            del self.assessment_status[temp_id]
-                                        if temp_id in self.report_downloaded_status:
-                                            del self.report_downloaded_status[temp_id]
-                                        
-                                        break
                     else:
                         logger.warning(f"远程报告删除失败: status_code={delete_response.status_code}")
                         
-                        # 尝试解析错误响应
-                        try:
-                            error_result = delete_response.json()
-                            logger.warning(f"删除报告错误响应: {error_result}")
-                        except:
-                            logger.warning(f"删除报告错误响应无法解析为JSON")
                 except Exception as delete_error:
                     logger.error(f"删除远程报告出错: {str(delete_error)}")
                     import traceback
@@ -1246,123 +1075,149 @@ class QiniuUploader:
             traceback.print_exc()
             return None
     
-    def parse_emotion_report(self, report_path: str) -> Dict[str, Any]:
-        """
-        解析情绪评估报告
-        
-        Args:
-            report_path: 报告文件路径
-            
-        Returns:
-            解析结果
-        """
-        try:
-            logger.info(f"开始解析情绪评估报告: {report_path}")
-            
-            # 创建JSON格式的报告结果
-            timestamp_str = os.path.basename(report_path).replace("assessment_", "").replace(".pdf", "")
-            
-            # 简单的结果结构，实际应根据PDF内容解析
-            result = {
-                "时间戳": timestamp_str,
-                "情绪状态分析": {
-                    "主要情绪": "平和",
-                    "情绪强度": "中等",
-                    "情绪稳定性": "稳定"
-                },
-                "面部表情分析": {
-                    "表情丰富度": "中等",
-                    "主要表情": "自然",
-                    "表情变化": "适度"
-                },
-                "视觉接触分析": {
-                    "眼神接触": "良好",
-                    "注意力集中度": "高",
-                    "视线变化": "自然"
-                },
-                "综合评估": {
-                    "总体心理状态": "健康",
-                    "建议": "保持当前状态，定期进行情绪自我评估"
-                }
-            }
-            
-            # 尝试使用PyPDF2或其他PDF解析库获取实际内容
-            try:
-                import PyPDF2
-                with open(report_path, 'rb') as file:
-                    reader = PyPDF2.PdfReader(file)
-                    text_content = ""
-                    for page in reader.pages:
-                        text_content += page.extract_text()
-                    
-                    logger.info(f"PDF内容提取成功，共{len(text_content)}字符")
-                    
-                    # 这里可以添加更复杂的内容解析逻辑
-                    # ...
-                    
-            except Exception as pdf_error:
-                logger.error(f"PDF解析失败: {str(pdf_error)}")
-            
-            # 保存解析结果
-            json_path = report_path.replace(".pdf", ".json")
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(result, f, ensure_ascii=False, indent=2)
-            
-            logger.info(f"情绪评估报告解析结果已保存: {json_path}")
-            return result
-            
-        except Exception as e:
-            logger.error(f"解析情绪评估报告失败: {str(e)}")
-            return {
-                "error": f"解析失败: {str(e)}",
-                "timestamp": time.strftime("%Y%m%d_%H%M%S")
-            }
-
-    def get_latest_assessment_status(self, report_id=None, etag=None):
+    def get_latest_assessment_status(self, report_id=None):
         """
         获取最新评估状态
         
         Args:
-            report_id: 报告ID (优先使用)
-            etag: 文件唯一标识 (如果没有提供report_id则使用)
+            report_id: 报告ID
             
         Returns:
             包含状态信息的字典
         """
-        str_report_id = None
-        
-        # 优先使用report_id
-        if report_id:
-            str_report_id = str(report_id)
-        # 如果没有report_id，尝试使用etag获取report_id
-        elif etag and etag in self.etag_to_report_id:
-            str_report_id = self.etag_to_report_id[etag]
-        
-        if not str_report_id:
+        if not report_id:
             return {
                 "success": False,
-                "message": "未找到对应的报告ID",
+                "message": "未提供报告ID",
                 "upload_callback_status": False,
                 "assessment_status": False,
                 "report_downloaded": False
             }
         
-        # 获取各项状态
-        upload_callback_status = self.upload_callback_status.get(str_report_id, False)
-        assessment_status = self.assessment_status.get(str_report_id, False)
-        report_downloaded = self.report_downloaded_status.get(str_report_id, False)
-        
-        # 当获取最新报告状态时，如果评估状态为2，自动将报告下载状态设为True
-        if assessment_status == 2:
-            self.report_downloaded_status[str_report_id] = True
-            report_downloaded = True
-            logger.info(f"检测到评估状态为2，自动更新报告下载状态为True: report_id={str_report_id}")
+        # 从状态字典中获取状态
+        if report_id in self.report_status:
+            status = self.report_status[report_id]
+            upload_callback_status = status.get("upload_callback", False)
+            assessment_status = status.get("assessment", False)
+            report_downloaded = status.get("downloaded", False)
+            
+            # 当获取最新报告状态时，如果评估状态为2，自动将报告下载状态设为True
+            if assessment_status == 2:
+                self.report_status[report_id]["downloaded"] = True
+                report_downloaded = True
+                logger.info(f"检测到评估状态为2，自动更新报告下载状态为True: report_id={report_id}")
+        else:
+            # 如果没有找到对应状态，初始化一个新状态
+            self.report_status[report_id] = {
+                "upload_callback": True,  # 默认假设上传回调已完成
+                "assessment": False,
+                "downloaded": False
+            }
+            upload_callback_status = True
+            assessment_status = False
+            report_downloaded = False
+            logger.info(f"为report_id={report_id}创建新状态")
         
         return {
             "success": True,
-            "report_id": str_report_id,
-            "etag": self.report_id_to_etag.get(str_report_id),
+            "report_id": report_id,
             "upload_callback_status": upload_callback_status,
             "assessment_status": assessment_status,
             "report_downloaded": report_downloaded
-        } 
+        }
+        
+    def check_and_download_report(self, auth_token: str):
+        """
+        检查最新报告并下载
+        
+        此方法用于video_status端点，不需要传入report_id
+        会自动获取报告列表，找到第一条数据作为report_id
+        
+        Args:
+            auth_token: 授权令牌
+            
+        Returns:
+            包含状态信息的字典
+        """
+        try:
+            # 获取报告列表
+            report_list = self.get_emotion_report_list(auth_token)
+            
+            if not report_list or len(report_list) == 0:
+                logger.warning("未获取到报告列表")
+                return {
+                    "success": False,
+                    "message": "未获取到报告列表",
+                    "data": None
+                }
+            
+            # 获取第一条报告数据
+            latest_report = report_list[0]
+            report_id = latest_report.get("id")
+            status = latest_report.get("status")
+            
+            if not report_id:
+                logger.warning("报告ID为空")
+                return {
+                    "success": False,
+                    "message": "报告ID为空",
+                    "data": None
+                }
+            
+            # 将report_id转为字符串
+            str_report_id = str(report_id)
+            
+            # 获取当前状态
+            if str_report_id in self.report_status:
+                current_status = self.report_status[str_report_id]
+            else:
+                # 初始化状态
+                current_status = {
+                    "upload_callback": True,
+                    "assessment": False if status != 1 else 2,
+                    "downloaded": False
+                }
+                self.report_status[str_report_id] = current_status
+            
+            # 如果报告状态为1(已完成)且未下载，则下载报告
+            if status == 1 and not current_status.get("downloaded", False):
+                logger.info(f"发现已生成的报告: id={str_report_id}")
+                
+                # 设置保存目录
+                save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "save", "assessments")
+                os.makedirs(save_dir, exist_ok=True)
+                
+                # 下载报告
+                report_path = self.download_emotion_report(auth_token, report_id, save_dir)
+                
+                if report_path:
+                    logger.info(f"报告下载成功: {report_path}")
+                    
+                    # 更新状态
+                    self.report_status[str_report_id] = {
+                        "upload_callback": True,
+                        "assessment": 2,
+                        "downloaded": True
+                    }
+                    
+                    logger.info(f"报告下载成功，已完成评估流程: {report_path}")
+            
+            # 返回最新状态
+            return {
+                "success": True,
+                "report_id": str_report_id,
+                "status": status,
+                "upload_callback_status": self.report_status[str_report_id].get("upload_callback", False),
+                "assessment_status": self.report_status[str_report_id].get("assessment", False),
+                "report_downloaded": self.report_status[str_report_id].get("downloaded", False)
+            }
+            
+        except Exception as e:
+            logger.error(f"检查报告状态出错: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "message": f"检查报告状态出错: {str(e)}",
+                "data": None
+            } 

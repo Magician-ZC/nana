@@ -10,7 +10,7 @@
       >
         <i class="fa-solid fa-heart-pulse text-rose-500 dark:text-rose-400"></i>
         <span>情绪评估</span>
-        <span v-if="assessmentStore.assessmentComplete" class="ml-1 px-1.5 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-xs rounded-full">
+        <span v-if="assessmentStore.assessmentComplete || (!assessmentStore.uploadCallbackComplete && localAssessmentComplete)" class="ml-1 px-1.5 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-xs rounded-full">
           <i class="fa-solid fa-check"></i>
         </span>
       </button>
@@ -71,7 +71,10 @@
         
         <!-- 内容区域 -->
         <div class="p-5">
-          <div v-if="assessmentCompleted" class="mb-5">
+          <!-- 评估完成且有结果时显示查看结果按钮 -->
+          <div v-if="assessmentCompleted || localAssessmentComplete || 
+                     (assessmentStore.assessmentComplete && assessmentStore.emotionalAssessmentData) || 
+                     (!assessmentStore.uploadCallbackComplete && localAssessmentComplete)" class="mb-5">
             <div class="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 px-4 py-3 rounded-lg mb-4 flex items-center gap-2">
               <i class="fa-solid fa-check-circle text-xl"></i>
               <div>
@@ -88,66 +91,98 @@
             </button>
           </div>
           
-          <div v-else class="mb-5 text-neutral-600 dark:text-neutral-300">
-            请上传检测报告文件进行情绪评估分析
-          </div>
-          
-          <div v-if="!assessmentCompleted" class="p-4 bg-neutral-50 dark:bg-neutral-900/50 rounded-lg border border-neutral-200 dark:border-neutral-700 mb-4">
-            <div class="text-xs text-neutral-500 dark:text-neutral-400 mb-3 flex items-center gap-1.5">
-              <i class="fa-solid fa-circle-info"></i>
-              支持格式：PDF、图片(PNG/JPG)、TXT文本、Word文档
-            </div>
-            
-            <div class="mb-4">
-              <label for="file-upload" class="flex items-center justify-center w-full h-20 border-2 border-dashed border-neutral-300 dark:border-neutral-600 rounded-lg cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-700/30 transition-all">
-                <div class="flex flex-col items-center">
-                  <i class="fa-solid fa-file-arrow-up text-2xl text-neutral-400 dark:text-neutral-500 mb-2"></i>
-                  <span class="text-sm text-neutral-500 dark:text-neutral-400">{{ selectedFile ? selectedFile.name : '点击或拖拽文件到此处' }}</span>
+          <!-- 视频已上传但评估未完成时显示处理中状态 -->
+          <div v-else-if="assessmentStore.uploadCallbackComplete && !assessmentStore.assessmentComplete" class="mb-5">
+            <div class="flex flex-col items-center justify-center py-8">
+              <div class="w-16 h-16 mb-6 relative">
+                <div class="absolute inset-0 rounded-full border-4 border-blue-100 dark:border-blue-900/30"></div>
+                <div class="absolute inset-0 rounded-full border-4 border-blue-500 dark:border-blue-400 border-t-transparent animate-spin"></div>
+              </div>
+              <div class="text-xl font-semibold text-neutral-800 dark:text-neutral-200 mb-2">视频评估处理中</div>
+              <div class="text-neutral-600 dark:text-neutral-400 text-center max-w-sm">
+                <p class="mb-3">我们正在分析您的视频数据，这可能需要几分钟时间。</p>
+                <p>分析完成后，您可以查看详细的评估结果。</p>
+              </div>
+              <div class="mt-6 flex flex-col items-center gap-2 text-sm text-neutral-500 dark:text-neutral-500">
+                <div class="flex items-center gap-2">
+                  <i class="fa-solid fa-circle-check text-green-500"></i>
+                  <span>视频上传完成</span>
                 </div>
-                <input 
-                  id="file-upload" 
-                  type="file" 
-                  ref="fileInput" 
-                  accept=".pdf,.png,.jpg,.jpeg,.txt,.doc,.docx" 
-                  @change="handleFileUpload" 
-                  class="hidden"
-                />
-              </label>
-            </div>
-            
-            <div v-if="uploadStatus" class="mb-3 py-2 px-3 rounded-md text-sm" :class="[
-              uploadStatus.includes('成功') ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' : 
-              'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300'
-            ]">
-              <div class="flex items-center gap-2">
-                <i :class="[
-                  uploadStatus.includes('成功') ? 'fa-solid fa-circle-check' : 
-                  (isUploading ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-circle-exclamation')
-                ]"></i>
-                <span>{{ uploadStatus }}</span>
+                <div class="flex items-center gap-2">
+                  <i class="fa-solid fa-spinner fa-spin text-blue-500"></i>
+                  <span>情绪数据分析中</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <i class="fa-regular fa-circle text-neutral-400"></i>
+                  <span>生成评估报告</span>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-        
-        <!-- 底部按钮栏 -->
-        <div v-if="!assessmentCompleted" class="flex items-center justify-end p-5 border-t border-neutral-200 dark:border-neutral-700 gap-3">
-          <button 
-            @click="parseFile" 
-            :disabled="!selectedFile || isUploading" 
-            class="px-4 py-2 rounded-lg bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-800/30 transition-all duration-200 font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-          >
-            <i class="fa-solid fa-file-lines"></i>
-            查看解析文本
-          </button>
-          <button 
-            @click="uploadFile" 
-            :disabled="!selectedFile || isUploading" 
-            class="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 dark:bg-primary-700 dark:hover:bg-primary-600 text-white transition-all duration-200 font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-          >
-            <i class="fa-solid fa-upload"></i>
-            {{ isUploading ? '上传中...' : '上传文件' }}
-          </button>
+          
+          <!-- 未上传视频或未完成评估时显示上传界面 -->
+          <div v-else>
+            <div class="mb-5 text-neutral-600 dark:text-neutral-300">
+              请上传检测报告文件进行情绪评估分析
+            </div>
+            
+            <div class="p-4 bg-neutral-50 dark:bg-neutral-900/50 rounded-lg border border-neutral-200 dark:border-neutral-700 mb-4">
+              <div class="text-xs text-neutral-500 dark:text-neutral-400 mb-3 flex items-center gap-1.5">
+                <i class="fa-solid fa-circle-info"></i>
+                支持格式：PDF、图片(PNG/JPG)、TXT文本、Word文档
+              </div>
+              
+              <div class="mb-4">
+                <label for="file-upload" class="flex items-center justify-center w-full h-20 border-2 border-dashed border-neutral-300 dark:border-neutral-600 rounded-lg cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-700/30 transition-all">
+                  <div class="flex flex-col items-center">
+                    <i class="fa-solid fa-file-arrow-up text-2xl text-neutral-400 dark:text-neutral-500 mb-2"></i>
+                    <span class="text-sm text-neutral-500 dark:text-neutral-400">{{ selectedFile ? selectedFile.name : '点击或拖拽文件到此处' }}</span>
+                  </div>
+                  <input 
+                    id="file-upload" 
+                    type="file" 
+                    ref="fileInput" 
+                    accept=".pdf,.png,.jpg,.jpeg,.txt,.doc,.docx" 
+                    @change="handleFileUpload" 
+                    class="hidden"
+                  />
+                </label>
+              </div>
+              
+              <div v-if="uploadStatus" class="mb-3 py-2 px-3 rounded-md text-sm" :class="[
+                uploadStatus.includes('成功') ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' : 
+                'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300'
+              ]">
+                <div class="flex items-center gap-2">
+                  <i :class="[
+                    uploadStatus.includes('成功') ? 'fa-solid fa-circle-check' : 
+                    (isUploading ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-circle-exclamation')
+                  ]"></i>
+                  <span>{{ uploadStatus }}</span>
+                </div>
+              </div>
+            </div>
+            
+            <!-- 底部按钮栏 -->
+            <div class="flex items-center justify-end p-5 border-t border-neutral-200 dark:border-neutral-700 gap-3">
+              <button 
+                @click="parseFile" 
+                :disabled="!selectedFile || isUploading" 
+                class="px-4 py-2 rounded-lg bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-800/30 transition-all duration-200 font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                <i class="fa-solid fa-file-lines"></i>
+                查看解析文本
+              </button>
+              <button 
+                @click="uploadFile" 
+                :disabled="!selectedFile || isUploading" 
+                class="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 dark:bg-primary-700 dark:hover:bg-primary-600 text-white transition-all duration-200 font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                <i class="fa-solid fa-upload"></i>
+                {{ isUploading ? '上传中...' : '上传文件' }}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -197,7 +232,7 @@
         
         <!-- 内容区域 -->
         <div class="flex-1 overflow-auto p-6">
-          <div v-if="analysisData" class="space-y-8">
+          <div v-if="analysisData || assessmentStore.emotionalAssessmentData" class="space-y-8">
             
             <!-- 核心状态分析 -->
             <div class="bg-indigo-50 dark:bg-indigo-900/20 rounded-lg p-5 border border-indigo-100 dark:border-indigo-800/30">
@@ -209,17 +244,29 @@
               <div class="space-y-3">
                 <div class="flex flex-col">
                   <span class="text-sm text-indigo-600 dark:text-indigo-400 font-medium">总体状态</span>
-                  <span class="text-neutral-700 dark:text-neutral-300">{{ analysisData['核心状态分析']['总体状态'] }}</span>
+                  <span class="text-neutral-700 dark:text-neutral-300">{{ 
+                    (analysisData && analysisData['核心状态分析'] && analysisData['核心状态分析']['总体状态']) || 
+                    (assessmentStore.emotionalAssessmentData && assessmentStore.emotionalAssessmentData['核心状态分析'] && assessmentStore.emotionalAssessmentData['核心状态分析']['总体状态']) || 
+                    '无数据' 
+                  }}</span>
                 </div>
                 
                 <div class="flex flex-col">
                   <span class="text-sm text-indigo-600 dark:text-indigo-400 font-medium">情绪稳定性</span>
-                  <span class="text-neutral-700 dark:text-neutral-300">{{ analysisData['核心状态分析']['情绪稳定性'] }}</span>
+                  <span class="text-neutral-700 dark:text-neutral-300">{{ 
+                    (analysisData && analysisData['核心状态分析'] && analysisData['核心状态分析']['情绪稳定性']) || 
+                    (assessmentStore.emotionalAssessmentData && assessmentStore.emotionalAssessmentData['核心状态分析'] && assessmentStore.emotionalAssessmentData['核心状态分析']['情绪稳定性']) || 
+                    '无数据' 
+                  }}</span>
                 </div>
                 
                 <div class="flex flex-col">
                   <span class="text-sm text-indigo-600 dark:text-indigo-400 font-medium">能量水平</span>
-                  <span class="text-neutral-700 dark:text-neutral-300">{{ analysisData['核心状态分析']['能量水平'] }}</span>
+                  <span class="text-neutral-700 dark:text-neutral-300">{{ 
+                    (analysisData && analysisData['核心状态分析'] && analysisData['核心状态分析']['能量水平']) || 
+                    (assessmentStore.emotionalAssessmentData && assessmentStore.emotionalAssessmentData['核心状态分析'] && assessmentStore.emotionalAssessmentData['核心状态分析']['能量水平']) || 
+                    '无数据' 
+                  }}</span>
                 </div>
               </div>
             </div>
@@ -232,7 +279,21 @@
               </h4>
               
               <div class="space-y-4">
-                <div v-for="(indicator, index) in analysisData['重点指标异常']" :key="index" class="p-3 bg-white dark:bg-neutral-800/50 rounded-lg shadow-sm">
+                <!-- 使用本地analysisData -->
+                <div v-if="analysisData && analysisData['重点指标异常']" v-for="(indicator, index) in analysisData['重点指标异常']" :key="'local-'+index" class="p-3 bg-white dark:bg-neutral-800/50 rounded-lg shadow-sm">
+                  <div class="flex justify-between items-start">
+                    <div class="font-medium text-neutral-800 dark:text-neutral-200">{{ indicator['指标名称'] }}</div>
+                    <div class="px-2 py-0.5 bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 text-sm rounded">
+                      {{ indicator['当前值'] }} / {{ indicator['正常范围'] }}
+                    </div>
+                  </div>
+                  <div class="mt-2 text-sm text-neutral-600 dark:text-neutral-400">{{ indicator['影响分析'] }}</div>
+                </div>
+
+                <!-- 使用store中的数据 -->
+                <div v-else-if="assessmentStore.emotionalAssessmentData && assessmentStore.emotionalAssessmentData['重点指标异常']" 
+                     v-for="(indicator, index) in assessmentStore.emotionalAssessmentData['重点指标异常']" 
+                     :key="'store-'+index" class="p-3 bg-white dark:bg-neutral-800/50 rounded-lg shadow-sm">
                   <div class="flex justify-between items-start">
                     <div class="font-medium text-neutral-800 dark:text-neutral-200">{{ indicator['指标名称'] }}</div>
                     <div class="px-2 py-0.5 bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 text-sm rounded">
@@ -242,7 +303,10 @@
                   <div class="mt-2 text-sm text-neutral-600 dark:text-neutral-400">{{ indicator['影响分析'] }}</div>
                 </div>
                 
-                <div v-if="!analysisData['重点指标异常'] || analysisData['重点指标异常'].length === 0" class="text-center text-neutral-500 dark:text-neutral-400 py-3">
+                <div v-if="(!analysisData || !analysisData['重点指标异常'] || analysisData['重点指标异常'].length === 0) && 
+                          (!assessmentStore.emotionalAssessmentData || !assessmentStore.emotionalAssessmentData['重点指标异常'] || 
+                           assessmentStore.emotionalAssessmentData['重点指标异常'].length === 0)" 
+                     class="text-center text-neutral-500 dark:text-neutral-400 py-3">
                   未发现异常指标
                 </div>
               </div>
@@ -256,19 +320,40 @@
               </h4>
               
               <div class="space-y-5">
-                <div v-for="(suggestions, indicator) in analysisData['针对性干预建议']" :key="indicator" class="space-y-3">
-                  <div class="font-medium text-green-700 dark:text-green-400 border-b border-green-200 dark:border-green-800/50 pb-1">针对{{ indicator }}</div>
-                  
-                  <div v-for="(suggestion, suggIndex) in suggestions" :key="suggIndex" class="p-3 bg-white dark:bg-neutral-800/50 rounded-lg shadow-sm">
-                    <div class="font-medium text-neutral-800 dark:text-neutral-200">{{ suggestion['建议标题'] }}</div>
-                    <div class="mt-1 text-sm text-neutral-600 dark:text-neutral-400">{{ suggestion['具体方法'] }}</div>
-                    <div v-if="suggestion['预期效果']" class="mt-2 text-xs bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 px-2 py-1 rounded inline-block">
-                      预期效果: {{ suggestion['预期效果'] }}
+                <!-- 使用本地analysisData -->
+                <template v-if="analysisData && analysisData['针对性干预建议']">
+                  <div v-for="(suggestions, indicator) in analysisData['针对性干预建议']" :key="'local-'+indicator" class="space-y-3">
+                    <div class="font-medium text-green-700 dark:text-green-400 border-b border-green-200 dark:border-green-800/50 pb-1">针对{{ indicator }}</div>
+                    
+                    <div v-for="(suggestion, suggIndex) in suggestions" :key="'local-'+suggIndex" class="p-3 bg-white dark:bg-neutral-800/50 rounded-lg shadow-sm">
+                      <div class="font-medium text-neutral-800 dark:text-neutral-200">{{ suggestion['建议标题'] }}</div>
+                      <div class="mt-1 text-sm text-neutral-600 dark:text-neutral-400">{{ suggestion['具体方法'] }}</div>
+                      <div v-if="suggestion['预期效果']" class="mt-2 text-xs bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 px-2 py-1 rounded inline-block">
+                        预期效果: {{ suggestion['预期效果'] }}
+                      </div>
                     </div>
                   </div>
-                </div>
+                </template>
                 
-                <div v-if="!analysisData['针对性干预建议'] || Object.keys(analysisData['针对性干预建议']).length === 0" class="text-center text-neutral-500 dark:text-neutral-400 py-3">
+                <!-- 使用store中的数据 -->
+                <template v-else-if="assessmentStore.emotionalAssessmentData && assessmentStore.emotionalAssessmentData['针对性干预建议']">
+                  <div v-for="(suggestions, indicator) in assessmentStore.emotionalAssessmentData['针对性干预建议']" :key="'store-'+indicator" class="space-y-3">
+                    <div class="font-medium text-green-700 dark:text-green-400 border-b border-green-200 dark:border-green-800/50 pb-1">针对{{ indicator }}</div>
+                    
+                    <div v-for="(suggestion, suggIndex) in suggestions" :key="'store-'+suggIndex" class="p-3 bg-white dark:bg-neutral-800/50 rounded-lg shadow-sm">
+                      <div class="font-medium text-neutral-800 dark:text-neutral-200">{{ suggestion['建议标题'] }}</div>
+                      <div class="mt-1 text-sm text-neutral-600 dark:text-neutral-400">{{ suggestion['具体方法'] }}</div>
+                      <div v-if="suggestion['预期效果']" class="mt-2 text-xs bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 px-2 py-1 rounded inline-block">
+                        预期效果: {{ suggestion['预期效果'] }}
+                      </div>
+                    </div>
+                  </div>
+                </template>
+                
+                <div v-if="(!analysisData || !analysisData['针对性干预建议'] || Object.keys(analysisData['针对性干预建议']).length === 0) && 
+                          (!assessmentStore.emotionalAssessmentData || !assessmentStore.emotionalAssessmentData['针对性干预建议'] || 
+                           Object.keys(assessmentStore.emotionalAssessmentData['针对性干预建议'] || {}).length === 0)" 
+                     class="text-center text-neutral-500 dark:text-neutral-400 py-3">
                   未提供针对性建议
                 </div>
               </div>
@@ -396,7 +481,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, onMounted, onUnmounted, watch } from 'vue';
 import VideoRecorder from './VideoRecorder.vue'
 import { useAssessmentStore } from '../stores/assessment'
 import { useUserStore } from '../stores/user'
@@ -418,16 +503,44 @@ const analysisData = ref(null);
 const latestAssessmentFile = ref(null);
 const assessmentStore = useAssessmentStore();
 const userStore = useUserStore();
+const localAssessmentComplete = ref(localStorage.getItem('localAssessmentComplete') === 'true');
 
 // 定义状态检查间隔变量
 let statusCheckInterval = null;
 
 // 打开情绪评估弹窗
 const openEmotionalAssessment = () => {
+  // 打印当前处理状态，帮助调试
+  console.log('[DEBUG] 情绪评估按钮点击', {
+    processingAssessment: processingAssessment.value,
+    assessmentCompleted: assessmentCompleted.value,
+    emotionalProcessing: assessmentStore.emotionalProcessing?.value,
+    emotionalAssessmentComplete: assessmentStore.emotionalAssessmentComplete?.value
+  });
+  
   // 如果正在处理中，则不允许操作
   if (processingAssessment.value) {
-    return;
+    console.log('[DEBUG] 情绪评估正在处理中，忽略点击');
+    
+    // 检查是否处于卡死状态 - 如果评估已完成但处理状态没更新
+    if (assessmentStore.emotionalAssessmentComplete?.value) {
+      console.log('[DEBUG] 检测到状态不一致: 评估已完成但处理状态仍为true，强制重置');
+      processingAssessment.value = false;
+      // 继续执行以下代码打开弹窗
+    } else {
+      return;
+    }
   }
+
+  console.log('[DEBUG] 打开情绪评估弹窗');
+  console.log('[DEBUG] 当前状态:', {
+    assessmentCompleted: assessmentCompleted.value,
+    emotionalAssessmentComplete: assessmentStore.emotionalAssessmentComplete?.value,
+    emotionalAssessmentData: assessmentStore.emotionalAssessmentData,
+    latestAssessmentFile: latestAssessmentFile.value,
+    videoAssessmentComplete: assessmentStore.videoAssessmentComplete?.value,
+    videoAssessmentData: assessmentStore.videoAssessmentData
+  });
 
   showEmotionalModal.value = true;
   // 重置状态
@@ -443,64 +556,53 @@ const openEmotionalAssessment = () => {
 
 // 检查是否有最新的评估文件和处理状态
 const checkLatestAssessment = async () => {
+  console.log('[DEBUG] 检查最新评估状态')
+  
   try {
-    // 首先检查是否有评估结果
-    const response = await fetch('http://localhost:8666/api/latest_assessment');
-    const data = await response.json();
+    const success = await assessmentStore.loadLatestEmotionalAssessment()
     
-    if (data.success && data.has_assessment) {
-      assessmentCompleted.value = true;
-      latestAssessmentFile.value = data.file_path;
-      // 如果评估已完成，则不再处于处理中状态
-      processingAssessment.value = false;
-    } else {
-      assessmentCompleted.value = false;
-      latestAssessmentFile.value = null;
+    if (success) {
+      console.log('[DEBUG] 成功加载评估数据')
+      assessmentCompleted.value = true
+      processingAssessment.value = false
       
-      // 如果没有评估结果，检查是否有正在处理的评估
-      try {
-        const statusResponse = await fetch('http://localhost:8666/api/assessment_status');
-        const statusData = await statusResponse.json();
-        
-        // 根据后端返回状态设置处理中状态
-        if (statusData.success && statusData.processing_assessment) {
-          processingAssessment.value = true;
-        } else {
-          processingAssessment.value = false;
-        }
-      } catch (statusError) {
-        console.error('获取评估处理状态失败:', statusError);
-        processingAssessment.value = false;
+      // 如果需要，加载评估结果
+      if (!analysisData.value) {
+        await loadAssessmentResults()
       }
+    } else {
+      console.log('[DEBUG] 没有找到有效的评估数据')
+      assessmentCompleted.value = false
+      processingAssessment.value = false
+      analysisData.value = null
     }
   } catch (error) {
-    console.error('获取最新评估状态失败:', error);
-    assessmentCompleted.value = false;
-    processingAssessment.value = false;
+    console.error('[DEBUG] 检查评估状态时发生错误:', error)
+    assessmentCompleted.value = false
+    processingAssessment.value = false
+    analysisData.value = null
   }
-};
+}
 
-// 查看评估结果
-const viewAssessmentResults = async () => {
-  showAnalysisModal.value = true;
-  
-  // 清空之前的数据
-  analysisData.value = null;
+const loadAssessmentResults = async () => {
+  console.log('[DEBUG] 加载评估结果详情')
   
   try {
-    // 获取最新的评估结果
-    const response = await fetch('http://localhost:8666/api/assessment_results');
-    const data = await response.json();
+    const response = await fetch('http://localhost:8666/api/assessment_results')
+    const data = await response.json()
     
     if (data.success) {
-      analysisData.value = data.results;
+      analysisData.value = data.results
+      console.log('[DEBUG] 成功加载评估结果详情')
     } else {
-      console.error('获取评估结果失败:', data.message);
+      console.log('[DEBUG] 加载评估结果详情失败')
+      analysisData.value = null
     }
   } catch (error) {
-    console.error('获取评估结果失败:', error);
+    console.error('[DEBUG] 加载评估结果详情时发生错误:', error)
+    analysisData.value = null
   }
-};
+}
 
 // 打开心理评估
 const openPsychologicalAssessment = async () => {
@@ -584,8 +686,15 @@ const uploadFile = async () => {
       fileInput.value.value = '';
       selectedFile.value = null;
       
+      // 重置本地评估状态
+      localAssessmentComplete.value = false;
+      localStorage.setItem('localAssessmentComplete', 'false');
+      
       // 设置为处理中状态
       processingAssessment.value = true;
+      
+      // 开始轮询检查评估状态
+      startLocalAssessmentCheck();
       
       // 关闭弹窗
       setTimeout(() => {
@@ -593,27 +702,11 @@ const uploadFile = async () => {
         uploadStatus.value = '';
         
         // 显示后台处理通知
-        const processingNotification = document.createElement('div');
-        processingNotification.className = 'fixed bottom-4 right-4 bg-blue-500 text-white px-6 py-3 rounded-lg shadow-lg z-[1100] animate-fade-in flex items-center gap-2';
-        processingNotification.innerHTML = `
-          <i class="fa-solid fa-spinner fa-spin"></i>
-          <div>
-            <div class="font-medium">情绪评估分析中</div>
-            <div class="text-sm opacity-90">分析完成后可在侧边栏查看结果</div>
-          </div>
-        `;
-        document.body.appendChild(processingNotification);
-        
-        // 8秒后移除通知
-        setTimeout(() => {
-          processingNotification.classList.add('animate-fade-out');
-          setTimeout(() => {
-            processingNotification.remove();
-          }, 500);
-        }, 8000);
-        
-        // 开始定期检查评估状态
-        startAssessmentStatusCheck();
+        showNotification({
+          type: 'info',
+          title: '情绪评估分析中',
+          message: '分析完成后可在侧边栏查看结果'
+        });
       }, 1500);
     } else {
       uploadStatus.value = result.message || '上传失败，请重试';
@@ -624,6 +717,49 @@ const uploadFile = async () => {
   } finally {
     isUploading.value = false;
   }
+};
+
+// 添加本地评估状态检查函数
+let localAssessmentCheckInterval = null;
+
+const startLocalAssessmentCheck = () => {
+  // 清除可能存在的旧计时器
+  if (localAssessmentCheckInterval) {
+    clearInterval(localAssessmentCheckInterval);
+  }
+  
+  // 设置检查间隔为3秒
+  localAssessmentCheckInterval = setInterval(async () => {
+    try {
+      const response = await fetch('http://localhost:8666/api/assessment_results');
+      const data = await response.json();
+      
+      if (data.success && data.results) {
+        // 评估完成，设置状态
+        localAssessmentComplete.value = true;
+        localStorage.setItem('localAssessmentComplete', 'true');
+        
+        // 保存评估数据
+        analysisData.value = data.results;
+        
+        // 停止检查
+        clearInterval(localAssessmentCheckInterval);
+        localAssessmentCheckInterval = null;
+        
+        // 更新处理状态
+        processingAssessment.value = false;
+        
+        // 显示完成通知
+        showNotification({
+          type: 'success',
+          title: '情绪评估完成',
+          message: '可以查看评估结果了'
+        });
+      }
+    } catch (error) {
+      console.error('[DEBUG] 检查评估状态失败:', error);
+    }
+  }, 3000);
 };
 
 // 解析文件并查看原始文本
@@ -662,117 +798,80 @@ const parseFile = async () => {
   }
 };
 
-// 定期检查评估状态的函数 - 使用store中的方法
-const checkAssessmentStatus = () => {
-  assessmentStore.loadAssessmentStatus().then(() => {
-    // 从store中更新本地状态
-    psychAssessmentReady.value = assessmentStore.psychologicalAssessmentReady.value;
-    processingAssessment.value = assessmentStore.psychologicalProcessing.value;
-  }).catch(error => {
-    console.error('通过store获取评估状态失败:', error);
-  });
-};
-
-// 定期检查情绪评估状态
-const startAssessmentStatusCheck = () => {
-  // 每10秒检查一次状态，直到评估完成
-  const checkForCompletion = () => {
-    assessmentStore.loadLatestEmotionalAssessment().then(() => {
-      // 从store中获取完成状态
-      const isComplete = assessmentStore.emotionalAssessmentComplete.value;
-      
-      if (isComplete) {
-        // 更新本地状态
-        assessmentCompleted.value = true;
-        processingAssessment.value = false;
-        
-        // 如果有评估数据，获取文件名
-        if (assessmentStore.emotionalAssessmentData.value && 
-            assessmentStore.emotionalAssessmentData.value.file_name) {
-          latestAssessmentFile.value = assessmentStore.emotionalAssessmentData.value.file_name;
-        }
-        
-        // 显示完成通知
-        const completionNotification = document.createElement('div');
-        completionNotification.className = 'fixed bottom-4 right-4 bg-green-500 text-white px-6 py-3 rounded-lg shadow-lg z-[1100] animate-fade-in flex items-center gap-2';
-        completionNotification.innerHTML = `
-          <i class="fa-solid fa-check-circle"></i>
-          <div>
-            <div class="font-medium">情绪评估已完成</div>
-            <div class="text-sm opacity-90">点击情绪评估按钮查看结果</div>
-          </div>
-        `;
-        document.body.appendChild(completionNotification);
-        
-        // 5秒后移除通知
-        setTimeout(() => {
-          completionNotification.classList.add('animate-fade-out');
-          setTimeout(() => {
-            completionNotification.remove();
-          }, 500);
-        }, 5000);
-        
-        // 停止检查
-        if (statusCheckInterval) {
-          clearInterval(statusCheckInterval);
-          statusCheckInterval = null;
-        }
-      }
-    }).catch(error => {
-      console.error('检查情绪评估状态失败:', error);
-    });
-  };
+// 启动状态检查 - 改为使用主轮询机制
+function startAssessmentStatusCheck() {
+  console.log('启动评估状态检查')
   
-  // 清除之前的检查间隔（如果有）
-  if (statusCheckInterval) {
-    clearInterval(statusCheckInterval);
+  // 必须有有效的etag才启动检查
+  if (!videoUploadEtag.value) {
+    console.warn('无法启动状态检查: 缺少有效的视频上传etag')
+    return
   }
   
-  // 立即检查一次
-  checkForCompletion();
-  
-  // 设置定时检查
-  statusCheckInterval = setInterval(checkForCompletion, 10000); // 每10秒检查一次
-};
+  // 启动主轮询机制而不是单独的状态检查
+  assessmentStore.startMasterPolling()
+}
 
-// 设置定时检查
-let checkInterval = null;
-
-onMounted(async () => {
-  try {
-    // 加载心理评估状态
-    await assessmentStore.initialize()
-    // 检查心理评估是否就绪
-    psychAssessmentReady.value = assessmentStore.psychologicalAssessmentReady
-    
-    // 加载情绪评估状态
-    await assessmentStore.loadAssessmentStatus()
-    assessmentCompleted.value = assessmentStore.emotionalAssessmentComplete
-    
-    // 加载视频上传状态（通过localStorage）
-    assessmentStore.loadVideoUploadState()
-    
-    // 如果视频上传回调成功但评估未完成，启动轮询
-    if (assessmentStore.videoUploadEtag && 
-        assessmentStore.uploadCallbackComplete && 
-        !assessmentStore.assessmentComplete) {
-      assessmentStore.startStatusPolling(assessmentStore.videoUploadEtag)
-    }
-  } catch (e) {
-    console.error('初始化评估状态失败:', e);
-  }
-});
-
+// 在组件销毁时清理所有轮询
 onUnmounted(() => {
-  // 清理定时器
-  if (checkInterval) {
-    clearInterval(checkInterval);
+  // 停止所有轮询和检查
+  assessmentStore.stopMasterPolling()
+  if (localAssessmentCheckInterval) {
+    clearInterval(localAssessmentCheckInterval);
+    localAssessmentCheckInterval = null;
+  }
+})
+
+// 初始化时检查是否需要恢复上次的上传状态
+onMounted(async () => {
+  console.log('[DEBUG] 组件初始化')
+  
+  // 初始化状态
+  const initResult = await assessmentStore.initialize()
+  
+  if (!initResult) {
+    console.log('[DEBUG] 初始化失败，重置所有状态')
+    assessmentCompleted.value = false
+    processingAssessment.value = false
+    localAssessmentComplete.value = false
+    localStorage.setItem('localAssessmentComplete', 'false')
+    return
   }
   
-  if (statusCheckInterval) {
-    clearInterval(statusCheckInterval);
+  // 检查最新评估状态
+  try {
+    const response = await fetch('http://localhost:8666/api/assessment_results')
+    const data = await response.json()
+    
+    if (data.success && data.results) {
+      console.log('[DEBUG] 检测到有效的评估')
+      assessmentCompleted.value = true
+      processingAssessment.value = false
+      
+      // 保存评估数据
+      analysisData.value = data.results
+      
+      // 如果没有视频上传进行中，设置本地评估状态
+      if (!assessmentStore.uploadCallbackComplete) {
+        localAssessmentComplete.value = true
+        localStorage.setItem('localAssessmentComplete', 'true')
+      }
+    } else {
+      console.log('[DEBUG] 无有效评估')
+      assessmentCompleted.value = false
+      processingAssessment.value = false
+      assessmentStore.resetVideoAssessment()
+      localAssessmentComplete.value = false
+      localStorage.setItem('localAssessmentComplete', 'false')
+    }
+  } catch (error) {
+    console.error('[DEBUG] 检查评估状态失败:', error)
+    assessmentCompleted.value = false
+    processingAssessment.value = false
+    localAssessmentComplete.value = false
+    localStorage.setItem('localAssessmentComplete', 'false')
   }
-});
+})
 
 // 视频评估相关
 // 打开视频评估弹窗
@@ -817,7 +916,7 @@ function getVideoButtonTitle() {
 const uploadTestVideo = async () => {
   try {
     // 如果已有上传进行中，显示提示
-    if (assessmentStore.uploadCallbackComplete) {
+    if (assessmentStore.uploadCallbackComplete.value) {
       showNotification({
         type: 'warning',
         title: '上传已在进行中',
@@ -875,6 +974,10 @@ const uploadTestVideo = async () => {
     const result = await uploadResponse.json();
     
     if (result.success) {
+      // 重置本地评估状态
+      localAssessmentComplete.value = false;
+      localStorage.setItem('localAssessmentComplete', 'false');
+      
       // 成功通知
       showNotification({
         type: 'success',
@@ -884,25 +987,65 @@ const uploadTestVideo = async () => {
       
       // 获取上传数据
       const uploadData = result.data;
-      const etag = uploadData?.etag;
       
-      if (etag) {
-        console.log(`设置并保存视频上传状态: etag=${etag}`);
-        // 设置视频上传etag值和处理状态
-        assessmentStore.setVideoUploadEtag(etag);
-        assessmentStore.setUploadCallbackComplete(uploadData.upload_callback_status || false);
-        assessmentStore.setAssessmentComplete(uploadData.assessment_status || false);
-        
-        // 保存状态到localStorage
-        assessmentStore.saveVideoUploadState();
-        
-        // 根据上传回调状态决定是否启动轮询
-        if (uploadData.upload_callback_status === true) {
-          console.log('上传回调已完成，启动视频评估状态轮询');
-          assessmentStore.startStatusPolling(etag);
-        }
+      console.log('[DEBUG] 测试视频上传成功，返回数据:', result);
+      console.log(`[DEBUG] 后端返回的状态信息: 上传回调=${uploadData.upload_callback_status}, 评估=${uploadData.assessment_status}, 报告ID=${uploadData.report_id || 'none'}`);
+      
+      // 保存报告ID（如果有）
+      if (uploadData.report_id) {
+        console.log(`[DEBUG] 获取到report_id: ${uploadData.report_id}`);
+        assessmentStore.setReportId(uploadData.report_id);
       } else {
-        console.warn('未获取到视频etag，无法启动状态轮询');
+        console.log('[DEBUG] 返回数据中没有report_id，稍后将从report列表获取');
+      }
+      
+      // 明确设置上传回调状态
+      const hasCallback = uploadData.upload_callback_status || false;
+      console.log(`[DEBUG] 设置上传回调状态: ${hasCallback}`);
+      assessmentStore.setUploadCallbackComplete(hasCallback);
+      
+      // 明确设置评估状态
+      const isAssessmentComplete = uploadData.assessment_status || false;
+      console.log(`[DEBUG] 设置评估状态: ${isAssessmentComplete}`);
+      assessmentStore.setAssessmentComplete(isAssessmentComplete);
+      
+      // 手动保存状态到localStorage
+      console.log('[DEBUG] 主动调用saveVideoUploadState保存状态');
+      assessmentStore.saveVideoUploadState();
+      
+      // 验证localStorage中的状态
+      setTimeout(() => {
+        try {
+          const savedState = localStorage.getItem('video_upload_state');
+          if (savedState) {
+            const parsedState = JSON.parse(savedState);
+            console.log('[DEBUG] 验证localStorage中保存的状态:', parsedState);
+            console.log(`[DEBUG] localStorage状态验证: reportId=${parsedState.reportId}, 上传回调=${parsedState.uploadCallbackComplete}`);
+            
+            // 如果localStorage中的状态与期望的不符，尝试再次保存
+            if ((uploadData.report_id && parsedState.reportId !== uploadData.report_id) || 
+                parsedState.uploadCallbackComplete !== hasCallback) {
+              console.warn('[DEBUG] 警告: localStorage中的状态与预期不符，再次尝试保存');
+              assessmentStore.saveVideoUploadState();
+            }
+          } else {
+            console.error('[DEBUG] 错误: localStorage中未找到video_upload_state');
+            console.log('[DEBUG] 尝试再次保存状态');
+            assessmentStore.saveVideoUploadState();
+          }
+        } catch (err) {
+          console.error('[DEBUG] 读取localStorage状态失败:', err);
+        }
+      }, 200);
+      
+      // 根据上传回调状态决定是否启动轮询
+      if (uploadData.upload_callback_status === true) {
+        console.log('[DEBUG] 上传回调已完成，启动主轮询');
+        // 启动主轮询方法，整合所有状态检查
+        assessmentStore.startMasterPolling();
+      } else {
+        console.log('[DEBUG] 上传回调未完成，启动状态轮询');
+        assessmentStore.startStatusPolling();
       }
     } else {
       throw new Error(result.message || '视频上传失败');
@@ -964,6 +1107,134 @@ const showNotification = ({ type = 'info', title, message, duration = 3000 }) =>
     console.error('显示通知出错:', e);
   }
 }
+
+// 监听报告下载状态变化
+watch(() => assessmentStore.reportDownloaded, async (newValue) => {
+  if (newValue) {
+    console.log('[DEBUG] 检测到报告下载完成，开始评估流程')
+    
+    // 重置本地评估状态
+    localAssessmentComplete.value = false
+    localStorage.setItem('localAssessmentComplete', 'false')
+    
+    // 设置为处理中状态
+    processingAssessment.value = true
+    
+    // 开始轮询检查评估状态
+    startLocalAssessmentCheck()
+    
+    // 显示处理中通知
+    showNotification({
+      type: 'info',
+      title: '情绪评估分析中',
+      message: '报告下载完成，正在进行分析...'
+    })
+  }
+})
+
+// 修改查看评估结果函数
+const viewAssessmentResults = async () => {
+  try {
+    console.log('[DEBUG] 开始加载评估结果');
+    
+    // 如果本地已有数据，直接显示
+    if (analysisData.value || assessmentStore.emotionalAssessmentData) {
+      console.log('[DEBUG] 使用已有的评估数据');
+      showAnalysisModal.value = true;
+      return;
+    }
+    
+    // 尝试从服务器获取最新数据
+    console.log('[DEBUG] 尝试从服务器获取最新数据');
+    const response = await fetch('http://localhost:8666/api/assessment_results');
+    const data = await response.json();
+    
+    if (data.success && data.results) {
+      console.log('[DEBUG] 成功获取新的评估数据');
+      analysisData.value = data.results;
+      showAnalysisModal.value = true;
+    } else {
+      throw new Error('无法获取评估结果');
+    }
+  } catch (error) {
+    console.error('[DEBUG] 获取评估结果失败:', error);
+    showNotification({
+      type: 'error',
+      title: '获取评估结果失败',
+      message: '请稍后重试'
+    });
+  }
+};
+
+// 修改 downloadVideoReport 方法
+const downloadVideoReport = async (reportId) => {
+  try {
+    const response = await fetch(`http://localhost:8666/api/download_report/${reportId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${userStore.getAuthToken()}`
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error('下载失败');
+    }
+
+    const blob = await response.blob();
+    const fileName = `assessment_${reportId}.pdf`;
+    const filePath = `backend/save/assessments/${fileName}`;
+
+    // 保存文件
+    const formData = new FormData();
+    formData.append('file', blob, fileName);
+    
+    const saveResponse = await fetch('http://localhost:8666/api/save_report', {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!saveResponse.ok) {
+      throw new Error('保存报告失败');
+    }
+
+    // 开始处理报告
+    const processResponse = await fetch('http://localhost:8666/api/process_report', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        report_path: filePath
+      })
+    });
+
+    if (!processResponse.ok) {
+      throw new Error('处理报告失败');
+    }
+
+    const processResult = await processResponse.json();
+    
+    if (processResult.success) {
+      // 开始轮询检查评估状态
+      startLocalAssessmentCheck();
+      showNotification({
+        type: 'success',
+        title: '成功',
+        message: '报告下载成功，正在处理分析...'
+      });
+    } else {
+      throw new Error(processResult.message || '处理报告失败');
+    }
+
+  } catch (error) {
+    console.error('下载或处理报告时出错:', error);
+    showNotification({
+      type: 'error',
+      title: '错误',
+      message: error.message || '下载或处理报告失败'
+    });
+  }
+};
 </script>
 
 <style scoped>

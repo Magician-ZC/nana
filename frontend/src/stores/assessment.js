@@ -17,7 +17,8 @@ export const useAssessmentStore = defineStore('assessment', () => {
   const videoReportUrl = ref(null)
   
   // 视频上传相关状态
-  const videoUploadEtag = ref('') // 存储上传视频的etag
+  const videoUploadEtag = ref('') // 保留但不使用，仅为兼容性
+  const reportId = ref(null) // 添加reportId状态变量
   const uploadCallbackComplete = ref(false) // 上传回调完成状态
   const assessmentComplete = ref(false) // 评估完成状态
   const statusPollingActive = ref(false)
@@ -58,6 +59,23 @@ export const useAssessmentStore = defineStore('assessment', () => {
   const lastApiCallTime = ref(0)
   const API_CALL_THROTTLE = 3000  // 新增：API调用最小间隔时间(毫秒)
   
+  // 新增全局轮询控制变量
+  let masterPollingActive = false;
+  let masterPollingInterval = null;
+  const MASTER_POLLING_INTERVAL = 10000; // 10秒轮询一次
+  
+  // 新增API调用间隔控制
+  const lastApiCallTimes = {
+    videoStatus: 0,
+    videoReport: 0,
+    emotionalAssessment: 0
+  };
+  const API_CALL_INTERVALS = {
+    videoStatus: 15000,
+    videoReport: 20000, 
+    emotionalAssessment: 30000
+  };
+  
   // 检查是否可以发起新的请求
   function canMakeRequest(lastRequestTime) {
     const now = Date.now();
@@ -92,19 +110,32 @@ export const useAssessmentStore = defineStore('assessment', () => {
   }
   
   function setVideoUploadEtag(etag) {
-    videoUploadEtag.value = etag
+    // 保留方法但不再使用
+    console.log('[DEBUG] setVideoUploadEtag方法已弃用，不再使用etag')
+  }
+  
+  function setReportId(id) {
+    reportId.value = id
+    // 立即保存到localStorage
+    saveVideoUploadState()
   }
   
   function setUploadCallbackComplete(status) {
     uploadCallbackComplete.value = status
+    // 立即保存到localStorage
+    saveVideoUploadState()
   }
   
   function setAssessmentComplete(status) {
     assessmentComplete.value = status
+    // 立即保存到localStorage
+    saveVideoUploadState()
   }
   
   function setReportDownloaded(status) {
     reportDownloaded.value = status
+    // 立即保存到localStorage
+    saveVideoUploadState()
   }
   
   function setFaceDetected(status) {
@@ -189,6 +220,74 @@ export const useAssessmentStore = defineStore('assessment', () => {
     } catch (e) {
       console.error("生成MD5失败:", e);
       return str;
+    }
+  }
+  
+  // 启动主轮询机制 - 改进
+  function startMasterPolling() {
+    if (masterPollingActive) {
+      console.log('[Assessment Store] 主轮询已经在运行中')
+      return
+    }
+    
+    console.log('[Assessment Store] 启动主轮询机制')
+    masterPollingActive = true
+    
+    // 首次立即执行检查
+    runMasterPollingChecks()
+    
+    // 设置定期轮询
+    masterPollingInterval = setInterval(() => {
+      runMasterPollingChecks()
+    }, MASTER_POLLING_INTERVAL)
+  }
+  
+  // 主轮询检查函数 - 新增
+  async function runMasterPollingChecks() {
+    console.log('[Assessment Store] 执行主轮询检查')
+    
+    const now = Date.now()
+    
+    // 如果全部状态都已完成且报告已下载，则停止轮询
+    if (uploadCallbackComplete.value && assessmentComplete.value && reportDownloaded.value) {
+      console.log('[Assessment Store] 所有状态已完成且报告已下载，停止主轮询')
+      stopMasterPolling()
+      return
+    }
+    
+    try {
+      // 检查视频上传状态 - 限制API调用频率，移除etag依赖
+      if ((!uploadCallbackComplete.value || !assessmentComplete.value) && 
+          (now - lastApiCallTimes.videoStatus >= API_CALL_INTERVALS.videoStatus)) {
+        lastApiCallTimes.videoStatus = now
+        await checkVideoStatus(false)
+      }
+      
+      // 检查视频报告 - 限制API调用频率，移除etag依赖
+      if (assessmentComplete.value && 
+          !reportDownloaded.value && 
+          (now - lastApiCallTimes.videoReport >= API_CALL_INTERVALS.videoReport)) {
+        lastApiCallTimes.videoReport = now
+        await checkVideoReport()
+      }
+      
+      // 检查情绪评估状态 - 限制API调用频率
+      if (now - lastApiCallTimes.emotionalAssessment >= API_CALL_INTERVALS.emotionalAssessment) {
+        lastApiCallTimes.emotionalAssessment = now
+        await loadLatestEmotionalAssessment()
+      }
+    } catch (error) {
+      console.error('[Assessment Store] 主轮询检查失败:', error)
+    }
+  }
+  
+  // 停止主轮询 - 改进
+  function stopMasterPolling() {
+    if (masterPollingInterval) {
+      console.log('[Assessment Store] 停止主轮询')
+      clearInterval(masterPollingInterval)
+      masterPollingInterval = null
+      masterPollingActive = false
     }
   }
   
@@ -302,114 +401,94 @@ export const useAssessmentStore = defineStore('assessment', () => {
     }
   }
   
-  // 下载视频评估报告
+  // 下载视频评估报告 - 确保状态一致性
   async function downloadVideoReport(reportId) {
     try {
+      console.log(`[Assessment Store] 开始下载视频评估报告: ID=${reportId}`)
+      
+      // 检查参数
       if (!reportId) {
-        console.error('缺少报告ID，无法下载')
+        console.error('[Assessment Store] 缺少报告ID，无法下载')
         return null
       }
       
-      console.log(`开始下载视频评估报告, ID: ${reportId}`)
+      // 如果报告已下载，则直接返回URL
+      if (reportDownloaded.value && videoReportUrl.value) {
+        console.log('[Assessment Store] 报告已下载，直接返回URL:', videoReportUrl.value)
+        return videoReportUrl.value
+      }
       
-      // 获取用户认证令牌
-      const authToken = userStore.getAuthToken() || ''
+      // 获取授权令牌
+      const authToken = userStore.getAuthToken()
       
-      // 准备请求参数
-      const timestamp = Date.now()
-      const sign = generateMD5(String(timestamp))
-      
-      // 加密请求内容
-      const queryParams = { id: reportId }
-      const jsonQuery = JSON.stringify(queryParams)
-      const encryptedContent = encryptRequestData(jsonQuery)
-      
-      // 准备POST请求数据
-      const formData = new FormData()
-      formData.append('sign', sign)
-      formData.append('content', encryptedContent)
-      formData.append('timestamp', timestamp)
-      
-      // 发送下载请求 - 使用正确的API端点
-      const response = await fetch('http://localhost:8666/api/download-video-report', {
-        method: 'POST',
+      // 发起下载请求
+      const response = await fetch(`http://localhost:8666/api/report/${reportId}`, {
+        method: 'GET',
         headers: {
           'Authorization': `Bearer ${authToken}`
-        },
+        }
+      })
+      
+      if (!response.ok) {
+        console.error(`[Assessment Store] 报告下载失败: ${response.status} ${response.statusText}`)
+        return null
+      }
+      
+      // 获取报告文件
+      const reportBlob = await response.blob()
+      
+      // 创建临时URL
+      const reportUrl = URL.createObjectURL(reportBlob)
+      
+      // 更新报告URL和状态
+      videoReportUrl.value = reportUrl
+      uploadCallbackComplete.value = true
+      assessmentComplete.value = true
+      reportDownloaded.value = true
+      
+      console.log('[Assessment Store] 视频评估报告下载成功:', reportUrl)
+      
+      // 更新报告下载状态
+      await updateReportDownloadStatus(true)
+      
+      // 保存状态到localStorage
+      saveVideoUploadState()
+      
+      // 开始情绪评估分析
+      console.log('[Assessment Store] 报告下载成功，开始情绪评估分析')
+      
+      // 创建 FormData 对象
+      const formData = new FormData()
+      formData.append('file', reportBlob, `report_${reportId}.pdf`)
+      
+      // 调用情绪评估接口
+      const assessmentResponse = await fetch('http://localhost:8666/api/emotional_assessment', {
+        method: 'POST',
         body: formData
       })
       
-      // 检查响应
-      if (!response.ok) {
-        const errorText = await response.text()
-        console.error(`报告下载失败: 状态码=${response.status}, 错误=${errorText}`)
+      if (assessmentResponse.ok) {
+        const assessmentResult = await assessmentResponse.json()
+        console.log('[Assessment Store] 情绪评估分析完成:', assessmentResult)
         
-        // 显示下载失败通知
-        const failureNotification = document.createElement('div')
-        failureNotification.className = 'fixed bottom-4 right-4 bg-red-500 text-white px-6 py-3 rounded-lg shadow-lg z-[1100] animate-fade-in flex items-center gap-2'
-        failureNotification.innerHTML = `
-          <i class="fa-solid fa-exclamation-circle"></i>
-          <div>
-            <div class="font-medium">报告下载失败</div>
-            <div class="text-sm opacity-90">状态码: ${response.status}, 将在下次刷新页面时重试</div>
-          </div>
-        `
-        document.body.appendChild(failureNotification)
+        // 更新情绪评估状态
+        emotionalAssessmentComplete.value = true
+        emotionalAssessmentData.value = assessmentResult.data
+        emotionalProcessing.value = false
         
-        // 5秒后移除通知
-        setTimeout(() => {
-          failureNotification.classList.add('animate-fade-out')
-          setTimeout(() => {
-            failureNotification.remove()
-          }, 500)
-        }, 5000)
-        
-        return null
+        // 分析报告内容
+        await analyzeVideoReport(reportBlob)
+      } else {
+        console.error('[Assessment Store] 情绪评估分析失败')
       }
       
-      // 获取报告内容
-      const reportBlob = await response.blob()
-      
-      // 保存报告到本地存储并更新状态
-      const reportFileName = `emotion_report_${reportId}.pdf`
-      const reportUrl = URL.createObjectURL(reportBlob)
-      videoReportUrl.value = reportUrl
-      
-      console.log('视频评估报告下载成功:', reportUrl)
-      
-      // 更新报告下载状态
-      reportDownloaded.value = true
-      if (videoUploadEtag.value) {
-        await updateReportDownloadStatus(videoUploadEtag.value, true)
-      }
-      saveVideoUploadState()
-      
-      // 显示下载成功通知
-      const notification = document.createElement('div')
-      notification.className = 'fixed bottom-4 right-4 bg-green-500 text-white px-6 py-3 rounded-lg shadow-lg z-[1100] animate-fade-in flex items-center gap-2'
-      notification.innerHTML = `
-        <i class="fa-solid fa-check-circle"></i>
-        <div>
-          <div class="font-medium">评估报告下载成功</div>
-          <div class="text-sm opacity-90">正在分析报告内容...</div>
-        </div>
-      `
-      document.body.appendChild(notification)
-      
-      // 3秒后移除通知
-      setTimeout(() => {
-        notification.classList.add('animate-fade-out')
-        setTimeout(() => {
-          notification.remove()
-        }, 500)
-      }, 3000)
-      
-      // 触发报告分析
-      await analyzeVideoReport(reportBlob)
+      // 停止所有轮询
+      stopStatusPolling()
+      stopMasterPolling()
       
       return reportUrl
     } catch (error) {
-      console.error('下载视频评估报告失败:', error)
+      console.error('[Assessment Store] 下载或分析报告失败:', error)
       return null
     }
   }
@@ -417,29 +496,44 @@ export const useAssessmentStore = defineStore('assessment', () => {
   // 分析视频评估报告
   async function analyzeVideoReport(reportBlob) {
     try {
-      // 创建FormData对象
-      const formData = new FormData()
-      formData.append('file', reportBlob, 'emotion_report.pdf')
+      console.log('[DEBUG] 开始分析视频评估报告');
       
-      // 发送到后端分析接口
-      const response = await fetch('http://localhost:8666/api/emotional_assessment', {
-        method: 'POST',
-        body: formData
-      })
+      // 读取报告内容
+      const text = await reportBlob.text();
       
-      const result = await response.json()
-      
-      if (result.success) {
-        console.log('视频评估报告分析已开始:', result)
-        setEmotionalProcessing(true)
+      // 提取JSON部分
+      const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);
+      if (jsonMatch && jsonMatch[1]) {
+        const jsonContent = jsonMatch[1].trim();
         
-        // 开始检查分析结果
-        startCheckingAnalysisResult()
+        try {
+          const assessmentData = JSON.parse(jsonContent);
+          
+          // 更新视频评估数据
+          videoAssessmentData.value = assessmentData;
+          videoAssessmentComplete.value = true;
+          
+          console.log('[DEBUG] 视频评估报告解析成功:', assessmentData);
+          
+          // 重要：同时更新情绪评估数据，确保情绪评估按钮也能显示正确的结果
+          emotionalAssessmentData.value = assessmentData;
+          emotionalAssessmentComplete.value = true;
+          emotionalProcessing.value = false;
+          
+          console.log('[DEBUG] 已同步更新情绪评估数据，处理状态已重置为false');
+          
+          return assessmentData;
+        } catch (jsonError) {
+          console.error('[DEBUG] 解析JSON失败:', jsonError);
+          return null;
+        }
       } else {
-        console.error('视频评估报告分析失败:', result.message)
+        console.error('[DEBUG] 未在报告中找到JSON数据');
+        return null;
       }
     } catch (error) {
-      console.error('分析视频评估报告失败:', error)
+      console.error('[DEBUG] 分析视频评估报告失败:', error);
+      return null;
     }
   }
   
@@ -515,57 +609,42 @@ export const useAssessmentStore = defineStore('assessment', () => {
   
   // 加载最新的情绪评估结果 - 添加防抖和缓存机制
   async function loadLatestEmotionalAssessment() {
-    // 检查是否应该执行请求
-    if (!canMakeRequest(lastEmotionalAssessmentRequestTime)) {
-      console.log('跳过情绪评估请求 - 间隔太短');
-      return;
-    }
-    
     try {
-      lastEmotionalAssessmentRequestTime = Date.now();
-      const response = await fetch('http://localhost:8666/api/latest_assessment');
-      const data = await response.json();
+      console.log('[DEBUG] 加载最新情绪评估数据')
+      const response = await fetch('http://localhost:8666/api/latest_assessment')
+      const data = await response.json()
       
-      if (data.success && data.has_assessment) {
-        emotionalAssessmentComplete.value = true;
-        
-        // 如果已有有效的情绪评估数据，不需要再次请求详情
-        if (!emotionalAssessmentData.value) {
-        // 加载详细结果
-          const resultsResponse = await fetch('http://localhost:8666/api/assessment_results');
-          const resultsData = await resultsResponse.json();
-          
-          if (resultsData.success) {
-            emotionalAssessmentData.value = resultsData.results;
-            
-            // 检查是否需要下载报告
-            if (videoUploadEtag.value && assessmentComplete.value && !reportDownloaded.value) {
-              // 获取报告ID
-              const reportId = resultsData?.results?.reportId || videoReportId.value;
-              if (reportId) {
-                console.log(`检测到评估已完成但报告未下载，尝试下载报告ID: ${reportId}`);
-                // 主动触发下载
-                await downloadVideoReport(reportId);
-              }
-            }
-          }
-        }
-      } else {
-        emotionalAssessmentComplete.value = false;
-        emotionalAssessmentData.value = null;
+      if (!data.success) {
+        console.log('[DEBUG] 加载评估数据失败')
+        resetVideoAssessment()
+        return false
       }
+      
+      if (!data.has_assessment) {
+        console.log('[DEBUG] 没有找到有效的评估数据')
+        resetVideoAssessment()
+        return false
+      }
+      
+      // 更新状态
+      emotionalAssessmentComplete.value = true
+      emotionalProcessing.value = false
+      
+      console.log('[DEBUG] 成功加载评估数据:', data.assessment)
+      return true
+      
     } catch (error) {
-      console.error('加载情绪评估结果失败:', error);
+      console.error('[DEBUG] 加载评估数据时发生错误:', error)
+      resetVideoAssessment()
+      return false
     }
   }
   
   // 视频状态轮询函数
   // 使用防抖函数来减少API调用次数
-  const debouncedCheckVideoStatus = _.debounce(async function(etag, shouldStartPolling) {
-    if (!etag) return
-    
+  const debouncedCheckVideoStatus = _.debounce(async function(shouldStartPolling) {
     try {
-      console.log(`[防抖后]检查视频状态: etag=${etag}, 启动轮询=${shouldStartPolling}`)
+      console.log(`[防抖后]检查视频状态: 启动轮询=${shouldStartPolling}`)
       
       // 获取授权令牌
       const authToken = userStore.getAuthToken()
@@ -577,7 +656,6 @@ export const useAssessmentStore = defineStore('assessment', () => {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({ 
-          etag: etag,
           auth_token: authToken,
           start_polling: shouldStartPolling
         })
@@ -587,14 +665,19 @@ export const useAssessmentStore = defineStore('assessment', () => {
       if (!lastApiCallTime.value) {
         lastApiCallTime.value = {}
       }
-      lastApiCallTime.value[`videoStatus-${etag}`] = Date.now()
+      lastApiCallTime.value[`videoStatus`] = Date.now()
       
       const result = await response.json()
       
       if (result.success) {
-        const { upload_callback_status, assessment_status, polling_started, report_downloaded } = result.data
+        const { report_id, upload_callback_status, assessment_status, polling_started, report_downloaded, status } = result.data
         
-        console.log(`视频状态: 上传回调=${upload_callback_status}, 评估=${assessment_status}, 轮询=${polling_started || false}, 报告下载=${report_downloaded || false}`)
+        console.log(`视频状态: 报告ID=${report_id}, 状态=${status}, 上传回调=${upload_callback_status}, 评估=${assessment_status}, 轮询=${polling_started || false}, 报告下载=${report_downloaded || false}`)
+        
+        // 更新报告ID
+        if (report_id) {
+          reportId.value = report_id
+        }
         
         // 更新状态
         uploadCallbackComplete.value = upload_callback_status
@@ -617,6 +700,7 @@ export const useAssessmentStore = defineStore('assessment', () => {
         if (!upload_callback_status) {
           console.warn('上传回调未成功，停止轮询')
           stopStatusPolling()
+          stopMasterPolling()
           // 显示上传失败通知
           showUploadFailureNotification()
           return
@@ -627,48 +711,17 @@ export const useAssessmentStore = defineStore('assessment', () => {
           setVideoAssessmentComplete(true)
           setVideoProcessing(false)
           
-          // 如果评估完成，停止轮询
-          stopStatusPolling()
-          
-          // 如果评估已完成，加载评估结果并更新状态
-          if (upload_callback_status && assessment_status) {
-            console.log('检测到评估已完成，加载评估结果')
-            await loadLatestEmotionalAssessment()
-            
-            // 只有当报告状态尚未下载时调用下载接口
-            if (!reportDownloaded.value) {
-              console.log('检测到报告尚未下载，将获取最新评估报告')
-              try {
-                // 获取最新报告ID并下载
-                if (videoReportId.value) {
-                  console.log(`尝试下载报告ID: ${videoReportId.value}`)
-                  await downloadVideoReport(videoReportId.value)
-                } else {
-                  // 尝试获取报告列表并下载最新的
-                  console.log('报告ID未找到，尝试重新获取最新报告')
-                  await loadLatestEmotionalAssessment()
-                  
-                  if (videoReportId.value) {
-                    console.log(`获取到报告ID: ${videoReportId.value}，开始下载`)
-                    await downloadVideoReport(videoReportId.value)
-                  } else {
-                    console.warn('无法获取报告ID，下载失败')
-                  }
-                }
-              } catch (downloadError) {
-                console.error('下载报告出错:', downloadError)
-                // 即使下载出错，我们仍然保存当前状态，以便下次刷新页面时重试
-                saveVideoUploadState()
-              }
-            } else {
-              console.log('报告已下载，无需重新下载')
-            }
-            
-            saveVideoUploadState()
+          // 如果评估完成且报告未下载，尝试下载报告
+          if (upload_callback_status && assessment_status && !reportDownloaded.value) {
+            console.log('检测到评估已完成但报告未下载，将尝试下载报告')
+            await attemptReportDownload()
           }
-        } else if (upload_callback_status && !assessment_status && !statusPollingActive.value) {
-          // 如果上传回调已完成但评估未完成，且未开始轮询，则自动在下次轮询时启动后端轮询
-          console.log('下次轮询将自动启动后端轮询')
+          // 如果全部完成，停止轮询
+          else if (upload_callback_status && assessment_status && reportDownloaded.value) {
+            console.log('检测到评估已完成且报告已下载，停止轮询')
+            stopStatusPolling()
+            stopMasterPolling()
+          }
         }
       } else {
         console.warn('获取视频状态失败:', result.message)
@@ -677,6 +730,7 @@ export const useAssessmentStore = defineStore('assessment', () => {
         if (uploadCallbackFailCount >= MAX_UPLOAD_CALLBACK_FAILS) {
           console.error('API请求持续失败，停止轮询')
           stopStatusPolling()
+          stopMasterPolling()
           showUploadFailureNotification()
         }
       }
@@ -687,34 +741,28 @@ export const useAssessmentStore = defineStore('assessment', () => {
       if (uploadCallbackFailCount >= MAX_UPLOAD_CALLBACK_FAILS) {
         console.error('API请求异常，停止轮询')
         stopStatusPolling()
+        stopMasterPolling()
         showUploadFailureNotification()
       }
     }
   }, 1000);  // 设置防抖时间为1秒
   
   // 包装检查函数，对外暴露
-  function checkVideoStatus(etag, shouldStartPolling = false) {
-    if (!etag) return;
-    
-    console.log(`[原始调用]检查视频状态: etag=${etag}, 启动轮询=${shouldStartPolling}`)
+  function checkVideoStatus(shouldStartPolling = false) {
+    console.log(`[原始调用]检查视频状态: 启动轮询=${shouldStartPolling}`)
     
     // 立即启动轮询的情况下不去抖动
     if (shouldStartPolling) {
-      debouncedCheckVideoStatus(etag, true);
+      debouncedCheckVideoStatus(true);
       return;
     }
     
     // 常规检查状态时使用防抖
-    debouncedCheckVideoStatus(etag, false);
+    debouncedCheckVideoStatus(false);
   }
   
   // 开始轮询检查视频上传和评估状态
-  function startStatusPolling(etag) {
-    if (!etag) {
-      console.warn('无法启动状态轮询: 缺少etag')
-      return
-    }
-    
+  function startStatusPolling() {
     // 避免重复启动轮询
     if (statusPollingActive.value) {
       console.log('状态轮询已经在运行中')
@@ -722,7 +770,7 @@ export const useAssessmentStore = defineStore('assessment', () => {
     }
     
     try {
-      console.log(`启动状态轮询: etag=${etag}`)
+      console.log(`启动状态轮询`)
       
       // 初始化API调用时间记录
       if (!lastApiCallTime.value) {
@@ -738,18 +786,21 @@ export const useAssessmentStore = defineStore('assessment', () => {
         const shouldStartPolling = !statusPollingStarted.value
         
         // 使用节流函数控制API调用频率
-        if (canCallApi(`checkVideoStatus-${etag}`)) {
-          checkVideoStatus(etag, shouldStartPolling)
+        if (canCallApi(`checkVideoStatus`)) {
+          checkVideoStatus(shouldStartPolling)
           // 标记已尝试启动后端轮询
           statusPollingStarted.value = true
         }
-      }, 5000) // 增加到5秒检查一次
+      }, 5000) // 每5秒检查一次
       
       // 保存轮询间隔引用
       statusPollingInterval.value = statusInterval
       
       // 立即执行一次检查并启动后端轮询
-      checkVideoStatus(etag, true)
+      checkVideoStatus(true)
+      
+      // 同时启动主轮询
+      startMasterPolling()
     } catch (error) {
       console.error('启动状态轮询失败:', error)
       statusPollingActive.value = false
@@ -771,7 +822,9 @@ export const useAssessmentStore = defineStore('assessment', () => {
   function saveVideoUploadState() {
     try {
       const uploadState = {
-        etag: videoUploadEtag.value,
+        // 不再使用etag，仅保留兼容性字段但设为空字符串
+        etag: '',
+        reportId: reportId.value,
         uploadCallbackComplete: uploadCallbackComplete.value,
         assessmentComplete: assessmentComplete.value,
         reportDownloaded: reportDownloaded.value,
@@ -779,17 +832,38 @@ export const useAssessmentStore = defineStore('assessment', () => {
       }
       
       // 记录日志，特别是报告下载状态
-      console.log(`保存视频上传状态: etag=${uploadState.etag}, 上传回调=${uploadState.uploadCallbackComplete}, 评估=${uploadState.assessmentComplete}, 报告下载=${uploadState.reportDownloaded}`);
+      console.log(`[DEBUG] 保存视频上传状态: reportId=${uploadState.reportId}, 上传回调=${uploadState.uploadCallbackComplete}, 评估=${uploadState.assessmentComplete}, 报告下载=${uploadState.reportDownloaded}`);
       
       // 如果报告下载状态是true，额外记录
       if (uploadState.reportDownloaded) {
-        console.log(`警告: 正在将reportDownloaded保存为true，确保这是期望的行为`);
+        console.log(`[DEBUG] 警告: 正在将reportDownloaded保存为true，确保这是期望的行为`);
       }
       
-      localStorage.setItem('video_upload_state', JSON.stringify(uploadState))
+      // 保存前检查localStorage访问权限
+      try {
+        const testKey = "__test_localStorage";
+        localStorage.setItem(testKey, "test");
+        localStorage.removeItem(testKey);
+        console.log("[DEBUG] localStorage访问测试成功");
+      } catch (storageError) {
+        console.error("[DEBUG] localStorage访问测试失败:", storageError);
+        return null;
+      }
+      
+      // 保存状态
+      localStorage.setItem('video_upload_state', JSON.stringify(uploadState));
+      
+      // 验证保存结果
+      const savedItem = localStorage.getItem('video_upload_state');
+      if (savedItem) {
+        console.log("[DEBUG] 成功保存状态到localStorage:", savedItem);
+      } else {
+        console.error("[DEBUG] localStorage保存失败: 无法读取保存的状态");
+      }
+      
       return uploadState;
     } catch (error) {
-      console.error('保存视频上传状态失败:', error)
+      console.error('[DEBUG] 保存视频上传状态失败:', error)
       return null;
     }
   }
@@ -804,32 +878,20 @@ export const useAssessmentStore = defineStore('assessment', () => {
         const isValid = (Date.now() - state.timestamp) < 24 * 60 * 60 * 1000
         
         if (isValid) {
-          videoUploadEtag.value = state.etag || ''
+          // 不再使用etag，保留兼容性
+          videoUploadEtag.value = ''
+          reportId.value = state.reportId || null
           uploadCallbackComplete.value = state.uploadCallbackComplete || false
           assessmentComplete.value = state.assessmentComplete || false
           reportDownloaded.value = state.reportDownloaded || false
           
           console.log('从localStorage加载的视频上传状态:', state)
           
-          // 如果上传回调已完成但评估未完成，启动后端轮询
-          if (state.uploadCallbackComplete && !state.assessmentComplete && state.etag) {
-            checkVideoStatus(state.etag)
-          }
-          
-          // 如果评估已完成，检查是否有评估结果
-          if (state.uploadCallbackComplete && state.assessmentComplete) {
-            console.log('检测到评估已完成，将检查评估结果')
-            loadLatestEmotionalAssessment()
-            // 不再强制设置报告下载状态为true，而是保持原始状态
-            // reportDownloaded.value = true
-            
-            // 如果报告未下载，尝试在后台启动下载
-            if (!state.reportDownloaded) {
-              console.log('检测到报告尚未下载，将在加载后尝试下载')
-            }
-            
-            // 仍然保存状态，但不改变reportDownloaded的值
-            saveVideoUploadState()
+          // 如果有未完成的流程，启动主轮询
+          if ((state.uploadCallbackComplete || state.reportId) && 
+              (!state.assessmentComplete || !state.reportDownloaded)) {
+            console.log('检测到未完成的评估流程，启动主轮询')
+            startMasterPolling()
           }
           
           return true
@@ -846,23 +908,21 @@ export const useAssessmentStore = defineStore('assessment', () => {
   }
   
   // 请求后端开始轮询
-  async function initiateBackendPolling(etag) {
-    if (!etag) return
-    
+  async function initiateBackendPolling() {
     try {
-      console.log(`请求后端开始轮询: etag=${etag}`)
+      console.log(`请求后端开始轮询`)
       
       // 获取授权令牌
       const authToken = userStore.getAuthToken()
       
-      const response = await fetch('http://localhost:8666/api/video/start_polling', {
+      const response = await fetch('http://localhost:8666/api/video/status', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({ 
-          etag: etag,
-          auth_token: authToken
+          auth_token: authToken,
+          start_polling: true
         })
       })
       
@@ -871,6 +931,15 @@ export const useAssessmentStore = defineStore('assessment', () => {
       if (result.success) {
         console.log('后端轮询已启动')
         statusPollingActive.value = true
+        
+        // 如果返回了report_id，更新状态
+        if (result.data && result.data.report_id) {
+          reportId.value = result.data.report_id
+          console.log(`更新report_id: ${result.data.report_id}`)
+        }
+        
+        // 启动主轮询
+        startMasterPolling()
       } else {
         console.error('启动后端轮询失败:', result.message)
       }
@@ -923,6 +992,7 @@ export const useAssessmentStore = defineStore('assessment', () => {
   
   // 重置视频评估状态
   function resetVideoAssessment() {
+    console.log('[DEBUG] 重置视频评估状态')
     videoAssessmentComplete.value = false
     videoAssessmentData.value = null
     videoProcessing.value = false
@@ -932,134 +1002,131 @@ export const useAssessmentStore = defineStore('assessment', () => {
     videoReportUrl.value = null
     uploadCallbackComplete.value = false
     assessmentComplete.value = false
-    videoUploadEtag.value = ''
+    videoUploadEtag.value = null
     statusPollingStarted.value = false
     reportDownloaded.value = false
     
     // 清除localStorage中的状态
     localStorage.removeItem('video_upload_state')
+    localStorage.removeItem('lastAssessmentTimestamp')
     
     // 确保轮询停止
     stopVideoReportPolling()
     stopStatusPolling()
+    stopMasterPolling()
   }
   
-  // 初始化加载 - 添加防重复请求保护
-  let isInitializing = false;
+  // 初始化方法 - 将在应用启动时调用
   async function initialize() {
-    // 防止重复初始化
-    if (isInitializing) {
-      console.log('已经在初始化中，跳过重复请求');
-      return;
+    console.log('初始化评估存储...')
+    
+    try {
+      // 首先清除可能过期的状态
+      const now = Date.now()
+      const savedState = localStorage.getItem('video_upload_state')
+      
+      if (savedState) {
+        const state = JSON.parse(savedState)
+        // 检查状态是否在过去24小时内保存的
+        const isValid = (now - state.timestamp) < 24 * 60 * 60 * 1000
+        
+        if (!isValid) {
+          console.log('清除过期的评估状态')
+          localStorage.removeItem('video_upload_state')
+          resetVideoAssessment()
+          return true
+        }
+        
+        // 验证评估状态的有效性
+        const response = await fetch('http://localhost:8666/api/latest_assessment')
+        const data = await response.json()
+        
+        if (!data.success || !data.has_assessment) {
+          console.log('服务器无有效评估，重置状态')
+          localStorage.removeItem('video_upload_state')
+          resetVideoAssessment()
+          return true
+        }
+        
+        // 如果服务器有有效评估，加载状态
+        let hasRestoredState = loadVideoUploadState()
+        
+        if (hasRestoredState) {
+          console.log('成功恢复评估状态')
+        } else {
+          console.log('无评估状态可恢复')
+          resetVideoAssessment()
+        }
+      } else {
+        // 无保存的状态，重置
+        resetVideoAssessment()
+      }
+      
+      return true
+    } catch (error) {
+      console.error('初始化评估存储失败:', error)
+      // 发生错误时重置状态
+      resetVideoAssessment()
+      return false
+    }
+  }
+  
+  // 尝试下载报告
+  async function attemptReportDownload() {
+    // 仅在评估完成但报告未下载时尝试下载
+    if (!uploadCallbackComplete.value || !assessmentComplete.value || reportDownloaded.value) {
+      return
     }
     
     try {
-      isInitializing = true;
+      console.log("尝试下载最新报告");
       
-      // 尝试从localStorage加载视频上传状态
-      const hasLocalState = loadVideoUploadState();
+      // 获取授权令牌
+      const authToken = userStore.getAuthToken()
       
-      // 并行加载其他状态
-      await Promise.all([
-        loadAssessmentStatus(),
-        loadLatestEmotionalAssessment()
-      ]);
+      // 获取最新报告列表
+      const response = await fetch(`http://localhost:8666/api/check-latest-report`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
       
-      // 优化检查：如果报告评估已完成但未下载，尝试获取报告列表并下载
-      if (hasLocalState && videoUploadEtag.value && 
-          uploadCallbackComplete.value && assessmentComplete.value) {
+      if (!response.ok) {
+        throw new Error(`报告列表请求失败: ${response.status}`);
+      }
+      
+      const result = await response.json();
+      
+      if (result.success && result.data) {
+        const resultsData = result.data;
         
-        console.log('检测到有评估完成，检查最新报告状态');
-        
-        // 获取授权令牌
-        const authToken = userStore.getAuthToken();
-        
-        // 首先通过API检查真实的报告下载状态，避免使用可能不准确的本地状态
-        try {
-          console.log('获取最新的报告下载状态');
-          const statusResponse = await fetch('http://localhost:8666/api/video/status', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ 
-              etag: videoUploadEtag.value,
-              auth_token: authToken,
-              start_polling: false
-            })
-          });
+        // 获取report_id
+        const reportId = resultsData.report_id || videoReportId.value;
+        if (reportId) {
+          console.log(`检测到评估已完成但报告未下载，尝试下载报告ID: ${reportId}`);
           
-          if (statusResponse.ok) {
-            const statusResult = await statusResponse.json();
-            
-            if (statusResult.success) {
-              // 使用后端返回的最新状态更新报告下载状态
-              const backendReportDownloaded = statusResult.data.report_downloaded;
-              console.log(`后端返回的报告下载状态: ${backendReportDownloaded}`);
-              
-              if (reportDownloaded.value !== backendReportDownloaded) {
-                console.log(`更新本地报告下载状态: ${reportDownloaded.value} -> ${backendReportDownloaded}`);
-                reportDownloaded.value = backendReportDownloaded;
-                saveVideoUploadState();
-              }
-              
-              // 如果报告实际未下载，才尝试下载
-              if (!backendReportDownloaded) {
-                await attemptReportDownload(authToken);
-              } else {
-                console.log('后端确认报告已下载，无需重新下载');
-              }
-            }
-          }
-        } catch (statusError) {
-          console.error('获取报告状态失败:', statusError);
-          // 如果获取状态失败，则仍使用本地状态
-          if (!reportDownloaded.value) {
-            await attemptReportDownload(authToken);
-          }
+          // 下载报告
+          await downloadVideoReport(reportId);
+        } else {
+          console.log("未找到有效的报告ID，无法下载报告");
         }
       }
     } catch (error) {
-      console.error('初始化评估状态失败:', error);
-    } finally {
-      isInitializing = false;
-    }
-  }
-  
-  // 帮助函数：尝试下载报告
-  async function attemptReportDownload(authToken) {
-    console.log('尝试下载报告');
-    
-    // 检查视频状态，这会触发下载逻辑
-    await checkVideoStatus(videoUploadEtag.value, false);
-    
-    // 如果有报告ID，尝试直接下载
-    if (videoReportId.value) {
-      console.log(`获取到报告ID，尝试下载: ${videoReportId.value}`);
-      await downloadVideoReport(videoReportId.value);
-    } else {
-      // 直接请求后端检查报告状态
-      // 这将只检查第一条报告的状态，更高效
-      try {
-        console.log('尝试直接从后端获取最新报告状态');
-        await fetch(`http://localhost:8666/api/check-latest-report?etag=${videoUploadEtag.value}&token=${authToken}`, {
-          method: 'GET'
-        });
-        
-        // 重新加载状态以获取最新信息
-        await loadLatestEmotionalAssessment();
-      } catch (error) {
-        console.error('检查最新报告状态失败:', error);
-      }
+      console.error('检查最新报告状态失败:', error);
     }
   }
   
   // 更新报告下载状态
-  async function updateReportDownloadStatus(etag, isDownloaded = true) {
-    if (!etag) return
+  async function updateReportDownloadStatus(isDownloaded = true) {
+    if (!reportId.value) {
+      console.warn('更新报告下载状态失败：缺少report_id')
+      return false
+    }
     
     try {
-      console.log(`更新报告下载状态: etag=${etag}, isDownloaded=${isDownloaded}`)
+      console.log(`更新报告下载状态: report_id=${reportId.value}, isDownloaded=${isDownloaded}`)
       
       // 获取授权令牌
       const authToken = userStore.getAuthToken()
@@ -1071,7 +1138,7 @@ export const useAssessmentStore = defineStore('assessment', () => {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({ 
-          etag: etag,
+          report_id: reportId.value,
           auth_token: authToken,
           downloaded: isDownloaded
         })
@@ -1115,6 +1182,7 @@ export const useAssessmentStore = defineStore('assessment', () => {
     psychologicalProcessing,
     dialogCount,
     videoUploadEtag,
+    reportId,
     uploadCallbackComplete,
     assessmentComplete,
     statusPollingActive,
@@ -1126,6 +1194,7 @@ export const useAssessmentStore = defineStore('assessment', () => {
     setVideoAssessmentData,
     setVideoProcessing,
     setVideoUploadEtag,
+    setReportId,
     setUploadCallbackComplete,
     setAssessmentComplete,
     setReportDownloaded,
@@ -1153,6 +1222,9 @@ export const useAssessmentStore = defineStore('assessment', () => {
     loadVideoUploadState,
     showUploadFailureNotification,
     updateReportDownloadStatus,
-    attemptReportDownload
+    attemptReportDownload,
+    startMasterPolling,
+    stopMasterPolling,
+    runMasterPollingChecks
   }
 })
