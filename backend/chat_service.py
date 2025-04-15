@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict, Any
 from llm import LLMService
 from tts import TTSService
 from super_tts import SuperTTSService
@@ -378,3 +378,68 @@ class ChatService:
         except Exception as e:
             print(f"生成回复时出错: {e}")
             return "抱歉，发生了错误，请稍后再试。", None, "生气", None
+
+    async def generate_response(self, conversation_history: List[Dict[str, str]], model_name: str, stream: bool = False, agent_id: Optional[str] = None, is_category: bool = False) -> Tuple[str, Optional[bytes]]:
+        """
+        根据对话历史生成回复
+        
+        Args:
+            conversation_history: 对话历史列表
+            model_name: 模型名称
+            stream: 是否流式生成
+            agent_id: 角色ID
+            is_category: 是否是快捷提问类别
+            
+        Returns:
+            Tuple[str, Optional[bytes]]: (回复文本, 语音数据)
+        """
+        try:
+            # 确保TTS服务使用最新的配置
+            self._refresh_tts_services()
+            
+            # 如果收到agent_id，先切换智能体
+            if agent_id:
+                self.change_agent(agent_id, "default_session")
+            
+            # 检查对话历史是否为空
+            if not conversation_history:
+                return "请提供有效的对话历史", None
+                
+            # 获取用户最新消息
+            user_message = conversation_history[-1]["content"] if conversation_history[-1]["role"] == "user" else ""
+            
+            if not user_message:
+                return "请提供有效的用户消息", None
+            
+            # 检查是否是引导式会话
+            print(f"generate_response: 用户消息: {user_message}, 是否是快捷提问: {is_category}")
+            
+            # 使用 MainAgent 生成回复和表情，传递is_category参数
+            reply, expression = await self.main_agent.reply(user_message, is_category=is_category)
+            
+            # 确保回复不为空
+            if not reply:
+                return "抱歉，我现在无法回答您的问题，请稍后再试。", None
+            
+            # 生成语音 (不为自定义TTS角色生成)
+            audio_data = None
+            if not agent_id or not agent_id.startswith("custom_"):
+                if Config.is_tts_enabled() and self.tts_service:
+                    try:
+                        print(f"为回复生成普通TTS...")
+                        audio_data = self.tts_service.generate_audio(reply)
+                    except Exception as e:
+                        print(f"生成普通语音时出错: {e}")
+                
+                if (not audio_data or len(audio_data) < 100) and Config.is_super_tts_enabled() and self.super_tts_service:
+                    try:
+                        print(f"为回复生成超拟人TTS...")
+                        audio_data = self.super_tts_service.generate_audio(reply)
+                    except Exception as e:
+                        print(f"生成超拟人语音时出错: {e}")
+            
+            return reply, audio_data
+            
+        except Exception as e:
+            print(f"生成回复出错: {e}")
+            return f"抱歉，处理出错: {str(e)}", None

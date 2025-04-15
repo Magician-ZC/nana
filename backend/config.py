@@ -22,7 +22,7 @@ class Config:
     '''
     # TTS功能配置
     ENABLE_TTS = False  # 是否启用普通TTS
-    ENABLE_SUPER_TTS = True  # 是否启用超拟人TTS
+    ENABLE_SUPER_TTS = False  # 是否启用超拟人TTS
     
     # 普通TTS可用音色列表
     TTS_VOICE_LIST = [

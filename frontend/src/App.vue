@@ -12,6 +12,9 @@
     
     
     <div class="live2d-main">
+      <!-- 权限测试组件 - 仅在开发环境中显示 -->
+      <PermissionTest v-if="showPermissionTest" class="permission-test-container" />
+    
       <!-- 添加情绪评估和心理评估按钮 -->
       <AssessmentButtons />
     
@@ -41,12 +44,16 @@ import TimeWeather from './components/TimeWeather.vue'
 import QuickQuestions from './components/QuickQuestions.vue'
 import SettingsButton from './components/SettingsButton.vue'
 import AssessmentButtons from './components/AssessmentButtons.vue'
+import PermissionTest from './components/PermissionTest.vue'
+import { getApiUrl } from './utils/api'
 
 const chatStore = useChatStore()
 const assessmentStore = useAssessmentStore()
 const userStore = useUserStore()
 const live2dRef = ref(null)
 const isDarkMode = ref(false)
+// 权限测试组件显示控制 - 通过URL参数控制
+const showPermissionTest = ref(false)
 
 // 初始化音频上下文
 function initAudioContext() {
@@ -121,7 +128,7 @@ function requestWelcomeAudio() {
     }
     
     // 直接请求欢迎语音频
-    fetch('http://localhost:8666/api/welcome_tts', {
+    fetch(getApiUrl('welcome_tts'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -258,6 +265,10 @@ const handleKeyPress = (e) => {
 }
 
 onMounted(async () => {
+  // 检查URL参数，决定是否显示权限测试
+  const urlParams = new URLSearchParams(window.location.search);
+  showPermissionTest.value = urlParams.has('test-permissions');
+  
   // 确保用户token已初始化
   const token = userStore.getAuthToken()
   if (!token) {
@@ -395,6 +406,15 @@ body {
     top: 15px;
     right: 15px;
   }
+}
+
+/* 权限测试组件容器 */
+.permission-test-container {
+  position: fixed;
+  top: 70px;
+  left: 20px;
+  z-index: 100;
+  max-width: 80vw;
 }
 
 /* 深色模式切换按钮 */

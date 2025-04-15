@@ -77,8 +77,18 @@ const containsEndGuidanceKeywords = (content) => {
     "确定要结束", "确认结束", "要结束这个话题", 
     "确定不继续", "结束引导", "退出引导",
     "总结一下", "总结如下", "总结这次", 
-    "建议如下"
+    "建议如下", "还有其他想讨论", "还有什么想讨论",
+    "有其他想讨论", "已结束本次", "希望我的回答", 
+    "希望我的建议", "希望对您有所帮助", "结束了引导",
+    "结束话题", "退出话题", "返回主菜单"
   ];
+  
+  // 特殊处理：用户直接说"结束话题"等明确指令
+  const exactEndCommands = ["结束话题", "退出话题", "返回主菜单", "结束引导", "退出引导"];
+  if (exactEndCommands.includes(lowerContent.trim())) {
+    console.log("用户明确指令结束话题:", lowerContent);
+    return true;
+  }
   
   return endKeywords.some(keyword => lowerContent.includes(keyword));
 }
@@ -87,25 +97,56 @@ const containsEndGuidanceKeywords = (content) => {
 chatStore.$subscribe((mutation, state) => {
   if (mutation.storeId === 'chat' && mutation.events.key === 'messages') {
     const lastMessage = state.messages[state.messages.length - 1]
+    
+    // 检查用户消息是否是直接结束指令
+    if (lastMessage && lastMessage.type === 'user') {
+      const userMsg = lastMessage.content.toLowerCase().trim();
+      const directEndCommands = ["结束话题", "退出话题", "返回主菜单", "结束引导", "退出引导"];
+      
+      if (directEndCommands.includes(userMsg)) {
+        console.log("用户直接输入结束指令:", userMsg);
+        isGuiding.value = false;
+        currentCategory.value = null;
+        console.log("已直接解锁快速提问面板");
+        
+        // 调用聊天存储的强制结束函数
+        chatStore.forceEndGuidance();
+        
+        return; // 提前结束处理
+      }
+    }
+    
+    // 处理助手回复
     if (lastMessage && lastMessage.type === 'assistant') {
+      console.log("收到助手消息，检查是否结束引导:", lastMessage.content.substring(0, 50) + "...");
+      
+      // 检查是否需要结束引导
+      let shouldEndGuidance = false;
+      
       try {
-        // 尝试解析JSON
-        const replyData = JSON.parse(lastMessage.content)
+        // 尝试解析JSON (兼容后台直接返回JSON格式的情况)
+        const replyData = JSON.parse(lastMessage.content);
         if (replyData.is_summary) {
           console.log("检测到summary标记，结束引导");
-          isGuiding.value = false
-          currentCategory.value = null
+          shouldEndGuidance = true;
         }
       } catch (e) {
-        // 如果不是JSON格式，检查纯文本内容
-        if (lastMessage.content && typeof lastMessage.content === 'string') {
-          // 检查是否包含结束引导的关键词
-          if (containsEndGuidanceKeywords(lastMessage.content)) {
-            console.log("检测到会话结束关键词，解锁快速提问面板");
-            isGuiding.value = false
-            currentCategory.value = null
-          }
+        // 不是JSON格式，继续检查其他情况
+      }
+      
+      // 如果不是JSON或未检测到summary，检查纯文本内容是否包含结束关键词
+      if (!shouldEndGuidance && lastMessage.content && typeof lastMessage.content === 'string') {
+        if (containsEndGuidanceKeywords(lastMessage.content)) {
+          console.log("检测到会话结束关键词，解锁快速提问面板");
+          shouldEndGuidance = true;
         }
+      }
+      
+      // 如果需要结束引导，解锁面板
+      if (shouldEndGuidance) {
+        isGuiding.value = false;
+        currentCategory.value = null;
+        console.log("引导式会话已结束，已解锁快速提问面板");
       }
     }
   }
@@ -134,9 +175,19 @@ onMounted(() => {
   // 每10秒检查一次状态
   const intervalId = setInterval(checkGuidanceState, 10000);
   
-  // 组件卸载时清除定时器
+  // 监听引导结束事件
+  const handleGuidanceEnd = (event) => {
+    console.log("接收到引导结束事件:", event.detail);
+    isGuiding.value = false;
+    currentCategory.value = null;
+  };
+  
+  window.addEventListener('guidance-end', handleGuidanceEnd);
+  
+  // 组件卸载时清除定时器和事件监听
   onUnmounted(() => {
     clearInterval(intervalId);
+    window.removeEventListener('guidance-end', handleGuidanceEnd);
   });
 });
 

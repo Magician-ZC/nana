@@ -9,8 +9,8 @@ from Crypto.Cipher import DES
 from Crypto.Util.Padding import pad
 
 # 加密密钥和IV值
-DES_KEY = "wKnqXvKi"  # 8字节DES密钥
-DES_IV = "YpNsuo66"   # 8字节DES IV
+DES_KEY = "Ic20a32M"  # 8字节DES密钥
+DES_IV = "2w3IoN2Y"   # 8字节DES IV
 
 def generate_md5(text: str) -> str:
     """生成MD5哈希"""

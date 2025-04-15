@@ -28,6 +28,7 @@ from config import Config
 from speech_service import SpeechService
 from conversation import ConversationHistory
 import assessment_api  # 导入评估API模块
+from f5_speech_service import f5_speech_service  # 导入F5语音服务
 # from llm import LLMService  # 注释掉，因为我们使用chat_service中的LLM服务
 
 # 初始化七牛云上传器
@@ -66,6 +67,10 @@ class ChatRequest(BaseModel):
     agent_type: Optional[str] = None
     personality: Optional[str] = None
     is_category: Optional[bool] = False
+    # 添加stream_chat所需字段
+    history: Optional[List[Dict[str, str]]] = None
+    model: Optional[str] = None
+    agent_id: Optional[str] = None
 
 class AgentRequest(BaseModel):
     agent_name: str
@@ -541,6 +546,11 @@ CUSTOM_AGENTS_DIR = "save/custom_agents"
 TEMP_UPLOADS_DIR = "temp_uploads"
 os.makedirs(CUSTOM_AGENTS_DIR, exist_ok=True)
 os.makedirs(TEMP_UPLOADS_DIR, exist_ok=True)
+
+# 自定义Agent语音目录
+CUSTOM_VOICE_DIR = os.path.join("save", "custom_voice")
+# 确保目录存在
+os.makedirs(CUSTOM_VOICE_DIR, exist_ok=True)
 
 @app.post("/api/extract_agent_info")
 async def extract_agent_info(file: UploadFile = File(...)):
@@ -1067,120 +1077,179 @@ async def stream_chat(request: ChatRequest):
     """流式聊天API，支持打字机式回复
     
     Args:
-        request: 聊天请求
+        request: 聊天请求参数
         
     Returns:
         StreamingResponse: 流式响应
     """
+    global client
+    
+    # 打印请求内容以进行调试
+    print(f"stream_chat API接收到请求: {request}")
+    
+    # 使用统一的方式获取完整回复，然后再分批提供给流式接口
     async def generate_stream_response():
         try:
-            # 验证请求数据
-            if not request.message or not request.message.strip():
-                yield json.dumps({
-                    "type": "metadata",
-                    "expression": "生气",
-                    "error": "消息内容不能为空"
-                }) + "\n"
-                
-                yield json.dumps({
-                    "type": "complete",
-                    "content": "请输入有效的消息内容"
-                }) + "\n"
-                return
+            # 准备对话内容
+            conversation_history = request.history or [{"role": "user", "content": request.message}]
+            model_name = request.model or "gpt-3.5-turbo"
+            agent_id = request.agent_id
             
-            # API层也检测是否是无意义输入，避免网络请求开销
-            if not request.is_category and is_meaningless_input(request.message):
-                print(f"API层检测到无意义输入: '{request.message}'，返回模板回复")
-                
-                # 根据当前智能体选择合适的模板回复
-                agent_type = request.agent_type or "nanaA"
-                template_replies = {
-                    "nanaA": "喵~？你在说什么呀，我听不懂...",
-                    "nanaB": "抱歉，我没有理解你的意思。能请你说得更清楚一些吗？",
-                    "nanaC": "咦？这是什么意思呀？再说一次好不好~"
-                }
-                reply_content = template_replies.get(agent_type, "我没明白你的意思，能说得更清楚些吗？")
-                
-                # 返回元数据
-                yield json.dumps({
-                    "type": "metadata",
-                    "expression": "疑惑",
-                    "message_id": int(time.time() * 1000)
-                }) + "\n"
-                
-                # 逐字发送回复内容
-                for char in reply_content:
-                    chunk = {
-                        "type": "chunk",
-                        "content": char
-                    }
-                    yield json.dumps(chunk) + "\n"
-                    await asyncio.sleep(0.01)  # 模拟打字效果
-                
-                # 发送完成信号
-                yield json.dumps({
-                    "type": "complete",
-                    "content": reply_content
-                }) + "\n"
-                
-                return
+            # 判断是否是引导式提问
+            is_quick_question = request.is_category or False
             
-            # 生成回复
-            reply, audio_data, expression, guidance_message = await chat_service.generate_reply(
-                request.message, 
-                request.session_id,
-                agent_type=request.agent_type,
-                personality=request.personality,
-                is_category=request.is_category
+            print(f"处理stream_chat请求: message={request.message}, agent_type={request.agent_type}, agent_id={agent_id}")
+            print(f"是否是快捷提问: {is_quick_question}")
+            print(f"使用对话历史: {conversation_history}")
+            print(f"使用模型: {model_name}")
+            
+            # 默认使用常规TTS
+            use_f5_tts = False
+            
+            # 检查是否是自定义角色且启用了F5TTS语音
+            if agent_id and agent_id.startswith("custom_"):
+                # 检查角色配置中是否有语音文件
+                config_path = os.path.join(CUSTOM_AGENTS_DIR, f"{agent_id}.json")
+                print(f"检查自定义角色配置: {config_path}")
+                
+                try:
+                    if os.path.exists(config_path):
+                        with open(config_path, "r", encoding="utf-8") as f:
+                            agent_config = json.load(f)
+                        
+                        print(f"角色配置内容: {agent_config}")
+                        
+                        # 无论是否在配置中有voice_file，都尝试查找语音文件
+                        # 先检查配置中的路径
+                        voice_exists = False
+                        voice_file_path = None
+                        
+                        if "voice_file" in agent_config:
+                            voice_file_path = agent_config["voice_file"]
+                            print(f"配置中找到语音文件路径: {voice_file_path}")
+                        else:
+                            print(f"配置中未声明语音文件路径，将尝试通过其他方式查找")
+                        
+                        # 尝试多种路径解析方式
+                        possible_paths = []
+                        
+                        # 如果配置中有路径，添加到可能路径
+                        if voice_file_path:
+                            possible_paths.extend([
+                                voice_file_path,  # 直接使用配置中的路径
+                                os.path.abspath(voice_file_path),  # 作为绝对路径
+                                os.path.join(os.getcwd(), voice_file_path),  # 相对于当前工作目录
+                                # 尝试从自定义语音目录查找文件名
+                                os.path.join(CUSTOM_VOICE_DIR, os.path.basename(voice_file_path))
+                            ])
+                        
+                        # 无论配置如何，总是尝试使用agent_id查找
+                        for ext in ['.wav', '.mp3', '.m4a', '.aac']:
+                            direct_path = os.path.join(CUSTOM_VOICE_DIR, f"{agent_id}{ext}")
+                            possible_paths.append(direct_path)
+                        
+                        # 检查所有可能的路径
+                        for path in possible_paths:
+                            print(f"尝试路径: {path}")
+                            if os.path.exists(path):
+                                voice_file_path = path
+                                voice_exists = True
+                                print(f"找到有效的语音文件: {voice_file_path}")
+                                
+                                # 更新配置文件以确保下次能直接找到
+                                if not agent_config.get("voice_file") or agent_config["voice_file"] != voice_file_path:
+                                    agent_config["voice_file"] = voice_file_path
+                                    try:
+                                        with open(config_path, "w", encoding="utf-8") as f:
+                                            json.dump(agent_config, f, ensure_ascii=False, indent=2)
+                                        print(f"已更新配置文件中的语音路径: {voice_file_path}")
+                                    except Exception as config_error:
+                                        print(f"更新配置文件失败: {config_error}")
+                                
+                                break
+                            
+                        if voice_exists:
+                            use_f5_tts = True
+                            print(f"将使用F5-TTS，语音文件: {voice_file_path}")
+                            
+                            # 预启动F5TTS服务器
+                            f5_server_started = f5_speech_service.start_server_for_agent(agent_id)
+                            print(f"F5-TTS服务器启动状态: {f5_server_started}")
+                        else:
+                            print(f"在所有尝试的路径中均未找到语音文件: {possible_paths}")
+                    else:
+                        print(f"角色配置文件不存在: {config_path}")
+                except Exception as e:
+                    print(f"检查语音配置时出错: {e}")
+                    import traceback
+                    print(traceback.format_exc())
+            
+            # 使用对话历史生成回复
+            full_response, audio_data = await chat_service.generate_response(
+                conversation_history, 
+                model_name,
+                stream=False,  # 首先获取完整回复
+                agent_id=agent_id,
+                is_category=is_quick_question  # 传递是否快捷提问的标志
             )
             
-            # 用于调试输出
-            print("-- /api/stream_chat --")
-            print("agent_type:", request.agent_type)
-            print("personality:", request.personality)
-            print("is_category:", request.is_category)
-            print("reply:", reply)
-            print("expression:", expression)
-            print("audio_data 大小:", len(audio_data) if audio_data else 0, "字节")
+            # 分词发送回复
+            response_text = full_response
+            tokens = response_text.split(" ")
             
-            # 检查是否获取到有效回复
-            if not reply:
-                yield json.dumps({
-                    "type": "metadata",
-                    "expression": "生气",
-                    "error": "未能生成有效回复"
-                }) + "\n"
+            accumulated_text = ""
+            chunk_size = 3  # 每个块的token数量
+            
+            # 先发送回复类型指示
+            yield json.dumps({"type": "start", "content": ""}) + "\n"
+            
+            # 按块发送回复
+            for i in range(0, len(tokens), chunk_size):
+                chunk_tokens = tokens[i:i+chunk_size]
+                chunk_text = " ".join(chunk_tokens)
+                accumulated_text += chunk_text + " "  # 添加空格以确保词之间有间隔
                 
-                yield json.dumps({
-                    "type": "complete",
-                    "content": "抱歉，我现在无法回答。请稍后再试。"
-                }) + "\n"
-                return
-            
-            # 先发送表情和引导消息的元数据
-            metadata = {
-                "type": "metadata",
-                "expression": expression,
-                "message_id": int(time.time() * 1000)  # 添加唯一消息ID
-            }
-            
-            if guidance_message:
-                metadata["guidance_message"] = guidance_message
+                # 发送文本块
+                yield json.dumps({"type": "content", "content": chunk_text}) + "\n"
                 
-                # 检查是否有引导决策的音频数据
-                guidance_audio = None
-                if hasattr(chat_service.main_agent.conversation_history, 'guidance_audio'):
-                    guidance_audio = chat_service.main_agent.conversation_history.guidance_audio
+                # 小的延迟以模拟打字效果
+                await asyncio.sleep(0.05)  # 增加延迟以使打字效果更明显
+            
+            # 发送表情数据（如果有）
+            if hasattr(chat_service.main_agent, 'expression') and chat_service.main_agent.expression:
+                yield json.dumps({
+                    "type": "metadata", 
+                    "expression": chat_service.main_agent.expression
+                }) + "\n"
+            
+            # 发送结束指示
+            yield json.dumps({"type": "end", "content": ""}) + "\n"
+            
+            # 如果使用F5TTS
+            if use_f5_tts:
+                # 使用F5-TTS生成语音，不需要返回音频数据
+                try:
+                    if asyncio.iscoroutinefunction(f5_speech_service.generate_speech_async):
+                        # 使用异步版本
+                        voice_generated = await f5_speech_service.generate_speech_async(agent_id, response_text)
+                    else:
+                        # 如果异步版本不可用，回退到同步版本
+                        voice_generated = f5_speech_service.generate_speech(agent_id, response_text)
                     
-                if guidance_audio and len(guidance_audio) > 100:
-                    guidance_audio_base64 = base64.b64encode(guidance_audio).decode('ascii')
-                    metadata["guidance_audio"] = guidance_audio_base64
-                    print(f"引导决策音频已添加到流式响应元数据，大小: {len(guidance_audio)} 字节")
+                    print(f"F5-TTS语音生成状态: {voice_generated}")
+                except Exception as e:
+                    print(f"F5-TTS语音生成出错: {e}")
+                    import traceback
+                    print(traceback.format_exc())
+                
+                # 发送使用F5-TTS的通知
+                yield json.dumps({
+                    "type": "f5_tts_notification",
+                    "message": "使用F5-TTS流式生成语音"
+                }) + "\n"
             
-            yield json.dumps(metadata) + "\n"
-            
-            # 如果有音频数据，处理后发送
-            if audio_data and len(audio_data) > 100:  # 确保音频数据长度合理
+            # 如果有音频数据且不使用F5TTS，处理后发送
+            elif audio_data and len(audio_data) > 100:  # 确保音频数据长度合理
                 # 对于大型音频数据进行分片处理
                 MAX_CHUNK_SIZE = 32 * 1024  # 32KB 分片大小，避免JSON解析问题
                 base64_audio = base64.b64encode(audio_data).decode('ascii')
@@ -1216,90 +1285,32 @@ async def stream_chat(request: ChatRequest):
                         yield json.dumps(chunk) + "\n"
                     
                     # 发送最后一个分片
-                    if len(chunks) > 1:
-                        last_chunk = {
-                            "type": "audio_end",
-                            "chunk_index": len(chunks) - 1,
-                            "audio_chunk": chunks[-1]
-                        }
-                        yield json.dumps(last_chunk) + "\n"
-                    
-                    print("音频分片发送完成")
+                    last_chunk = {
+                        "type": "audio_end",
+                        "chunk_index": len(chunks) - 1,
+                        "audio_chunk": chunks[-1]
+                    }
+                    yield json.dumps(last_chunk) + "\n"
                 else:
-                    # 音频数据不大，一次性发送
-                    try:
-                        audio_message = {
-                            "type": "audio",
-                            "audio": base64_audio
-                        }
-                        yield json.dumps(audio_message) + "\n"
-                        print("完整音频数据发送成功")
-                    except Exception as audio_error:
-                        print(f"发送音频数据时出错: {audio_error}")
-            elif not audio_data:
-                # 如果没有音频数据，记录这个情况
-                print("没有收到音频数据，跳过音频发送")
+                    # 如果音频较小，直接一次性发送
+                    audio_response = {
+                        "type": "audio",
+                        "audio_data": base64_audio
+                    }
+                    yield json.dumps(audio_response) + "\n"
             
-            # 逐字发送回复内容，确保每个字符都是有效的
-            for char in reply:
-                chunk = {
-                    "type": "chunk",
-                    "content": char
-                }
-                yield json.dumps(chunk) + "\n"
-                
-                # 使用配置中的打字速度，转换为秒，添加错误处理
-                try:
-                    typing_speed = Config.TYPING_SPEED
-                    # 确保打字速度在合理范围内
-                    if not isinstance(typing_speed, int) or typing_speed < 10:
-                        typing_speed = 38  # 使用默认值
-                    elif typing_speed > 200:
-                        typing_speed = 200
-                        
-                    typing_delay = typing_speed / 1000.0
-                    # 确保延迟时间不会太长
-                    if typing_delay > 0.2:
-                        print(f"打字延迟过长 ({typing_delay}秒)，限制为0.2秒")
-                        typing_delay = 0.2
-                        
-                    await asyncio.sleep(typing_delay)
-                except Exception as e:
-                    print(f"处理打字延迟时出错: {e}")
-                    # 使用默认延迟
-                    await asyncio.sleep(0.038)
-            
-            # 发送完成标记
-            complete = {
-                "type": "complete"
-            }
-            
-            yield json.dumps(complete) + "\n"
-            
-        except asyncio.CancelledError:
-            # 处理客户端取消请求
-            print("客户端取消了请求")
-            raise
         except Exception as e:
-            # 处理所有其他异常
-            print(f"流式聊天生成出错: {str(e)}")
-            error_metadata = {
-                "type": "metadata",
-                "expression": "生气",
-                "error": "服务器处理错误"
-            }
-            yield json.dumps(error_metadata) + "\n"
+            error_info = str(e)
+            print(f"流式聊天出错: {error_info}")
             
-            error_message = {
-                "type": "complete",
-                "content": "抱歉，处理您的请求时出现了错误。请稍后再试。"
-            }
-            yield json.dumps(error_message) + "\n"
+            # 报告错误
+            yield json.dumps({
+                "type": "error",
+                "error": error_info
+            }) + "\n"
     
-    return StreamingResponse(
-        generate_stream_response(),
-        media_type="application/x-ndjson"
-    )
+    # 返回流式响应
+    return StreamingResponse(generate_stream_response(), media_type="text/event-stream")
 
 @app.post("/api/change_agent")
 async def change_agent(request: AgentRequest):
@@ -1387,12 +1398,53 @@ async def normal_chat_flow(request: ChatRequest):
     if guidance_message:
         print("guidance_message:", guidance_message)
 
-    audio_base64 = base64.b64encode(audio_data).decode('ascii') if audio_data else ''
+    # 检查是否是自定义角色且启用了F5TTS语音
+    use_f5_tts = False
+    agent_id = request.agent_type
+    
+    if agent_id and agent_id.startswith("custom_"):
+        # 检查角色配置中是否有语音文件
+        config_path = os.path.join(CUSTOM_AGENTS_DIR, f"{agent_id}.json")
+        print(f"检查自定义角色配置: {config_path}")
+        
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                agent_config = json.load(f)
+            
+            print(f"角色配置内容: {agent_config}")
+            
+            # 如果有语音文件，使用F5TTS
+            if "voice_file" in agent_config and os.path.exists(agent_config["voice_file"]):
+                use_f5_tts = True
+                voice_file_path = agent_config["voice_file"]
+                print(f"找到有效的语音文件: {voice_file_path}")
+                
+                # 启动F5TTS服务器并生成语音
+                print(f"使用F5TTS为自定义角色{agent_id}生成语音")
+                f5_server_started = f5_speech_service.start_server_for_agent(agent_id)
+                print(f"F5-TTS服务器启动状态: {f5_server_started}")
+                
+                if f5_server_started:
+                    voice_generated = f5_speech_service.generate_speech(agent_id, reply)
+                    print(f"F5-TTS语音生成状态: {voice_generated}")
+            else:
+                if "voice_file" in agent_config:
+                    print(f"语音文件不存在: {agent_config['voice_file']}")
+                else:
+                    print(f"未配置语音文件")
+        else:
+            print(f"角色配置文件不存在: {config_path}")
+    
+    # 只在不使用F5TTS时才传递音频数据
+    audio_base64 = ''
+    if not use_f5_tts and audio_data and len(audio_data) > 100:
+        audio_base64 = base64.b64encode(audio_data).decode('ascii')
     
     response_data = {
         "message": reply,
         "audio": audio_base64,
-        "expression": expression
+        "expression": expression,
+        "use_f5_tts": use_f5_tts  # 添加标志指示前端是否使用了F5TTS
     }
     
     # 如果有引导决策消息，添加到响应中
@@ -2416,6 +2468,272 @@ async def process_assessment_from_report(report_path, context=""):
         import traceback
         logger.error(traceback.format_exc())
         return None
+
+@app.post("/api/upload_custom_voice")
+async def upload_custom_voice(
+    file: UploadFile = File(...),
+    agent_id: str = Form(None)
+):
+    """
+    上传自定义角色语音
+    
+    Args:
+        file: 上传的音频文件
+        agent_id: 角色ID (可选)
+        
+    Returns:
+        dict: 包含上传结果的响应
+    """
+    try:
+        # 验证文件类型
+        file_extension = os.path.splitext(file.filename)[1].lower()
+        allowed_extensions = ['.wav', '.mp3', '.m4a', '.aac']
+        
+        if file_extension not in allowed_extensions:
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": f"不支持的文件类型。请上传以下类型的音频文件: {', '.join(allowed_extensions)}"
+                }
+            )
+        
+        # 检查文件大小
+        file_size_limit = 5 * 1024 * 1024  # 5MB
+        file_content = await file.read()
+        
+        if len(file_content) > file_size_limit:
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": f"文件大小超过限制 (5MB)"
+                }
+            )
+        
+        # 如果提供了agent_id，检查该角色是否存在
+        if agent_id:
+            config_path = os.path.join(CUSTOM_AGENTS_DIR, f"{agent_id}.json")
+            if not os.path.exists(config_path):
+                return JSONResponse(
+                    content={
+                        "success": False,
+                        "message": "指定的角色不存在"
+                    }
+                )
+        
+        # 生成临时文件名进行保存
+        temp_filename = f"temp_voice_{uuid.uuid4().hex}{file_extension}"
+        temp_filepath = os.path.join(CUSTOM_VOICE_DIR, temp_filename)
+        
+        # 将文件内容写入临时文件
+        with open(temp_filepath, "wb") as f:
+            f.write(file_content)
+            
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": "语音上传成功",
+                "file_path": temp_filepath,
+                "file_name": temp_filename
+            }
+        )
+    except Exception as e:
+        print(f"语音上传失败: {e}")
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": f"语音上传失败: {str(e)}"
+            }
+        )
+
+@app.post("/api/bind_voice_to_agent")
+async def bind_voice_to_agent(
+    agent_id: str = Form(...),
+    voice_file: str = Form(...)
+):
+    """
+    将语音绑定到角色
+    
+    Args:
+        agent_id: 角色ID
+        voice_file: 临时语音文件名
+        
+    Returns:
+        dict: 包含绑定结果的响应
+    """
+    try:
+        # 检查角色是否存在
+        config_path = os.path.join(CUSTOM_AGENTS_DIR, f"{agent_id}.json")
+        if not os.path.exists(config_path):
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": "指定的角色不存在"
+                }
+            )
+        
+        # 加载角色配置
+        with open(config_path, "r", encoding="utf-8") as f:
+            agent_config = json.load(f)
+        
+        # 检查临时语音文件是否存在
+        temp_filepath = os.path.join(CUSTOM_VOICE_DIR, voice_file)
+        if not os.path.exists(temp_filepath):
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": "指定的语音文件不存在"
+                }
+            )
+        
+        # 获取文件扩展名
+        file_extension = os.path.splitext(voice_file)[1].lower()
+        
+        # 创建以角色名命名的语音文件
+        agent_voice_filename = f"{agent_id}{file_extension}"
+        agent_voice_filepath = os.path.join(CUSTOM_VOICE_DIR, agent_voice_filename)
+        
+        # 复制临时文件到目标位置
+        shutil.copy2(temp_filepath, agent_voice_filepath)
+        
+        # 更新角色配置，添加语音文件路径
+        agent_config["voice_file"] = agent_voice_filepath
+        
+        # 保存更新后的角色配置
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(agent_config, f, ensure_ascii=False, indent=2)
+        
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": "语音成功绑定到角色",
+                "voice_path": agent_voice_filepath
+            }
+        )
+    except Exception as e:
+        print(f"绑定语音失败: {e}")
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": f"绑定语音失败: {str(e)}"
+            }
+        )
+
+@app.get("/api/get_agent_config")
+async def get_agent_config(agent_id: str):
+    """
+    获取角色配置信息
+    
+    Args:
+        agent_id: 角色ID
+        
+    Returns:
+        dict: 包含角色配置的响应
+    """
+    try:
+        # 检查角色是否存在
+        config_path = os.path.join(CUSTOM_AGENTS_DIR, f"{agent_id}.json")
+        if not os.path.exists(config_path):
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": "指定的角色不存在"
+                }
+            )
+        
+        # 加载角色配置
+        with open(config_path, "r", encoding="utf-8") as f:
+            agent_config = json.load(f)
+        
+        # 检查是否有语音文件，验证文件是否存在
+        if "voice_file" in agent_config:
+            if os.path.exists(agent_config["voice_file"]):
+                print(f"找到角色 {agent_id} 的语音文件: {agent_config['voice_file']}")
+            else:
+                print(f"角色 {agent_id} 的语音文件不存在: {agent_config['voice_file']}")
+                # 不删除字段，保留路径信息
+        
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": "获取角色配置成功",
+                "config": agent_config
+            }
+        )
+    except Exception as e:
+        print(f"获取角色配置失败: {e}")
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": f"获取角色配置失败: {str(e)}"
+            }
+        )
+
+@app.get("/api/remove_agent_voice")
+async def remove_agent_voice(agent_id: str):
+    """
+    移除角色的语音文件
+    
+    Args:
+        agent_id: 角色ID
+        
+    Returns:
+        dict: 包含操作结果的响应
+    """
+    try:
+        # 检查角色是否存在
+        config_path = os.path.join(CUSTOM_AGENTS_DIR, f"{agent_id}.json")
+        if not os.path.exists(config_path):
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": "指定的角色不存在"
+                }
+            )
+        
+        # 加载角色配置
+        with open(config_path, "r", encoding="utf-8") as f:
+            agent_config = json.load(f)
+        
+        # 检查是否有语音文件
+        if "voice_file" in agent_config:
+            voice_filepath = agent_config["voice_file"]
+            
+            # 从配置中移除语音文件字段
+            del agent_config["voice_file"]
+            
+            # 保存更新后的配置
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(agent_config, f, ensure_ascii=False, indent=2)
+            
+            # 尝试删除语音文件（如果存在）
+            if os.path.exists(voice_filepath):
+                try:
+                    os.remove(voice_filepath)
+                    print(f"已删除语音文件: {voice_filepath}")
+                except Exception as e:
+                    print(f"删除语音文件失败: {e}")
+            
+            return JSONResponse(
+                content={
+                    "success": True,
+                    "message": "已移除角色的语音文件"
+                }
+            )
+        else:
+            return JSONResponse(
+                content={
+                    "success": True,
+                    "message": "该角色没有绑定语音文件"
+                }
+            )
+    except Exception as e:
+        print(f"移除语音文件失败: {e}")
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": f"移除语音文件失败: {str(e)}"
+            }
+        )
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8666, reload=True)

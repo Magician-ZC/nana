@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useUserStore } from './user'
 import _ from 'lodash'
+import { getApiUrl } from '../utils/api'
 
 export const useAssessmentStore = defineStore('assessment', () => {
   // Get userStore instance
@@ -361,7 +362,7 @@ export const useAssessmentStore = defineStore('assessment', () => {
       console.log('发送请求到视频评估报告API:', encryptedData)
       
       // 发送请求 - 使用JSON格式
-      const response = await fetch('http://192.168.3.143:30080/app-api/equipment/emotion/list', {
+      const response = await fetch(getApiUrl('equipment/emotion/list'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -422,7 +423,7 @@ export const useAssessmentStore = defineStore('assessment', () => {
       const authToken = userStore.getAuthToken()
       
       // 发起下载请求
-      const response = await fetch(`http://localhost:8666/api/report/${reportId}`, {
+      const response = await fetch(getApiUrl(`report/${reportId}`), {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${authToken}`
@@ -462,7 +463,7 @@ export const useAssessmentStore = defineStore('assessment', () => {
       formData.append('file', reportBlob, `report_${reportId}.pdf`)
       
       // 调用情绪评估接口
-      const assessmentResponse = await fetch('http://localhost:8666/api/emotional_assessment', {
+      const assessmentResponse = await fetch(getApiUrl('emotional_assessment'), {
         method: 'POST',
         body: formData
       })
@@ -542,7 +543,7 @@ export const useAssessmentStore = defineStore('assessment', () => {
     // 每5秒检查一次分析结果
     const analysisCheckInterval = setInterval(async () => {
       try {
-        const response = await fetch('http://localhost:8666/api/latest_assessment')
+        const response = await fetch(getApiUrl('latest_assessment'))
         const data = await response.json()
         
         if (data.success && data.has_assessment) {
@@ -594,7 +595,7 @@ export const useAssessmentStore = defineStore('assessment', () => {
     
     try {
       lastAssessmentStatusRequestTime = Date.now();
-      const response = await fetch('http://localhost:8666/api/assessment_status');
+      const response = await fetch(getApiUrl('assessment_status'));
       const data = await response.json();
       
       if (data.success) {
@@ -611,7 +612,7 @@ export const useAssessmentStore = defineStore('assessment', () => {
   async function loadLatestEmotionalAssessment() {
     try {
       console.log('[DEBUG] 加载最新情绪评估数据')
-      const response = await fetch('http://localhost:8666/api/latest_assessment')
+      const response = await fetch(getApiUrl('latest_assessment'))
       const data = await response.json()
       
       if (!data.success) {
@@ -650,7 +651,7 @@ export const useAssessmentStore = defineStore('assessment', () => {
       const authToken = userStore.getAuthToken()
       
       // 调用统一API
-      const response = await fetch('http://localhost:8666/api/video/status', {
+      const response = await fetch(getApiUrl('video/status'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -915,7 +916,7 @@ export const useAssessmentStore = defineStore('assessment', () => {
       // 获取授权令牌
       const authToken = userStore.getAuthToken()
       
-      const response = await fetch('http://localhost:8666/api/video/status', {
+      const response = await fetch(getApiUrl('video/status'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -1038,7 +1039,7 @@ export const useAssessmentStore = defineStore('assessment', () => {
         }
         
         // 验证评估状态的有效性
-        const response = await fetch('http://localhost:8666/api/latest_assessment')
+        const response = await fetch(getApiUrl('latest_assessment'))
         const data = await response.json()
         
         if (!data.success || !data.has_assessment) {
@@ -1085,7 +1086,7 @@ export const useAssessmentStore = defineStore('assessment', () => {
       const authToken = userStore.getAuthToken()
       
       // 获取最新报告列表
-      const response = await fetch(`http://localhost:8666/api/check-latest-report`, {
+      const response = await fetch(getApiUrl('check-latest-report'), {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${authToken}`,
@@ -1132,7 +1133,7 @@ export const useAssessmentStore = defineStore('assessment', () => {
       const authToken = userStore.getAuthToken()
       
       // 调用API
-      const response = await fetch('http://localhost:8666/api/video/update_report_status', {
+      const response = await fetch(getApiUrl('video/update_report_status'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'

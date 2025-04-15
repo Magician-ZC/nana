@@ -252,7 +252,7 @@ def test_upload_video(video_path, auth_token, file_type="avi", use_local_api=Tru
     
     if use_local_api:
         # 使用本地API上传
-        url = "http://localhost:8666/api/upload-video"
+        url = "https://localhost:8666/api/upload-video"
         headers = {
             "Authorization": f"Bearer {auth_token}"
         }

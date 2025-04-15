@@ -49,6 +49,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useChatStore } from '../stores/chat'
 import CustomAgentForm from './CustomAgentForm.vue'
+import { getApiUrl } from '../utils/api'
 
 const props = defineProps({
   currentModel: {
@@ -90,7 +91,7 @@ const handleAgentSelect = async (agentId) => {
       ? selectedAgentData.model // 使用自定义agent的model字段
       : agentId                 // 对于内置agent，直接使用id
 
-    const response = await fetch('http://localhost:8666/api/change_agent', {
+    const response = await fetch(getApiUrl('change_agent'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -148,7 +149,7 @@ const handleDeleteAgent = async (agentId) => {
   }
   
   try {
-    const response = await fetch(`http://localhost:8666/api/delete_custom_agent/${agentId}`, {
+    const response = await fetch(getApiUrl(`delete_custom_agent/${agentId}`), {
       method: 'DELETE'
     })
     
@@ -177,7 +178,7 @@ const handleCustomAgentSave = async (customAgent) => {
     
     if (editingAgent.value) {
       // 更新现有角色
-      response = await fetch(`http://localhost:8666/api/update_custom_agent/${editingAgent.value.id}`, {
+      response = await fetch(getApiUrl(`update_custom_agent/${editingAgent.value.id}`), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -187,7 +188,7 @@ const handleCustomAgentSave = async (customAgent) => {
       savedAgentId = editingAgent.value.id
     } else {
       // 创建新角色
-      response = await fetch('http://localhost:8666/api/create_custom_agent', {
+      response = await fetch(getApiUrl('create_custom_agent'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -254,7 +255,7 @@ const handleCustomAgentSave = async (customAgent) => {
 // 组件挂载时加载自定义角色列表
 onMounted(async () => {
   try {
-    const response = await fetch('http://localhost:8666/api/list_custom_agents')
+    const response = await fetch(getApiUrl('list_custom_agents'))
     const data = await response.json()
     
     if (data.success && data.agents) {

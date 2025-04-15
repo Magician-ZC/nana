@@ -105,6 +105,7 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useAssessmentStore } from '../stores/assessment'
 import { useUserStore } from '../stores/user'
+import { getApiUrl } from '../utils/api'
 
 const props = defineProps({
   recordingDuration: {
@@ -775,7 +776,7 @@ const uploadVideo = async () => {
     console.log('授权令牌已存储:', authToken);
     
     // 使用七牛云上传接口
-    const response = await fetch('http://localhost:8666/api/upload-video', {
+    const response = await fetch(getApiUrl('upload-video'), {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${authToken}`
@@ -1003,7 +1004,7 @@ const retryUpload = async () => {
     formData.append('file', savedVideoBlob.value, `emotion_assessment.${fileExtension}`);
     
     // 使用七牛云上传接口
-    const response = await fetch('http://localhost:8666/api/upload-video', {
+    const response = await fetch(getApiUrl('upload-video'), {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${authToken}`

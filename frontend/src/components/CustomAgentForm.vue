@@ -161,6 +161,98 @@
             </div>
           </div>
           
+          <!-- 语音上传区域 -->
+          <div class="mb-6 bg-neutral-50 dark:bg-neutral-700/50 rounded-xl p-4 shadow-sm border border-neutral-200 dark:border-neutral-700">
+            <h4 class="text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-3">自定义语音</h4>
+            
+            <div class="space-y-3">
+              <!-- 录音按钮 -->
+              <div class="flex flex-col items-center space-y-2">
+                <button 
+                  @click="toggleRecording" 
+                  class="w-full flex items-center justify-center px-4 py-2 rounded-lg transition-all duration-200"
+                  :class="isRecording ? 'bg-red-500 hover:bg-red-600 text-white' : 'bg-primary-600 hover:bg-primary-700 text-white'"
+                >
+                  <i class="fa-solid" :class="isRecording ? 'fa-stop' : 'fa-microphone'"></i>
+                  <span class="ml-2">{{ isRecording ? '停止录音' : '开始录音' }}</span>
+                </button>
+                
+                <div v-if="isRecording" class="text-xs text-neutral-500 dark:text-neutral-400 animate-pulse">
+                  正在录音...{{ recordingTime }}秒
+                </div>
+              </div>
+              
+              <!-- 或者分割线 -->
+              <div class="flex items-center my-3">
+                <div class="flex-grow border-t border-neutral-200 dark:border-neutral-700"></div>
+                <span class="mx-3 text-xs text-neutral-500 dark:text-neutral-400">或者</span>
+                <div class="flex-grow border-t border-neutral-200 dark:border-neutral-700"></div>
+              </div>
+              
+              <!-- 上传语音文件 -->
+              <label 
+                for="voice-upload" 
+                class="flex flex-col items-center justify-center w-full h-24 border-2 border-neutral-300 border-dashed rounded-lg cursor-pointer bg-neutral-50 dark:border-neutral-600 dark:bg-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-600 transition-all duration-200"
+              >
+                <div class="flex flex-col items-center justify-center pt-3 pb-3">
+                  <i class="fa-solid fa-file-audio mb-1 text-xl text-neutral-500 dark:text-neutral-400"></i>
+                  <p class="text-sm text-neutral-600 dark:text-neutral-300">
+                    <span class="font-medium">上传语音文件</span>
+                  </p>
+                  <p class="text-xs text-neutral-500 dark:text-neutral-400 mt-1">支持 WAV, MP3, M4A 文件 (最大5MB)</p>
+                </div>
+                <input 
+                  id="voice-upload" 
+                  ref="voiceInput"
+                  type="file" 
+                  class="hidden" 
+                  @change="handleVoiceUpload" 
+                  accept=".wav,.mp3,.m4a,.aac"
+                />
+              </label>
+              
+              <!-- 语音预览区域 -->
+              <div v-if="voiceFile || form.hasVoice" class="mt-2 space-y-2">
+                <div class="flex items-center justify-between text-sm">
+                  <div class="flex items-center">
+                    <i class="fa-solid fa-file-audio mr-2 text-primary-500 dark:text-primary-400"></i>
+                    <span class="text-neutral-700 dark:text-neutral-300 truncate max-w-[180px]">{{ voiceFileName }}</span>
+                  </div>
+                  
+                  <div class="flex items-center space-x-2">
+                    <button 
+                      v-if="voiceFile"
+                      @click="playVoicePreview" 
+                      class="w-8 h-8 flex items-center justify-center rounded-full bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-700 dark:hover:bg-neutral-600 text-neutral-700 dark:text-neutral-300 transition-all duration-200"
+                    >
+                      <i class="fa-solid" :class="isPlaying ? 'fa-pause' : 'fa-play'"></i>
+                    </button>
+                    
+                    <button 
+                      @click="removeVoice" 
+                      class="w-8 h-8 flex items-center justify-center rounded-full bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-700 dark:hover:bg-neutral-600 text-neutral-700 dark:text-neutral-300 transition-all duration-200"
+                    >
+                      <i class="fa-solid fa-trash-alt"></i>
+                    </button>
+                  </div>
+                </div>
+                
+                <div v-if="form.hasVoice && !voiceFile" class="text-xs text-green-600 dark:text-green-400">
+                  <i class="fa-solid fa-check-circle mr-1"></i>
+                  已绑定语音文件（上传新文件将替换现有文件）
+                </div>
+                
+                <!-- 上传进度条 -->
+                <div v-if="isVoiceUploading" class="w-full bg-neutral-200 dark:bg-neutral-600 rounded-full h-1.5">
+                  <div 
+                    class="bg-primary-500 dark:bg-primary-400 h-1.5 rounded-full transition-all duration-300 ease-in-out" 
+                    :style="{ width: voiceUploadProgress + '%' }"
+                  ></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          
           <!-- 预览区域 -->
           <div class="bg-neutral-50 dark:bg-neutral-700/50 rounded-xl p-4 shadow-sm border border-neutral-200 dark:border-neutral-700">
             <h4 class="text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-3">角色预览</h4>
@@ -226,7 +318,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { getApiUrl } from '../utils/api'
 
 const props = defineProps({
   editAgent: {
@@ -240,6 +333,22 @@ const fileInput = ref(null)
 const fileName = ref('')
 const isUploading = ref(false)
 const uploadProgress = ref(0)
+
+// 语音相关
+const voiceInput = ref(null)
+const voiceFile = ref(null)
+const voiceFileName = ref('')
+const isVoiceUploading = ref(false)
+const voiceUploadProgress = ref(0)
+const isRecording = ref(false)
+const recordingTime = ref(0)
+const recordingInterval = ref(null)
+const mediaRecorder = ref(null)
+const audioChunks = ref([])
+const audioURL = ref(null)
+const audioPlayer = ref(null)
+const isPlaying = ref(false)
+const uploadedVoicePath = ref('')
 
 // 角色标签选项
 const tagOptions = [
@@ -316,19 +425,24 @@ const tagColors = [
 // 已选中的标签
 const selectedTags = ref([])
 
+// 初始化表单数据
 const form = ref({
   name: '',
-  description: '', // 将存储选中的标签
+  description: '',
   model: 'nanaA',
   personality: '',
   interests: '',
   lifestyle: '',
-  values: ''
+  values: '',
+  // 新增语音文件字段
+  voiceFile: '',
+  hasVoice: false
 })
 
 // 组件挂载时，如果是编辑模式，则填充表单数据
-onMounted(() => {
+onMounted(async () => {
   if (props.editAgent) {
+    // 加载基本信息
     form.value = {
       name: props.editAgent.name || '',
       description: props.editAgent.description || '',
@@ -354,6 +468,36 @@ onMounted(() => {
         selectedTags.value = []
       }
     }
+    
+    // 尝试加载语音文件信息
+    try {
+      // 为了确保获取最新的agent配置，直接请求后端
+      console.log('正在获取agent配置，ID:', props.editAgent.id)
+      const response = await fetch(getApiUrl(`get_agent_config?agent_id=${props.editAgent.id}`))
+      const data = await response.json()
+      
+      console.log('获取到的agent配置:', data)
+      
+      if (data.success && data.config && data.config.voice_file) {
+        // 如果有voice_file，显示语音文件名
+        const voiceFilePath = data.config.voice_file
+        const fileName = voiceFilePath.split('/').pop() // 提取文件名
+        
+        console.log('检测到语音文件:', fileName, '路径:', voiceFilePath)
+        
+        // 设置语音预览信息（不上传文件，仅显示信息）
+        voiceFileName.value = fileName || '已配置语音文件.wav'
+        // 标记已有语音文件
+        form.value.hasVoice = true
+      } else {
+        console.log('未检测到语音文件:', data)
+        if (data.config) {
+          console.log('配置中的字段:', Object.keys(data.config))
+        }
+      }
+    } catch (error) {
+      console.error('加载语音文件信息失败:', error)
+    }
   }
 })
 
@@ -377,7 +521,7 @@ const handleFileUpload = async (event) => {
       }
     }, 200)
     
-    const response = await fetch('http://localhost:8666/api/extract_agent_info', {
+    const response = await fetch(getApiUrl('extract_agent_info'), {
       method: 'POST',
       body: formData,
     })
@@ -466,24 +610,357 @@ const toggleTag = (tag) => {
   }
 }
 
-const handleSave = () => {
-  if (!form.value.name) {
-    // 显示提示消息 - 使用 toast 通知
-    const toastEl = document.createElement('div')
-    toastEl.className = 'fixed bottom-4 right-4 bg-red-500 text-white px-6 py-3 rounded-lg shadow-lg z-50 animate-fade-in'
-    toastEl.textContent = '请填写角色名称'
-    document.body.appendChild(toastEl)
+// 语音相关方法
+const toggleRecording = async () => {
+  if (isRecording.value) {
+    stopRecording()
+  } else {
+    await startRecording()
+  }
+}
+
+const startRecording = async () => {
+  try {
+    // 如果已经有上传的文件，先移除
+    if (voiceFile.value) {
+      removeVoice()
+    }
     
-    setTimeout(() => {
-      toastEl.remove()
-    }, 3000)
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    mediaRecorder.value = new MediaRecorder(stream)
+    audioChunks.value = []
+    
+    mediaRecorder.value.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        audioChunks.value.push(event.data)
+      }
+    }
+    
+    mediaRecorder.value.onstop = () => {
+      // 创建音频Blob并保存
+      const audioBlob = new Blob(audioChunks.value, { type: 'audio/wav' })
+      
+      // 检查文件大小
+      if (audioBlob.size > 5 * 1024 * 1024) {
+        alert('录音文件超过5MB大小限制，请录制较短的音频。')
+        return
+      }
+      
+      if (audioURL.value) {
+        URL.revokeObjectURL(audioURL.value)
+      }
+      
+      audioURL.value = URL.createObjectURL(audioBlob)
+      
+      // 创建File对象
+      const file = new File([audioBlob], 'recording.wav', { type: 'audio/wav' })
+      
+      // 保存文件并显示预览
+      voiceFile.value = file
+      voiceFileName.value = '录音.wav'
+      
+      // 自动上传录音文件
+      uploadVoiceFile(file)
+    }
+    
+    // 开始录制
+    mediaRecorder.value.start()
+    isRecording.value = true
+    recordingTime.value = 0
+    
+    // 设置计时器
+    recordingInterval.value = setInterval(() => {
+      recordingTime.value++
+      
+      // 限制录音时长最多60秒
+      if (recordingTime.value >= 60) {
+        stopRecording()
+      }
+    }, 1000)
+  } catch (error) {
+    console.error('录音初始化失败', error)
+    alert('无法访问麦克风，请确保已授予麦克风权限。')
+  }
+}
+
+const stopRecording = () => {
+  if (mediaRecorder.value && mediaRecorder.value.state === 'recording') {
+    mediaRecorder.value.stop()
+    
+    // 停止所有音轨
+    if (mediaRecorder.value.stream) {
+      mediaRecorder.value.stream.getTracks().forEach(track => track.stop())
+    }
+  }
+  
+  // 清除计时器
+  if (recordingInterval.value) {
+    clearInterval(recordingInterval.value)
+    recordingInterval.value = null
+  }
+  
+  isRecording.value = false
+}
+
+const handleVoiceUpload = (event) => {
+  // 获取上传的文件
+  const file = event.target.files[0]
+  
+  if (!file) return
+  
+  // 检查文件类型
+  const allowedTypes = ['audio/wav', 'audio/mpeg', 'audio/mp4', 'audio/aac']
+  const fileType = file.type
+  
+  if (!allowedTypes.includes(fileType) && 
+      !file.name.endsWith('.wav') && 
+      !file.name.endsWith('.mp3') && 
+      !file.name.endsWith('.m4a') && 
+      !file.name.endsWith('.aac')) {
+    alert('请上传WAV、MP3、M4A或AAC格式的音频文件')
+    event.target.value = null
     return
   }
   
-  // 将选中的标签组合为描述
-  form.value.description = selectedTags.value.join(', ')
+  // 检查文件大小
+  if (file.size > 5 * 1024 * 1024) {
+    alert('文件大小不能超过5MB')
+    event.target.value = null
+    return
+  }
   
-  emit('save', { ...form.value })
+  // 如果已经有录音，先移除
+  if (voiceFile.value) {
+    removeVoice()
+  }
+  
+  // 保存文件
+  voiceFile.value = file
+  voiceFileName.value = file.name
+  
+  // 上传文件
+  uploadVoiceFile(file)
+  
+  // 重置文件输入
+  event.target.value = null
+}
+
+const uploadVoiceFile = async (file) => {
+  try {
+    isVoiceUploading.value = true
+    voiceUploadProgress.value = 0
+    
+    // 创建FormData对象
+    const formData = new FormData()
+    formData.append('file', file)
+    
+    // 如果是编辑模式，添加agent_id
+    if (props.editAgent) {
+      formData.append('agent_id', props.editAgent.id)
+    }
+    
+    // 创建模拟进度更新
+    const progressInterval = setInterval(() => {
+      if (voiceUploadProgress.value < 90) {
+        voiceUploadProgress.value += 5
+      }
+    }, 200)
+    
+    // 上传文件
+    const response = await fetch(getApiUrl('upload_custom_voice'), {
+      method: 'POST',
+      body: formData
+    })
+    
+    // 清除进度更新
+    clearInterval(progressInterval)
+    
+    // 设置进度为100%
+    voiceUploadProgress.value = 100
+    
+    // 处理响应
+    const result = await response.json()
+    
+    if (result.success) {
+      // 保存上传后的文件路径
+      uploadedVoicePath.value = result.file_name
+      
+      // 延迟隐藏进度条
+      setTimeout(() => {
+        isVoiceUploading.value = false
+      }, 500)
+    } else {
+      alert(`上传失败: ${result.message}`)
+      isVoiceUploading.value = false
+      removeVoice()
+    }
+  } catch (error) {
+    console.error('上传语音文件失败', error)
+    alert('上传语音文件失败，请重试')
+    isVoiceUploading.value = false
+    removeVoice()
+  }
+}
+
+const playVoicePreview = () => {
+  if (!audioURL.value && voiceFile.value) {
+    // 如果没有audioURL但有voiceFile，创建URL
+    audioURL.value = URL.createObjectURL(voiceFile.value)
+  }
+  
+  if (!audioURL.value) return
+  
+  if (!audioPlayer.value) {
+    audioPlayer.value = new Audio(audioURL.value)
+    
+    audioPlayer.value.onended = () => {
+      isPlaying.value = false
+    }
+    
+    audioPlayer.value.onpause = () => {
+      isPlaying.value = false
+    }
+  }
+  
+  if (isPlaying.value) {
+    audioPlayer.value.pause()
+    isPlaying.value = false
+  } else {
+    audioPlayer.value.play()
+    isPlaying.value = true
+  }
+}
+
+const removeVoice = () => {
+  // 停止播放
+  if (audioPlayer.value) {
+    audioPlayer.value.pause()
+    audioPlayer.value = null
+  }
+  
+  // 释放URL
+  if (audioURL.value) {
+    URL.revokeObjectURL(audioURL.value)
+    audioURL.value = null
+  }
+  
+  // 清除文件
+  voiceFile.value = null
+  voiceFileName.value = ''
+  uploadedVoicePath.value = ''
+  isPlaying.value = false
+  
+  // 如果是编辑模式且有已绑定的语音，标记为需要删除
+  if (form.value.hasVoice) {
+    form.value.hasVoice = false
+    form.value.removeVoice = true
+    
+    // 如果是编辑模式，显示确认消息
+    if (props.editAgent && props.editAgent.id) {
+      console.log('已标记移除现有语音文件')
+    }
+  }
+}
+
+// 组件销毁前清理
+onBeforeUnmount(() => {
+  // 停止录音
+  if (isRecording.value) {
+    stopRecording()
+  }
+  
+  // 停止播放
+  if (audioPlayer.value) {
+    audioPlayer.value.pause()
+    audioPlayer.value = null
+  }
+  
+  // 释放URL
+  if (audioURL.value) {
+    URL.revokeObjectURL(audioURL.value)
+    audioURL.value = null
+  }
+})
+
+// 修改保存方法，加入语音绑定
+const handleSave = async () => {
+  // 验证表单
+  if (!form.value.name.trim()) {
+    alert('请输入角色名称')
+    return
+  }
+  
+  // 创建保存的对象
+  const agent = {
+    name: form.value.name,
+    description: form.value.description || selectedTags.value.join('，'),
+    model: form.value.model,
+    personality: form.value.personality,
+    interests: form.value.interests,
+    lifestyle: form.value.lifestyle,
+    values: form.value.values
+  }
+  
+  try {
+    // 首先保存角色信息
+    await emit('save', agent)
+    
+    // 确定当前agent_id
+    const agentId = props.editAgent ? props.editAgent.id : null
+    
+    // 如果没有agent_id，无法处理语音文件
+    if (!agentId) {
+      console.log('无法处理语音文件：缺少agent_id')
+      return
+    }
+    
+    // 处理语音文件
+    if (form.value.removeVoice) {
+      // 如果需要删除现有语音
+      try {
+        console.log('正在删除语音文件...')
+        const response = await fetch(getApiUrl(`remove_agent_voice?agent_id=${agentId}`))
+        const result = await response.json()
+        console.log('删除语音结果:', result)
+      } catch (error) {
+        console.error('删除语音失败:', error)
+      }
+    } else if (uploadedVoicePath.value) {
+      // 如果有新上传的语音，绑定到角色
+      console.log('正在绑定语音文件:', uploadedVoicePath.value)
+      
+      // 使用URLSearchParams而非FormData，确保voice_file作为字符串传递
+      const formData = new URLSearchParams();
+      formData.append('agent_id', agentId);
+      formData.append('voice_file', uploadedVoicePath.value);
+      
+      // 绑定语音到角色
+      const response = await fetch(getApiUrl('bind_voice_to_agent'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: formData
+      });
+      
+      const result = await response.json()
+      console.log('语音绑定结果:', result);
+      
+      if (!result.success) {
+        console.error('绑定语音失败:', result.message);
+        alert(`绑定语音失败: ${result.message}`);
+        // 不阻止窗口关闭，仅记录错误
+      } else {
+        console.log('成功绑定语音文件:', result.voice_path);
+      }
+    } else {
+      // 没有语音文件的变更
+      console.log('保留现有语音设置')
+    }
+  } catch (error) {
+    console.error('保存角色失败', error)
+    alert('保存角色失败，请重试')
+  }
 }
 </script>
 

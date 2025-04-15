@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { getApiUrl } from '../utils/api'
 
 // agent角色配置
 const AGENT_WELCOME_MESSAGES = {
@@ -148,7 +149,7 @@ export const useChatStore = defineStore('chat', () => {
   // 加载自定义角色列表
   async function loadCustomAgents() {
     try {
-      const response = await fetch('http://localhost:8666/api/list_custom_agents')
+      const response = await fetch(getApiUrl('list_custom_agents'))
       const data = await response.json()
       
       if (data.success && data.agents) {
@@ -202,6 +203,13 @@ export const useChatStore = defineStore('chat', () => {
       return false
     }
     
+    // 检查是否是直接结束引导的指令
+    const directEndCommands = ["结束话题", "退出话题", "返回主菜单", "结束引导", "退出引导"];
+    if (directEndCommands.includes(message.toLowerCase().trim())) {
+      console.log("检测到用户结束引导指令，将在消息发送后结束引导");
+      // 让消息正常发送，后续会通过消息监听处理
+    }
+    
     // 添加带时间戳的用户消息到聊天记录
     messages.value.push({ 
       type: 'user', 
@@ -220,6 +228,14 @@ export const useChatStore = defineStore('chat', () => {
       isStreaming: true, // 标记为正在流式传输
       messageId: Date.now() // 添加唯一标识符
     })
+    
+    // 添加消息变化监视器，仅用于调试
+    const messageChangeInterval = setInterval(() => {
+      if (assistantMessageIndex < messages.value.length) {
+        const msg = messages.value[assistantMessageIndex];
+        console.log(`[调试] 消息内容 (${msg.isStreaming ? '流式中' : '完成'}):", ${msg.content.substring(0, 30)}${msg.content.length > 30 ? '...' : ''}`);
+      }
+    }, 1000);
     
     loading.value = true
     
@@ -244,11 +260,13 @@ export const useChatStore = defineStore('chat', () => {
         "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"
       ].includes(message)
       
+      console.log(`发送消息: ${message}, 是否是快捷提问: ${isQuickQuestion}`)
+      
       // 创建流式请求
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 30000) // 30秒超时
       
-      const response = await fetch('http://localhost:8666/api/stream_chat', {
+      const response = await fetch(getApiUrl('stream_chat'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -258,7 +276,10 @@ export const useChatStore = defineStore('chat', () => {
           session_id: 'default',
           agent_type: currentAgent.value,
           personality: agentPersonality,
-          is_category: isQuickQuestion
+          is_category: isQuickQuestion,
+          // 确保所有必要的字段都被传递
+          model: currentModel.value,
+          agent_id: currentAgent.value
         }),
         signal: controller.signal
       })
@@ -282,13 +303,19 @@ export const useChatStore = defineStore('chat', () => {
       const MAX_RETRIES = 3
       let partialLine = ''; // 用于存储不完整的行数据
       
+      console.log('开始读取流数据...')
+      
       while (true) {
         try {
           const { done, value } = await reader.read()
-          if (done) break
+          if (done) {
+            console.log('流数据读取完成')
+            break
+          }
           
           // 解码收到的数据
           const text = decoder.decode(value)
+          console.log('收到原始流数据:', text.substring(0, 200)) // 只打印前200个字符以避免过长
           
           // 处理可能被分割的行，把partialLine和当前文本合并
           const fullText = partialLine + text;
@@ -317,45 +344,157 @@ export const useChatStore = defineStore('chat', () => {
               
               try {
                 const data = JSON.parse(line);
-                console.log(`处理类型为 ${data.type} 的JSON数据`);
+                console.log(`处理类型为 ${data.type} 的JSON数据:`, JSON.stringify(data).substring(0, 100));
                 
-                if (data.type === 'metadata') {
+                if (data.type === 'start') {
+                  // 开始接收消息，清空之前可能的累积内容以确保干净开始
+                  console.log('开始接收流式消息');
+                  fullResponse = '';
+                  
+                  // 重置消息内容
+                  if (assistantMessageIndex < messages.value.length) {
+                    messages.value[assistantMessageIndex].content = '';
+                  }
+                }
+                else if (data.type === 'content') {
+                  // 处理文本内容块
+                  if (data.content !== undefined) {
+                    console.log('收到content数据:', data.content);
+                    fullResponse += data.content;
+                    
+                    // 确保消息对象仍然存在且是我们创建的那个
+                    if (assistantMessageIndex < messages.value.length) {
+                      messages.value[assistantMessageIndex].content = fullResponse;
+                      
+                      // 尝试解析JSON响应 (用于引导式会话)
+                      try {
+                        // 检查fullResponse是否是一个完整的JSON
+                        if (fullResponse.trim().startsWith('{') && fullResponse.trim().endsWith('}')) {
+                          const jsonData = JSON.parse(fullResponse);
+                          console.log('检测到JSON响应数据:', jsonData);
+                          
+                          // 如果含有reply字段，说明是引导式会话响应
+                          if (jsonData.reply) {
+                            messages.value[assistantMessageIndex].content = jsonData.reply;
+                            
+                            // 如果有表情，更新表情
+                            if (jsonData.expression) {
+                              messages.value[assistantMessageIndex].expression = jsonData.expression;
+                            }
+                            
+                            // 检查是否是引导式问题
+                            if (jsonData.is_question === true) {
+                              console.log('检测到引导式问题:', jsonData.question_type);
+                            }
+                            
+                            // 检查是否是最终总结
+                            if (jsonData.is_summary === true) {
+                              console.log('检测到引导式会话总结');
+                              // 触发引导式会话结束事件
+                              setTimeout(() => {
+                                const guidanceEndEvent = new CustomEvent('guidance-end', {
+                                  detail: { type: 'summary', category: currentAgent.value }
+                                });
+                                window.dispatchEvent(guidanceEndEvent);
+                                console.log('已发送引导结束事件 (content阶段)');
+                              }, 500);
+                            }
+                          }
+                        }
+                      } catch (e) {
+                        // 不是JSON或JSON不完整，继续正常处理
+                      }
+                    }
+                  }
+                }
+                else if (data.type === 'end') {
+                  // 文本内容结束
+                  console.log('流式文本内容接收完成');
+                  // 标记消息不再流式传输
+                  if (assistantMessageIndex < messages.value.length) {
+                    messages.value[assistantMessageIndex].isStreaming = false;
+                    
+                    // 在结束时，尝试最后一次解析可能的JSON响应
+                    try {
+                      const content = messages.value[assistantMessageIndex].content;
+                      // 检查是否是一个完整的JSON
+                      if (content && content.trim().startsWith('{') && content.trim().endsWith('}')) {
+                        const jsonData = JSON.parse(content);
+                        console.log('结束时解析JSON数据:', jsonData);
+                        
+                        // 如果含有reply字段，说明是引导式会话响应
+                        if (jsonData.reply) {
+                          messages.value[assistantMessageIndex].content = jsonData.reply;
+                          
+                          // 如果有表情，更新表情
+                          if (jsonData.expression) {
+                            messages.value[assistantMessageIndex].expression = jsonData.expression;
+                          }
+                        }
+                        
+                        // 检查是否是总结消息，触发自定义事件
+                        if (jsonData.is_summary === true) {
+                          console.log('检测到引导式会话结束 (总结)');
+                          
+                          // 触发导式会话结束事件
+                          setTimeout(() => {
+                            const guidanceEndEvent = new CustomEvent('guidance-end', {
+                              detail: { type: 'summary', category: currentAgent.value }
+                            });
+                            window.dispatchEvent(guidanceEndEvent);
+                          }, 500);
+                        }
+                      }
+                    } catch (e) {
+                      // 解析失败，保持原始内容
+                      console.log('结束时JSON解析失败，使用原始内容');
+                    }
+                  }
+                }
+                else if (data.type === 'metadata') {
                   // 处理元数据（表情和可能的引导消息）
-                  expression = data.expression || ""
+                  expression = data.expression || "";
                   
                   // 应用到消息对象
                   if (assistantMessageIndex < messages.value.length) {
-                    messages.value[assistantMessageIndex].expression = expression
+                    messages.value[assistantMessageIndex].expression = expression;
                     // 使用后端生成的消息ID（如果有）
                     if (data.message_id) {
-                      messages.value[assistantMessageIndex].messageId = data.message_id
+                      messages.value[assistantMessageIndex].messageId = data.message_id;
                     }
                   }
                   
                   if (data.guidance_message) {
-                    guidanceMessage = data.guidance_message
+                    guidanceMessage = data.guidance_message;
                     // 如果有引导决策的音频数据，保存它
                     if (data.guidance_audio) {
-                      guidanceAudio = data.guidance_audio
-                      console.log('收到引导决策音频数据，长度:', data.guidance_audio.length)
+                      guidanceAudio = data.guidance_audio;
+                      console.log('收到引导决策音频数据，长度:', data.guidance_audio.length);
                     }
                   }
                 } 
                 else if (data.type === 'chunk') {
-                  // 处理文本块
+                  // 兼容旧版API，处理文本块
                   if (data.content) {
-                    fullResponse += data.content
+                    console.log('收到chunk数据:', data.content);
+                    fullResponse += data.content;
                     
                     // 确保消息对象仍然存在且是我们创建的那个
                     if (assistantMessageIndex < messages.value.length) {
-                      messages.value[assistantMessageIndex].content = fullResponse
+                      messages.value[assistantMessageIndex].content = fullResponse;
                     }
                   }
-                } 
+                }
                 else if (data.type === 'audio') {
                   // 处理完整的音频数据
-                  if (data.audio) {
-                    console.log('收到完整音频数据，长度:', data.audio.length);
+                  if (data.audio_data) {
+                    console.log('收到完整音频数据，长度:', data.audio_data.length);
+                    audioData = data.audio_data;
+                    // 立即播放音频
+                    playAudio(data.audio_data);
+                  } else if (data.audio) {
+                    // 兼容旧版API
+                    console.log('收到完整音频数据(旧版格式)，长度:', data.audio.length);
                     audioData = data.audio;
                     // 立即播放音频
                     playAudio(data.audio);
@@ -416,6 +555,11 @@ export const useChatStore = defineStore('chat', () => {
                       }
                     }
                   }
+                }
+                else if (data.type === 'f5_tts_notification') {
+                  // 处理F5-TTS通知，说明语音已通过流式TTS播放
+                  console.log('收到F5-TTS流式语音通知:', data.message);
+                  // 这里无需再播放音频，F5-TTS已经在服务端播放了
                 }
                 else if (data.type === 'complete') {
                   // 处理完成标记
@@ -551,6 +695,12 @@ export const useChatStore = defineStore('chat', () => {
       return false
     } finally {
       loading.value = false
+      
+      // 清除调试定时器
+      if (typeof messageChangeInterval !== 'undefined') {
+        clearInterval(messageChangeInterval);
+        console.log('[调试] 监视器已清除');
+      }
     }
   }
   
@@ -598,7 +748,9 @@ export const useChatStore = defineStore('chat', () => {
         "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"
       ].includes(message)
       
-      const response = await fetch('http://localhost:8666/api/chat', {
+      console.log(`发送普通消息: ${message}, 是否是快捷提问: ${isQuickQuestion}`)
+      
+      const response = await fetch(getApiUrl('chat'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -623,8 +775,12 @@ export const useChatStore = defineStore('chat', () => {
         agentId: currentAgent.value 
       })
       
-      // 如果收到音频数据，播放它
-      if (data.audio) {
+      // 处理语音输出
+      if (data.use_f5_tts) {
+        // 如果使用了F5TTS，音频已在服务器端播放，前端不需要做任何处理
+        console.log('使用F5TTS播放语音，无需前端处理');
+      } else if (data.audio) {
+        // 常规TTS，前端播放音频
         playAudio(data.audio)
       }
       
@@ -695,7 +851,7 @@ export const useChatStore = defineStore('chat', () => {
       hasShownWelcome.value[agentId] = true
       
       // 为欢迎语请求TTS音频
-      fetch('http://localhost:8666/api/welcome_tts', {
+      fetch(getApiUrl('welcome_tts'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -717,6 +873,20 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
   
+  // 强制结束引导式会话
+  function forceEndGuidance() {
+    console.log('强制结束引导式会话');
+    
+    // 触发引导式会话结束事件
+    setTimeout(() => {
+      const guidanceEndEvent = new CustomEvent('guidance-end', {
+        detail: { type: 'force-end', category: null }
+      });
+      window.dispatchEvent(guidanceEndEvent);
+      console.log('已发送强制结束引导事件');
+    }, 100);
+  }
+  
   return {
     // 状态
     messages,
@@ -735,6 +905,7 @@ export const useChatStore = defineStore('chat', () => {
     sendStreamMessage,
     showWelcomeMessage,
     loadCustomAgents,
-    playAudio
+    playAudio,
+    forceEndGuidance
   }
 }) 

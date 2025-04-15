@@ -485,6 +485,7 @@ import { ref, onMounted, onUnmounted, watch } from 'vue';
 import VideoRecorder from './VideoRecorder.vue'
 import { useAssessmentStore } from '../stores/assessment'
 import { useUserStore } from '../stores/user'
+import { getApiUrl } from '../utils/api';
 
 const psychAssessmentReady = ref(false);
 const showEmotionalModal = ref(false);
@@ -588,7 +589,7 @@ const loadAssessmentResults = async () => {
   console.log('[DEBUG] 加载评估结果详情')
   
   try {
-    const response = await fetch('http://localhost:8666/api/assessment_results')
+    const response = await fetch(getApiUrl('assessment_results'))
     const data = await response.json()
     
     if (data.success) {
@@ -616,7 +617,7 @@ const openPsychologicalAssessment = async () => {
     showEmotionalModal.value = true; // 显示弹窗以显示状态
     
     // 发送请求以生成和下载报告
-    const response = await fetch('http://localhost:8666/api/psychological_assessment', {
+    const response = await fetch(getApiUrl('psychological_assessment'), {
       method: 'GET',
     });
     
@@ -673,7 +674,7 @@ const uploadFile = async () => {
     isUploading.value = true;
     uploadStatus.value = '上传中...';
     
-    const response = await fetch('http://localhost:8666/api/emotional_assessment', {
+    const response = await fetch(getApiUrl('emotional_assessment'), {
       method: 'POST',
       body: formData,
     });
@@ -731,7 +732,7 @@ const startLocalAssessmentCheck = () => {
   // 设置检查间隔为3秒
   localAssessmentCheckInterval = setInterval(async () => {
     try {
-      const response = await fetch('http://localhost:8666/api/assessment_results');
+      const response = await fetch(getApiUrl('assessment_results'));
       const data = await response.json();
       
       if (data.success && data.results) {
@@ -776,7 +777,7 @@ const parseFile = async () => {
     isUploading.value = true;
     uploadStatus.value = '解析中...';
     
-    const response = await fetch('http://localhost:8666/api/parse_document', {
+    const response = await fetch(getApiUrl('parse_document'), {
       method: 'POST',
       body: formData,
     });
@@ -840,7 +841,7 @@ onMounted(async () => {
   
   // 检查最新评估状态
   try {
-    const response = await fetch('http://localhost:8666/api/assessment_results')
+    const response = await fetch(getApiUrl('assessment_results'))
     const data = await response.json()
     
     if (data.success && data.results) {
@@ -963,7 +964,7 @@ const uploadTestVideo = async () => {
     formData.append('file', videoBlob, 'emotion_assessment.avi');
     
     // 上传视频
-    const uploadResponse = await fetch('http://localhost:8666/api/upload-video', {
+    const uploadResponse = await fetch(getApiUrl('upload-video'), {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${authToken}`
@@ -1146,7 +1147,7 @@ const viewAssessmentResults = async () => {
     
     // 尝试从服务器获取最新数据
     console.log('[DEBUG] 尝试从服务器获取最新数据');
-    const response = await fetch('http://localhost:8666/api/assessment_results');
+    const response = await fetch(getApiUrl('assessment_results'));
     const data = await response.json();
     
     if (data.success && data.results) {
@@ -1169,7 +1170,7 @@ const viewAssessmentResults = async () => {
 // 修改 downloadVideoReport 方法
 const downloadVideoReport = async (reportId) => {
   try {
-    const response = await fetch(`http://localhost:8666/api/download_report/${reportId}`, {
+    const response = await fetch(getApiUrl(`download_report/${reportId}`), {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${userStore.getAuthToken()}`
@@ -1188,7 +1189,7 @@ const downloadVideoReport = async (reportId) => {
     const formData = new FormData();
     formData.append('file', blob, fileName);
     
-    const saveResponse = await fetch('http://localhost:8666/api/save_report', {
+    const saveResponse = await fetch(getApiUrl('save_report'), {
       method: 'POST',
       body: formData
     });
@@ -1198,7 +1199,7 @@ const downloadVideoReport = async (reportId) => {
     }
 
     // 开始处理报告
-    const processResponse = await fetch('http://localhost:8666/api/process_report', {
+    const processResponse = await fetch(getApiUrl('process_report'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
