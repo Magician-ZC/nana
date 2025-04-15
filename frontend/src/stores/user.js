@@ -8,7 +8,7 @@ export const useUserStore = defineStore('user', () => {
   const userProfile = ref(null)
   
   // 开发环境的默认测试令牌
-  const DEFAULT_DEV_TOKEN = '5a4afbb8a10344978bae28f1ab2a0b73'
+  const DEFAULT_DEV_TOKEN = '3a987ba27ba642308eff7b50229d3b8d'
   
   // 初始化token - 应用启动时调用
   function initializeToken() {

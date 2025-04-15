@@ -835,77 +835,113 @@ export const useAssessmentStore = defineStore('assessment', () => {
       // 记录日志，特别是报告下载状态
       console.log(`[DEBUG] 保存视频上传状态: reportId=${uploadState.reportId}, 上传回调=${uploadState.uploadCallbackComplete}, 评估=${uploadState.assessmentComplete}, 报告下载=${uploadState.reportDownloaded}`);
       
-      // 如果报告下载状态是true，额外记录
-      if (uploadState.reportDownloaded) {
-        console.log(`[DEBUG] 警告: 正在将reportDownloaded保存为true，确保这是期望的行为`);
-      }
-      
       // 保存前检查localStorage访问权限
       try {
+        console.log('[DEBUG] 保存前localStorage测试...');
         const testKey = "__test_localStorage";
         localStorage.setItem(testKey, "test");
         localStorage.removeItem(testKey);
         console.log("[DEBUG] localStorage访问测试成功");
       } catch (storageError) {
         console.error("[DEBUG] localStorage访问测试失败:", storageError);
-        return null;
+        return false;
       }
       
-      // 保存状态
+      // 保存前检查当前localStorage内容
+      console.log('[DEBUG] 保存前的localStorage内容:', localStorage.getItem('video_upload_state'));
+      
+      // 保存状态 - 使用同步调用确保立即写入
       localStorage.setItem('video_upload_state', JSON.stringify(uploadState));
       
-      // 验证保存结果
-      const savedItem = localStorage.getItem('video_upload_state');
-      if (savedItem) {
-        console.log("[DEBUG] 成功保存状态到localStorage:", savedItem);
-      } else {
-        console.error("[DEBUG] localStorage保存失败: 无法读取保存的状态");
+      // 提高可靠性：尝试读取保存的状态，验证是否成功保存
+      const verifyState = localStorage.getItem('video_upload_state');
+      if (!verifyState) {
+        console.error('[DEBUG] 存储验证失败，无法读取保存的值');
+        // 再次尝试保存
+        localStorage.setItem('video_upload_state', JSON.stringify(uploadState));
       }
       
-      return uploadState;
+      // 验证保存结果 - 添加延迟保证写入完成
+      setTimeout(() => {
+        const savedItem = localStorage.getItem('video_upload_state');
+        if (savedItem) {
+          const parsedItem = JSON.parse(savedItem);
+          console.log("[DEBUG] 成功保存状态到localStorage:", parsedItem);
+          console.log(`[DEBUG] 验证存储值: reportId=${parsedItem.reportId}, 回调=${parsedItem.uploadCallbackComplete}, 评估=${parsedItem.assessmentComplete}`);
+        } else {
+          console.error("[DEBUG] localStorage保存失败: 无法读取保存的状态");
+          // 最后再尝试一次
+          localStorage.setItem('video_upload_state', JSON.stringify(uploadState));
+        }
+      }, 50);
+      
+      return true;
     } catch (error) {
-      console.error('[DEBUG] 保存视频上传状态失败:', error)
-      return null;
+      console.error('[DEBUG] 保存视频上传状态失败:', error);
+      return false;
     }
   }
   
   // 从localStorage加载视频上传状态
   function loadVideoUploadState() {
     try {
-      const savedState = localStorage.getItem('video_upload_state')
+      console.log('[DEBUG] 尝试从localStorage加载视频上传状态...');
+      
+      // 记录所有localStorage键
+      const allKeys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        allKeys.push(localStorage.key(i));
+      }
+      console.log('[DEBUG] 当前localStorage中的所有键:', allKeys);
+      
+      const savedState = localStorage.getItem('video_upload_state');
+      console.log('[DEBUG] 读取的localStorage值:', savedState);
+      
       if (savedState) {
-        const state = JSON.parse(savedState)
-        // 检查状态是否在过去24小时内保存的
-        const isValid = (Date.now() - state.timestamp) < 24 * 60 * 60 * 1000
-        
-        if (isValid) {
-          // 不再使用etag，保留兼容性
-          videoUploadEtag.value = ''
-          reportId.value = state.reportId || null
-          uploadCallbackComplete.value = state.uploadCallbackComplete || false
-          assessmentComplete.value = state.assessmentComplete || false
-          reportDownloaded.value = state.reportDownloaded || false
+        try {
+          const state = JSON.parse(savedState);
+          console.log('[DEBUG] 解析后的状态:', state);
           
-          console.log('从localStorage加载的视频上传状态:', state)
+          // 检查状态是否在过去24小时内保存的
+          const isValid = (Date.now() - (state.timestamp || 0)) < 24 * 60 * 60 * 1000;
           
-          // 如果有未完成的流程，启动主轮询
-          if ((state.uploadCallbackComplete || state.reportId) && 
-              (!state.assessmentComplete || !state.reportDownloaded)) {
-            console.log('检测到未完成的评估流程，启动主轮询')
-            startMasterPolling()
+          if (isValid) {
+            // 不再使用etag，保留兼容性
+            videoUploadEtag.value = '';
+            reportId.value = state.reportId || null;
+            uploadCallbackComplete.value = Boolean(state.uploadCallbackComplete);
+            assessmentComplete.value = Boolean(state.assessmentComplete);
+            reportDownloaded.value = Boolean(state.reportDownloaded);
+            
+            console.log('[DEBUG] 从localStorage加载的视频上传状态:',
+              `reportId=${reportId.value}, ` +
+              `uploadCallbackComplete=${uploadCallbackComplete.value}, ` +
+              `assessmentComplete=${assessmentComplete.value}, ` +
+              `reportDownloaded=${reportDownloaded.value}`);
+            
+            // 如果有上传记录，总是启动主轮询以确保状态同步
+            if (state.reportId || state.uploadCallbackComplete) {
+              console.log('[DEBUG] 检测到视频上传记录，启动主轮询');
+              startMasterPolling();
+            }
+            
+            return true;
+          } else {
+            // 状态过期，清除
+            console.log('[DEBUG] 状态已过期，清除localStorage');
+            localStorage.removeItem('video_upload_state');
           }
-          
-          return true
-        } else {
-          // 状态过期，清除
-          localStorage.removeItem('video_upload_state')
+        } catch (parseError) {
+          console.error('[DEBUG] 解析localStorage数据失败:', parseError);
         }
+      } else {
+        console.log('[DEBUG] localStorage中没有找到video_upload_state');
       }
     } catch (error) {
-      console.error('加载视频上传状态失败:', error)
+      console.error('[DEBUG] 加载视频上传状态失败:', error);
     }
     
-    return false
+    return false;
   }
   
   // 请求后端开始轮询
@@ -1019,56 +1055,77 @@ export const useAssessmentStore = defineStore('assessment', () => {
   
   // 初始化方法 - 将在应用启动时调用
   async function initialize() {
-    console.log('初始化评估存储...')
+    console.log('[DEBUG] 初始化评估存储...');
     
     try {
-      // 首先清除可能过期的状态
-      const now = Date.now()
-      const savedState = localStorage.getItem('video_upload_state')
+      // 首先尝试从localStorage加载状态
+      const savedState = localStorage.getItem('video_upload_state');
       
       if (savedState) {
-        const state = JSON.parse(savedState)
-        // 检查状态是否在过去24小时内保存的
-        const isValid = (now - state.timestamp) < 24 * 60 * 60 * 1000
-        
-        if (!isValid) {
-          console.log('清除过期的评估状态')
-          localStorage.removeItem('video_upload_state')
-          resetVideoAssessment()
-          return true
-        }
-        
-        // 验证评估状态的有效性
-        const response = await fetch(getApiUrl('latest_assessment'))
-        const data = await response.json()
-        
-        if (!data.success || !data.has_assessment) {
-          console.log('服务器无有效评估，重置状态')
-          localStorage.removeItem('video_upload_state')
-          resetVideoAssessment()
-          return true
-        }
-        
-        // 如果服务器有有效评估，加载状态
-        let hasRestoredState = loadVideoUploadState()
-        
-        if (hasRestoredState) {
-          console.log('成功恢复评估状态')
-        } else {
-          console.log('无评估状态可恢复')
-          resetVideoAssessment()
+        try {
+          const state = JSON.parse(savedState);
+          // 检查状态是否在过去24小时内保存的
+          const now = Date.now();
+          const isValid = (now - (state.timestamp || 0)) < 24 * 60 * 60 * 1000;
+          
+          if (!isValid) {
+            console.log('[DEBUG] 清除过期的评估状态');
+            localStorage.removeItem('video_upload_state');
+            resetVideoAssessment();
+          } else {
+            console.log('[DEBUG] 找到有效的存储状态，准备恢复');
+            
+            // 尝试从服务器验证状态，无论结果如何都加载本地状态
+            const validationPromise = fetch(getApiUrl('latest_assessment'))
+              .then(resp => resp.json())
+              .catch(err => {
+                console.error('[DEBUG] 验证状态时出错:', err);
+                return { success: false };
+              });
+            
+            // 不等待验证，先恢复状态
+            let hasRestoredState = loadVideoUploadState();
+            
+            // 然后检查验证结果
+            const validationData = await validationPromise;
+            
+            if (validationData.success && validationData.has_assessment) {
+              console.log('[DEBUG] 服务器确认有有效评估');
+              
+              // 如果状态恢复成功，并且有reportId，强制检查状态
+              if (hasRestoredState && (reportId.value || uploadCallbackComplete.value)) {
+                console.log('[DEBUG] 恢复状态成功，启动状态轮询');
+                
+                // 确保启动主轮询，无论assessment_status如何
+                if (!masterPollingActive) {
+                  startMasterPolling();
+                }
+                
+                // 立即检查一次状态，不等待轮询
+                debouncedCheckVideoStatus(true);
+              }
+            } else {
+              console.log('[DEBUG] 服务器无有效评估，但仍保持本地状态');
+              // 保持本地状态，否则可能导致用户体验不一致
+            }
+            
+            return true;
+          }
+        } catch (parseError) {
+          console.error('[DEBUG] 解析localStorage状态失败:', parseError);
+          resetVideoAssessment();
         }
       } else {
-        // 无保存的状态，重置
-        resetVideoAssessment()
+        console.log('[DEBUG] localStorage中无视频上传状态');
+        resetVideoAssessment();
       }
       
-      return true
+      return true;
     } catch (error) {
-      console.error('初始化评估存储失败:', error)
+      console.error('[DEBUG] 初始化评估存储失败:', error);
       // 发生错误时重置状态
-      resetVideoAssessment()
-      return false
+      resetVideoAssessment();
+      return false;
     }
   }
   
@@ -1173,6 +1230,12 @@ export const useAssessmentStore = defineStore('assessment', () => {
     videoReportGenerated,
     videoReportId,
     videoReportUrl,
+    videoUploadEtag,
+    reportId,
+    uploadCallbackComplete,
+    assessmentComplete,
+    statusPollingActive,
+    statusPollingInterval,
     faceDetected,
     facePosition,
     emotionalAssessmentComplete,
@@ -1182,12 +1245,6 @@ export const useAssessmentStore = defineStore('assessment', () => {
     psychologicalAssessmentData,
     psychologicalProcessing,
     dialogCount,
-    videoUploadEtag,
-    reportId,
-    uploadCallbackComplete,
-    assessmentComplete,
-    statusPollingActive,
-    statusPollingStarted,
     reportDownloaded,
     
     // 方法
@@ -1198,7 +1255,6 @@ export const useAssessmentStore = defineStore('assessment', () => {
     setReportId,
     setUploadCallbackComplete,
     setAssessmentComplete,
-    setReportDownloaded,
     setFaceDetected,
     setFacePosition,
     setEmotionalAssessmentComplete,
@@ -1208,24 +1264,29 @@ export const useAssessmentStore = defineStore('assessment', () => {
     setPsychologicalAssessmentData,
     setPsychologicalProcessing,
     setDialogCount,
-    loadAssessmentStatus,
-    loadLatestEmotionalAssessment,
-    resetVideoAssessment,
-    initialize,
+    setReportDownloaded,
+    
     startVideoReportPolling,
     stopVideoReportPolling,
     downloadVideoReport,
-    analyzeVideoReport,
+    startCheckingAnalysisResult,
+    loadAssessmentStatus,
+    loadLatestEmotionalAssessment,
+    checkVideoStatus,
     startStatusPolling,
     stopStatusPolling,
-    checkVideoStatus,
+    
+    // 新增：显式导出保存和加载函数
     saveVideoUploadState,
     loadVideoUploadState,
-    showUploadFailureNotification,
-    updateReportDownloadStatus,
-    attemptReportDownload,
+    
+    // 其他导出方法
+    resetVideoAssessment,
+    initiateBackendPolling,
     startMasterPolling,
     stopMasterPolling,
-    runMasterPollingChecks
+    initialize,
+    attemptReportDownload,
+    updateReportDownloadStatus
   }
 })

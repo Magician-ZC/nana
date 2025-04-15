@@ -803,21 +803,36 @@ const uploadVideo = async () => {
         console.log('[DEBUG] 返回数据中没有report_id，稍后将从report列表获取');
       }
       
-      // 明确设置上传回调状态
-      const hasCallback = uploadData.upload_callback_status || false;
+      // 明确设置上传回调状态 - 检查多种可能的属性名
+      const hasCallback = uploadData.upload_callback_status || 
+                         uploadData.uploadCallbackStatus || 
+                         uploadData.initial_status?.upload_callback || 
+                         false;
       console.log(`[DEBUG] 设置上传回调状态: ${hasCallback}`);
       assessmentStore.setUploadCallbackComplete(hasCallback);
       
-      // 明确设置评估状态
-      const isAssessmentComplete = uploadData.assessment_status || false;
+      // 明确设置评估状态 - 检查多种可能的属性名
+      const isAssessmentComplete = uploadData.assessment_status || 
+                                  uploadData.assessmentStatus || 
+                                  uploadData.initial_status?.assessment || 
+                                  false;
       console.log(`[DEBUG] 设置评估状态: ${isAssessmentComplete}`);
       assessmentStore.setAssessmentComplete(isAssessmentComplete);
       
+      // 明确设置报告下载状态 - 检查多种可能的属性名
+      const isReportDownloaded = uploadData.reportDownloaded || 
+                               uploadData.report_downloaded || 
+                               uploadData.initial_status?.downloaded || 
+                               false;
+      console.log(`[DEBUG] 设置报告下载状态: ${isReportDownloaded}`);
+      assessmentStore.setReportDownloaded(isReportDownloaded);
+      
       // 手动保存状态到localStorage
       console.log('[DEBUG] 主动调用saveVideoUploadState保存状态');
-      assessmentStore.saveVideoUploadState();
+      const saveResult = assessmentStore.saveVideoUploadState();
+      console.log('[DEBUG] 保存结果:', saveResult);
       
-      // 验证localStorage中的状态
+      // 延迟验证localStorage状态
       setTimeout(() => {
         try {
           const savedState = localStorage.getItem('video_upload_state');
@@ -840,7 +855,7 @@ const uploadVideo = async () => {
         } catch (err) {
           console.error('[DEBUG] 读取localStorage状态失败:', err);
         }
-      }, 200);
+      }, 500);  // 增加延迟确保有足够时间写入
       
       // 根据上传回调状态决定是否启动轮询
       if (uploadData.upload_callback_status === true) {
@@ -1031,21 +1046,36 @@ const retryUpload = async () => {
         console.log('[DEBUG] 返回数据中没有report_id，稍后将从report列表获取');
       }
       
-      // 明确设置上传回调状态
-      const hasCallback = uploadData.upload_callback_status || false;
+      // 明确设置上传回调状态 - 检查多种可能的属性名
+      const hasCallback = uploadData.upload_callback_status || 
+                         uploadData.uploadCallbackStatus || 
+                         uploadData.initial_status?.upload_callback || 
+                         false;
       console.log(`[DEBUG] 设置上传回调状态: ${hasCallback}`);
       assessmentStore.setUploadCallbackComplete(hasCallback);
       
-      // 明确设置评估状态
-      const isAssessmentComplete = uploadData.assessment_status || false;
+      // 明确设置评估状态 - 检查多种可能的属性名
+      const isAssessmentComplete = uploadData.assessment_status || 
+                                  uploadData.assessmentStatus || 
+                                  uploadData.initial_status?.assessment || 
+                                  false;
       console.log(`[DEBUG] 设置评估状态: ${isAssessmentComplete}`);
       assessmentStore.setAssessmentComplete(isAssessmentComplete);
       
+      // 明确设置报告下载状态 - 检查多种可能的属性名
+      const isReportDownloaded = uploadData.reportDownloaded || 
+                               uploadData.report_downloaded || 
+                               uploadData.initial_status?.downloaded || 
+                               false;
+      console.log(`[DEBUG] 设置报告下载状态: ${isReportDownloaded}`);
+      assessmentStore.setReportDownloaded(isReportDownloaded);
+      
       // 手动保存状态到localStorage
       console.log('[DEBUG] 主动调用saveVideoUploadState保存状态');
-      assessmentStore.saveVideoUploadState();
+      const saveResult = assessmentStore.saveVideoUploadState();
+      console.log('[DEBUG] 保存结果:', saveResult);
       
-      // 验证localStorage中的状态
+      // 延迟验证localStorage状态
       setTimeout(() => {
         try {
           const savedState = localStorage.getItem('video_upload_state');
@@ -1068,7 +1098,7 @@ const retryUpload = async () => {
         } catch (err) {
           console.error('[DEBUG] 读取localStorage状态失败:', err);
         }
-      }, 200);
+      }, 500);  // 增加延迟确保有足够时间写入
       
       // 根据上传回调状态决定是否启动轮询
       if (uploadData.upload_callback_status === true) {

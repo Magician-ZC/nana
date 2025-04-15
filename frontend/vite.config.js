@@ -12,11 +12,15 @@ let httpsConfig = undefined
 
 // 检查证书是否存在
 if (fs.existsSync(certFile) && fs.existsSync(keyFile)) {
-  httpsConfig = {
-    cert: fs.readFileSync(certFile),
-    key: fs.readFileSync(keyFile)
+  try {
+    httpsConfig = {
+      cert: fs.readFileSync(certFile),
+      key: fs.readFileSync(keyFile)
+    }
+    console.log('已加载SSL证书，将使用HTTPS启动服务器')
+  } catch (err) {
+    console.error('加载SSL证书失败:', err)
   }
-  console.log('已加载SSL证书，将使用HTTPS启动服务器')
 } else {
   console.warn('SSL证书未找到，将使用HTTP启动服务器')
 }
@@ -28,7 +32,24 @@ export default defineConfig({
     port: 5173,         // 指定端口
     strictPort: true,   // 端口被占用时直接报错
     cors: true,
-    https: httpsConfig  // 使用SSL证书启动HTTPS
+    https: httpsConfig,  // 使用SSL证书启动HTTPS
+    hmr: {
+      protocol: httpsConfig ? 'wss' : 'ws' // 根据HTTPS状态自动选择WebSocket协议
+    },
+    // 显示详细启动信息
+    logger: {
+      prefix: '[vite]',
+      timestamp: true,
+      clearScreen: false
+    }
   },
   plugins: [vue()],
+  // 显式开启源映射
+  build: {
+    sourcemap: true
+  },
+  // 改进WebSocket连接，减少断开
+  optimizeDeps: {
+    include: ['vue', 'pinia', 'lodash']
+  }
 })
