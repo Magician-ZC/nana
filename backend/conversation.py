@@ -21,6 +21,8 @@ class APIEmbeddingFunction(EmbeddingFunction):
         embeddings = []
         for text in texts:
             try:
+                # 使用非阻塞方式获取embedding，立即返回默认值
+                # 后台线程会继续处理实际的embedding请求
                 embedding = self.embedding_service.get_embedding(text)
                 if embedding is None:
                     embedding = [0.0] * Config.EMBEDDING_DIMENSION

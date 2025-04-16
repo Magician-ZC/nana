@@ -249,9 +249,10 @@ export const useAssessmentStore = defineStore('assessment', () => {
     
     const now = Date.now()
     
-    // 如果全部状态都已完成且报告已下载，则停止轮询
-    if (uploadCallbackComplete.value && assessmentComplete.value && reportDownloaded.value) {
-      console.log('[Assessment Store] 所有状态已完成且报告已下载，停止主轮询')
+    // 如果全部状态都已完成且报告已下载且已解析情绪评估，则停止轮询
+    if (uploadCallbackComplete.value && assessmentComplete.value && 
+        reportDownloaded.value && emotionalAssessmentComplete.value) {
+      console.log('[Assessment Store] 所有状态已完成且报告已下载和解析，停止主轮询')
       stopMasterPolling()
       return
     }
@@ -272,8 +273,9 @@ export const useAssessmentStore = defineStore('assessment', () => {
         await checkVideoReport()
       }
       
-      // 检查情绪评估状态 - 限制API调用频率
-      if (now - lastApiCallTimes.emotionalAssessment >= API_CALL_INTERVALS.emotionalAssessment) {
+      // 检查情绪评估状态 - 限制API调用频率，并且只在需要时调用
+      if (!emotionalAssessmentComplete.value && reportDownloaded.value && 
+          (now - lastApiCallTimes.emotionalAssessment >= API_CALL_INTERVALS.emotionalAssessment)) {
         lastApiCallTimes.emotionalAssessment = now
         await loadLatestEmotionalAssessment()
       }
@@ -402,6 +404,45 @@ export const useAssessmentStore = defineStore('assessment', () => {
     }
   }
   
+  // 分析视频评估报告
+  async function analyzeVideoReport(reportBlob) {
+    try {
+      console.log('[DEBUG] 开始分析视频评估报告');
+      
+      // 读取报告内容
+      const text = await reportBlob.text();
+      console.log('[DEBUG] 报告内容长度:', text.length);
+      
+      // 提取JSON部分
+      const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);
+      if (jsonMatch && jsonMatch[1]) {
+        const jsonContent = jsonMatch[1].trim();
+        console.log('[DEBUG] 找到JSON内容:', jsonContent);
+        
+        try {
+          const assessmentData = JSON.parse(jsonContent);
+          
+          // 更新视频评估数据
+          videoAssessmentData.value = assessmentData;
+          videoAssessmentComplete.value = true;
+          
+          console.log('[DEBUG] 视频评估报告解析成功:', assessmentData);
+          
+          return assessmentData;
+        } catch (jsonError) {
+          console.error('[DEBUG] 解析JSON失败:', jsonError);
+          return null;
+        }
+      } else {
+        console.error('[DEBUG] 未在报告中找到JSON数据');
+        return null;
+      }
+    } catch (error) {
+      console.error('[DEBUG] 分析视频评估报告失败:', error);
+      return null;
+    }
+  }
+  
   // 下载视频评估报告 - 确保状态一致性
   async function downloadVideoReport(reportId) {
     try {
@@ -452,35 +493,40 @@ export const useAssessmentStore = defineStore('assessment', () => {
       // 更新报告下载状态
       await updateReportDownloadStatus(true)
       
-      // 保存状态到localStorage
+      // 保存状态到localStorage - 确保状态持久化
       saveVideoUploadState()
       
-      // 开始情绪评估分析
-      console.log('[Assessment Store] 报告下载成功，开始情绪评估分析')
+      // 调用情绪评估接口 - 发送报告进行评估
+      console.log('[Assessment Store] 调用情绪评估API进行报告分析')
       
       // 创建 FormData 对象
       const formData = new FormData()
       formData.append('file', reportBlob, `report_${reportId}.pdf`)
       
       // 调用情绪评估接口
-      const assessmentResponse = await fetch(getApiUrl('emotional_assessment'), {
-        method: 'POST',
-        body: formData
-      })
-      
-      if (assessmentResponse.ok) {
-        const assessmentResult = await assessmentResponse.json()
-        console.log('[Assessment Store] 情绪评估分析完成:', assessmentResult)
+      try {
+        console.log('[Assessment Store] 发送POST请求到 /api/emotional_assessment')
+        const emotionalResponse = await fetch(getApiUrl('emotional_assessment'), {
+          method: 'POST',
+          body: formData
+        })
         
-        // 更新情绪评估状态
-        emotionalAssessmentComplete.value = true
-        emotionalAssessmentData.value = assessmentResult.data
-        emotionalProcessing.value = false
-        
-        // 分析报告内容
-        await analyzeVideoReport(reportBlob)
-      } else {
-        console.error('[Assessment Store] 情绪评估分析失败')
+        if (!emotionalResponse.ok) {
+          console.error(`[Assessment Store] 情绪评估API调用失败: ${emotionalResponse.status} ${emotionalResponse.statusText}`)
+          const errorText = await emotionalResponse.text()
+          console.error('[Assessment Store] 错误详情:', errorText)
+        } else {
+          const emotionalResult = await emotionalResponse.json()
+          console.log('[Assessment Store] 情绪评估API调用成功:', emotionalResult)
+          
+          if (emotionalResult.success) {
+            console.log('[Assessment Store] 情绪评估已在后台处理中')
+            emotionalProcessing.value = true
+            saveVideoUploadState()
+          }
+        }
+      } catch (emotionalError) {
+        console.error('[Assessment Store] 调用情绪评估API出错:', emotionalError)
       }
       
       // 停止所有轮询
@@ -494,47 +540,73 @@ export const useAssessmentStore = defineStore('assessment', () => {
     }
   }
   
-  // 分析视频评估报告
-  async function analyzeVideoReport(reportBlob) {
+  // 加载最新的情绪评估结果 - 防抖和缓存优化版
+  async function loadLatestEmotionalAssessment() {
     try {
-      console.log('[DEBUG] 开始分析视频评估报告');
-      
-      // 读取报告内容
-      const text = await reportBlob.text();
-      
-      // 提取JSON部分
-      const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);
-      if (jsonMatch && jsonMatch[1]) {
-        const jsonContent = jsonMatch[1].trim();
-        
-        try {
-          const assessmentData = JSON.parse(jsonContent);
-          
-          // 更新视频评估数据
-          videoAssessmentData.value = assessmentData;
-          videoAssessmentComplete.value = true;
-          
-          console.log('[DEBUG] 视频评估报告解析成功:', assessmentData);
-          
-          // 重要：同时更新情绪评估数据，确保情绪评估按钮也能显示正确的结果
-          emotionalAssessmentData.value = assessmentData;
-          emotionalAssessmentComplete.value = true;
-          emotionalProcessing.value = false;
-          
-          console.log('[DEBUG] 已同步更新情绪评估数据，处理状态已重置为false');
-          
-          return assessmentData;
-        } catch (jsonError) {
-          console.error('[DEBUG] 解析JSON失败:', jsonError);
-          return null;
-        }
-      } else {
-        console.error('[DEBUG] 未在报告中找到JSON数据');
-        return null;
+      // 检查是否应该发起请求（防抖）
+      const now = Date.now();
+      if (now - lastEmotionalAssessmentRequestTime < MIN_REQUEST_INTERVAL) {
+        console.log('[DEBUG] 跳过情绪评估数据请求 - 间隔太短');
+        return false;
       }
+      
+      lastEmotionalAssessmentRequestTime = now;
+      console.log('[DEBUG] 加载最新情绪评估数据');
+      
+      // 先检查localStorage中是否有最近的评估数据
+      const savedState = localStorage.getItem('video_upload_state');
+      if (savedState) {
+        try {
+          const state = JSON.parse(savedState);
+          const timestamp = state.timestamp || 0;
+          
+          // 如果状态是最近10分钟内保存的，且已经完成了情绪评估，则不重新获取
+          if ((now - timestamp < 10 * 60 * 1000) && 
+              emotionalAssessmentComplete.value && 
+              emotionalAssessmentData.value) {
+            console.log('[DEBUG] 使用缓存的情绪评估数据，不重新获取');
+            return true;
+          }
+        } catch (e) {
+          console.error('[DEBUG] 解析缓存状态失败:', e);
+        }
+      }
+      
+      // 发起网络请求获取最新数据
+      const response = await fetch(getApiUrl('assessment_results'));
+      const data = await response.json();
+      
+      if (!data.success) {
+        console.log('[DEBUG] 加载评估数据失败');
+        return false;
+      }
+      
+      if (!data.has_assessment) {
+        console.log('[DEBUG] 没有找到有效的评估数据');
+        return false;
+      }
+      
+      // 更新状态
+      emotionalAssessmentComplete.value = true;
+      emotionalAssessmentData.value = data.assessment;
+      emotionalProcessing.value = false;
+      
+      console.log('[DEBUG] 成功加载评估数据，缓存到localStorage');
+      
+      // 同步更新视频评估数据，确保两者一致
+      if (!videoAssessmentComplete.value && data.assessment) {
+        videoAssessmentData.value = data.assessment;
+        videoAssessmentComplete.value = true;
+        console.log('[DEBUG] 同步更新视频评估数据');
+      }
+      
+      // 将数据保存到localStorage
+      saveVideoUploadState();
+      
+      return true;
     } catch (error) {
-      console.error('[DEBUG] 分析视频评估报告失败:', error);
-      return null;
+      console.error('[DEBUG] 加载评估数据时发生错误:', error);
+      return false;
     }
   }
   
@@ -543,7 +615,7 @@ export const useAssessmentStore = defineStore('assessment', () => {
     // 每5秒检查一次分析结果
     const analysisCheckInterval = setInterval(async () => {
       try {
-        const response = await fetch(getApiUrl('latest_assessment'))
+        const response = await fetch(getApiUrl('assessment_results'))
         const data = await response.json()
         
         if (data.success && data.has_assessment) {
@@ -605,39 +677,6 @@ export const useAssessmentStore = defineStore('assessment', () => {
       }
     } catch (error) {
       console.error('加载评估状态失败:', error);
-    }
-  }
-  
-  // 加载最新的情绪评估结果 - 添加防抖和缓存机制
-  async function loadLatestEmotionalAssessment() {
-    try {
-      console.log('[DEBUG] 加载最新情绪评估数据')
-      const response = await fetch(getApiUrl('latest_assessment'))
-      const data = await response.json()
-      
-      if (!data.success) {
-        console.log('[DEBUG] 加载评估数据失败')
-        resetVideoAssessment()
-        return false
-      }
-      
-      if (!data.has_assessment) {
-        console.log('[DEBUG] 没有找到有效的评估数据')
-        resetVideoAssessment()
-        return false
-      }
-      
-      // 更新状态
-      emotionalAssessmentComplete.value = true
-      emotionalProcessing.value = false
-      
-      console.log('[DEBUG] 成功加载评估数据:', data.assessment)
-      return true
-      
-    } catch (error) {
-      console.error('[DEBUG] 加载评估数据时发生错误:', error)
-      resetVideoAssessment()
-      return false
     }
   }
   
@@ -1043,6 +1082,11 @@ export const useAssessmentStore = defineStore('assessment', () => {
     statusPollingStarted.value = false
     reportDownloaded.value = false
     
+    // 重置情绪评估状态
+    emotionalAssessmentComplete.value = false
+    emotionalAssessmentData.value = null
+    emotionalProcessing.value = false
+    
     // 清除localStorage中的状态
     localStorage.removeItem('video_upload_state')
     localStorage.removeItem('lastAssessmentTimestamp')
@@ -1075,41 +1119,14 @@ export const useAssessmentStore = defineStore('assessment', () => {
           } else {
             console.log('[DEBUG] 找到有效的存储状态，准备恢复');
             
-            // 尝试从服务器验证状态，无论结果如何都加载本地状态
-            const validationPromise = fetch(getApiUrl('latest_assessment'))
-              .then(resp => resp.json())
-              .catch(err => {
-                console.error('[DEBUG] 验证状态时出错:', err);
-                return { success: false };
-              });
+            // 恢复状态
+            loadVideoUploadState();
             
-            // 不等待验证，先恢复状态
-            let hasRestoredState = loadVideoUploadState();
-            
-            // 然后检查验证结果
-            const validationData = await validationPromise;
-            
-            if (validationData.success && validationData.has_assessment) {
-              console.log('[DEBUG] 服务器确认有有效评估');
-              
-              // 如果状态恢复成功，并且有reportId，强制检查状态
-              if (hasRestoredState && (reportId.value || uploadCallbackComplete.value)) {
-                console.log('[DEBUG] 恢复状态成功，启动状态轮询');
-                
-                // 确保启动主轮询，无论assessment_status如何
-                if (!masterPollingActive) {
-                  startMasterPolling();
-                }
-                
-                // 立即检查一次状态，不等待轮询
-                debouncedCheckVideoStatus(true);
-              }
-            } else {
-              console.log('[DEBUG] 服务器无有效评估，但仍保持本地状态');
-              // 保持本地状态，否则可能导致用户体验不一致
+            // 如果有上传记录，启动主轮询
+            if (reportId.value || uploadCallbackComplete.value) {
+              console.log('[DEBUG] 恢复状态成功，启动状态轮询');
+              startMasterPolling();
             }
-            
-            return true;
           }
         } catch (parseError) {
           console.error('[DEBUG] 解析localStorage状态失败:', parseError);
@@ -1123,7 +1140,6 @@ export const useAssessmentStore = defineStore('assessment', () => {
       return true;
     } catch (error) {
       console.error('[DEBUG] 初始化评估存储失败:', error);
-      // 发生错误时重置状态
       resetVideoAssessment();
       return false;
     }

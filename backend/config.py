@@ -10,7 +10,7 @@ class Config:
     EMBEDDING_API_KEY = "sk-eziehqfupwjhffcnixziqozcqxaqkgnzshgvueemosdijebj"
     EMBEDDING_API_URL = "https://api.siliconflow.cn/v1/embeddings"
     EMBEDDING_MODEL = "BAAI/bge-m3"
-    EMBEDDING_DIMENSION = 768
+    EMBEDDING_DIMENSION = 1024
     
     ''' 科大讯飞语音识别配置 '''
     XFYUN_APP_ID = "890910a0"  # 填入你的APP_ID
@@ -22,7 +22,7 @@ class Config:
     '''
     # TTS功能配置
     ENABLE_TTS = False  # 是否启用普通TTS
-    ENABLE_SUPER_TTS = False  # 是否启用超拟人TTS
+    ENABLE_SUPER_TTS = True  # 是否启用超拟人TTS
     
     # 普通TTS可用音色列表
     TTS_VOICE_LIST = [

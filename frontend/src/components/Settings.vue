@@ -61,6 +61,75 @@
           </div>
         </div>
 
+        <!-- 输入模式设置 -->
+        <div class="space-y-4">
+          <h4 class="text-lg font-medium text-neutral-800 dark:text-neutral-200 border-b border-neutral-200 dark:border-neutral-700 pb-2">输入模式</h4>
+          
+          <div class="space-y-4">
+            <!-- 选择输入模式 -->
+            <div class="mb-4">
+              <label class="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-2">默认输入方式</label>
+              <div class="flex space-x-4">
+                <div class="flex-1">
+                  <button 
+                    @click="voiceInputMode = true"
+                    :class="[
+                      'w-full py-3 px-4 text-center rounded-lg transition-all duration-200 border-2 flex flex-col items-center',
+                      voiceInputMode 
+                        ? 'bg-primary-50 dark:bg-primary-900/30 border-primary-500 text-primary-700 dark:text-primary-300' 
+                        : 'bg-white dark:bg-neutral-800 border-neutral-300 dark:border-neutral-600 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-700'
+                    ]"
+                  >
+                    <i class="fa-solid fa-microphone text-2xl mb-2"></i>
+                    <span>语音输入</span>
+                  </button>
+                </div>
+                <div class="flex-1">
+                  <button 
+                    @click="voiceInputMode = false"
+                    :class="[
+                      'w-full py-3 px-4 text-center rounded-lg transition-all duration-200 border-2 flex flex-col items-center',
+                      !voiceInputMode 
+                        ? 'bg-primary-50 dark:bg-primary-900/30 border-primary-500 text-primary-700 dark:text-primary-300' 
+                        : 'bg-white dark:bg-neutral-800 border-neutral-300 dark:border-neutral-600 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-700'
+                    ]"
+                  >
+                    <i class="fa-solid fa-keyboard text-2xl mb-2"></i>
+                    <span>文字输入</span>
+                  </button>
+                </div>
+              </div>
+              <p class="mt-2 text-sm text-neutral-500 dark:text-neutral-400">
+                语音输入模式下默认隐藏文本框，按住语音按钮说话；文字输入模式下显示文本框。
+              </p>
+            </div>
+            
+            <!-- 语音输入时间设置 -->
+            <div v-if="voiceInputMode" class="space-y-2">
+              <div class="flex justify-between items-center">
+                <label for="voice-timeout" class="text-sm font-medium text-neutral-700 dark:text-neutral-300">自动发送时间</label>
+                <span class="text-sm text-neutral-500 dark:text-neutral-400">{{ voiceTimeout }}秒</span>
+              </div>
+              <div class="flex items-center space-x-2">
+                <span class="text-xs text-neutral-500 dark:text-neutral-400">短</span>
+                <input 
+                  id="voice-timeout"
+                  type="range" 
+                  v-model="voiceTimeout" 
+                  min="2" 
+                  max="10" 
+                  step="1"
+                  class="w-full h-2 bg-neutral-200 rounded-lg appearance-none cursor-pointer dark:bg-neutral-700" 
+                />
+                <span class="text-xs text-neutral-500 dark:text-neutral-400">长</span>
+              </div>
+              <p class="text-xs text-neutral-500 dark:text-neutral-400">
+                停止说话后多少秒自动发送消息（当前设置：{{ voiceTimeout }}秒）
+              </p>
+            </div>
+          </div>
+        </div>
+
         <!-- 语音设置 -->
         <div class="space-y-4">
           <h4 class="text-lg font-medium text-neutral-800 dark:text-neutral-200 border-b border-neutral-200 dark:border-neutral-700 pb-2">语音设置</h4>
@@ -252,6 +321,8 @@ const isSaving = ref(false)
 const error = ref('')
 const isDarkMode = ref(false)
 const openDropdown = ref(null)
+const voiceInputMode = ref(true)
+const voiceTimeout = ref(5)
 
 // 检测当前模式是否为暗色模式
 const checkDarkMode = () => {
@@ -302,6 +373,8 @@ async function loadSettings() {
     superTtsVoiceList.value = data.super_tts_voice_list || []
     ttsSpeed.value = data.tts_speed || 50
     typingSpeed.value = data.typing_speed || 38
+    voiceInputMode.value = data.voice_input_mode || true
+    voiceTimeout.value = data.voice_timeout || 5
     
   } catch (error) {
     console.error('加载设置失败:', error)
@@ -347,23 +420,39 @@ async function saveSettings() {
         tts_voice: ttsVoice.value,
         super_tts_voice: superTtsVoice.value,
         tts_speed: ttsSpeed.value,
-        typing_speed: typingSpeed.value
+        typing_speed: typingSpeed.value,
+        voice_input_mode: voiceInputMode.value,
+        voice_timeout: voiceTimeout.value
       })
     })
     
     const result = await response.json()
     
     if (result.success) {
-      // 通知父组件设置已更改
-      emit('settings-changed', {
+      // 创建保存的设置数据对象
+      const settingsData = {
         enableTTS: enableTTS.value,
         enableSuperTTS: enableSuperTTS.value,
         ttsVoice: ttsVoice.value,
         superTtsVoice: superTtsVoice.value,
         ttsSpeed: ttsSpeed.value,
         typingSpeed: typingSpeed.value,
-        useTypewriterEffect: useTypewriterEffect.value
-      })
+        useTypewriterEffect: useTypewriterEffect.value,
+        voiceInputMode: voiceInputMode.value,
+        voiceTimeout: voiceTimeout.value
+      };
+      
+      // 通知父组件设置已更改
+      emit('settings-changed', settingsData)
+      
+      // 发送全局事件通知所有组件
+      window.dispatchEvent(new CustomEvent('settings-changed', { 
+        detail: settingsData 
+      }));
+      
+      // 保存设置到localStorage
+      localStorage.setItem('voiceInputMode', voiceInputMode.value.toString());
+      localStorage.setItem('voiceTimeout', voiceTimeout.value.toString());
       
       // 关闭设置面板
       emit('close')

@@ -5,6 +5,7 @@ from datetime import datetime
 from conversation import ConversationHistory
 from user_info_processor import UserInfoProcessor
 from intent_extractor import IntentExtractor
+import asyncio
 
 class MainAgent:
     def __init__(self, llm_service: LLMService, conversation_history: ConversationHistory):
@@ -282,7 +283,6 @@ class MainAgent:
             print(f"已经进行了{turns_count}轮对话，准备发送对话总结")
             
             # 启动异步任务处理对话归档，不等待其完成
-            import asyncio
             asyncio.create_task(self._process_dialog_summary(turns_count))
             print("已在后台启动对话归档任务")
         
@@ -294,26 +294,51 @@ class MainAgent:
         Args:
             turns_count: 当前对话轮数
         """
+        # 创建一个超时控制，避免此任务无限期阻塞
         try:
-            # 触发归档并获取总结
-            summary_profile = await self.conversation_history._auto_archive(self.user_info_processor)
-            
-            if summary_profile:
-                # 确保更新用户信息
-                print("从归档总结更新用户信息")
-                updated_info = self.user_info_processor._load_user_info()  # 使用_load_user_info代替get_user_info
-                if updated_info != self.user_info:
-                    print("用户信息已更新")
-                    self.user_info = updated_info
-                
-                # 在用户下一次提问后，将总结作为系统消息添加到对话历史
-                await self.conversation_history.add_dialog("SYSTEM_GUIDANCE", 
-                    f"【系统消息】根据我们的对话，我整理了一些要点：\n\n{summary_profile}", 
-                    None)
-                
-                print("对话总结已添加到对话历史，将在用户下一次提问后显示")
+            # 使用asyncio.shield保护任务不被外部取消
+            await asyncio.shield(self._process_dialog_summary_with_timeout())
+        except asyncio.TimeoutError:
+            print("对话总结任务超时，已在后台继续处理")
         except Exception as e:
-            print(f"处理对话总结时发生错误: {e}")
+            print(f"处理对话总结时发生未处理的错误: {e}")
+            # 错误已记录，但不会影响主对话流程
+
+    async def _process_dialog_summary_with_timeout(self):
+        """带超时控制的对话总结处理"""
+        try:
+            # 创建一个有超时的任务
+            async with asyncio.timeout(30):  # 30秒超时，避免长时间阻塞
+                try:
+                    # 触发归档并获取总结
+                    summary_profile = await self.conversation_history._auto_archive(self.user_info_processor)
+                    
+                    if summary_profile:
+                        # 确保更新用户信息
+                        print("从归档总结更新用户信息")
+                        updated_info = self.user_info_processor._load_user_info()  # 使用_load_user_info代替get_user_info
+                        if updated_info != self.user_info:
+                            print("用户信息已更新")
+                            self.user_info = updated_info
+                        
+                        # 在用户下一次提问后，将总结作为系统消息添加到对话历史
+                        await self.conversation_history.add_dialog("SYSTEM_GUIDANCE", 
+                            f"【系统消息】根据我们的对话，我整理了一些要点：\n\n{summary_profile}", 
+                            None)
+                        
+                        print("对话总结已添加到对话历史，将在用户下一次提问后显示")
+                    else:
+                        print("对话归档未返回总结，可能是处理失败或无需总结")
+                except Exception as e:
+                    print(f"处理对话总结时发生错误: {e}")
+                    # 捕获所有异常但不抛出，防止影响主对话流程
+        except asyncio.CancelledError:
+            # 如果任务被取消，记录但不抛出异常
+            print("对话总结任务被取消")
+        except Exception as e:
+            # 捕获所有其他类型的异常
+            print(f"对话总结处理中发生异常: {e}")
+            # 不再继续传播异常
 
     async def _generate_reply(self, message: str, memory_text: str = "无补充信息", personality: str = None, is_category: bool = False) -> Tuple[str, str]:
         """生成回复的核心方法
@@ -762,7 +787,6 @@ class MainAgent:
                 await self.conversation_history.add_dialog(message="SYSTEM_GUIDANCE", reply=guidance_message)
         
         # 启动异步任务处理用户信息同步
-        import asyncio
         asyncio.create_task(self._process_user_info_sync(message, False))  # 在快速提问模式中不更新用户画像
 
     async def _process_user_info_sync(self, message, is_user_decision):
