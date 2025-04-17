@@ -868,17 +868,9 @@ class QiniuUploader:
             if time.time() - polling_start_time >= max_polling_time:
                 logger.warning(f"轮询达到最大时间限制({max_polling_time/60:.1f}分钟)，停止轮询: report_id={report_id}")
             
+            # 记录轮询结束状态但不修改实际状态
             logger.info(f"轮询结束: report_id={report_id}, assessment_status={assessment_status}, report_downloaded={report_downloaded}")
             
-            # 确保轮询结束时状态一致
-            if report_id:
-                # 确保所有状态都为True
-                self.report_status[report_id] = {
-                    "upload_callback": True,
-                    "assessment": True,
-                    "downloaded": True
-                }
-                logger.info(f"轮询结束，确保所有状态一致: report_id={report_id}, 所有状态=True")
         except Exception as e:
             logger.error(f"轮询过程中发生错误: {str(e)}")
             import traceback
