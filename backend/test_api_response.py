@@ -44,7 +44,7 @@ def test_api_response(auth_token):
     直接测试API响应格式
     """
     print("======= 测试获取七牛云配置接口 =======")
-    url = "http://192.168.3.143:30080/app-api/system/family-and-manage/oss/common/get-oss-upload-info"
+    url = "http://qzb.oamicnet.com/app-api/system/family-and-manage/oss/common/get-oss-upload-info"
     
     # 当前时间戳
     timestamp = int(time.time() * 1000)

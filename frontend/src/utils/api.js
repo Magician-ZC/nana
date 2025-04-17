@@ -17,10 +17,10 @@ function detectApiBaseUrl() {
     
     // 如果是localhost或127.0.0.1，直接使用localhost
     if (['localhost', '127.0.0.1'].includes(currentHost)) {
-      apiHost = 'localhost';
+      apiHost = 'woaiwo.oamicnet.com';
     } else {
       // 对于IP地址访问，使用当前访问的IP
-      apiHost = currentHost;
+      apiHost = 'woaiwo.oamicnet.com';
     }
     
     // 显式指定IP地址 - 用于直接通过IP访问的情况

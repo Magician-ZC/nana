@@ -143,7 +143,7 @@ class QiniuUploader:
         """
         获取七牛云上传配置信息，使用加密方式请求
         """
-        url = "http://192.168.3.143:30080/app-api/system/family-and-manage/oss/common/get-oss-upload-info"
+        url = "http://qzb.oamicnet.com/app-api/system/family-and-manage/oss/common/get-oss-upload-info"
         
         # 当前时间戳
         timestamp = int(time.time() * 1000)
@@ -511,7 +511,7 @@ class QiniuUploader:
         """
         通知服务端上传结果
         """
-        url = "http://192.168.3.143:30080/app-api/equipment/emotion/video-upload-back"
+        url = "http://qzb.oamicnet.com/app-api/equipment/emotion/video-upload-back"
         
         # 当前时间戳
         timestamp = int(time.time() * 1000)
@@ -743,6 +743,13 @@ class QiniuUploader:
                 if poll_key in self._active_polling:
                     del self._active_polling[poll_key]
                 return
+                
+            # 如果上传回调为False，直接退出轮询，不需要请求情绪评估列表
+            if not upload_callback_status:
+                logger.info(f"上传回调为False，停止轮询: report_id={report_id}")
+                if poll_key in self._active_polling:
+                    del self._active_polling[poll_key]
+                return
             
             logger.info(f"轮询初始状态: report_id={report_id}, upload_callback_status={upload_callback_status}, assessment_status={assessment_status}")
             
@@ -753,6 +760,25 @@ class QiniuUploader:
             # 只要上传回调成功但评估未完成，就持续轮询，但设置最大轮询时间
             while (upload_callback_status and not assessment_status and 
                    time.time() - polling_start_time < max_polling_time):
+                
+                # 每次循环开始时检查是否应该停止轮询
+                # 检查1: 线程已被标记为停止（从全局POLLING_THREADS中移除）
+                import inspect
+                frame = inspect.currentframe()
+                frame_locals = frame.f_back.f_locals if frame.f_back else {}
+                global_polling_threads = frame_locals.get('POLLING_THREADS', {})
+                
+                if (poll_key not in self._active_polling) or (poll_key not in global_polling_threads):
+                    logger.info(f"检测到轮询停止请求，中止轮询: report_id={report_id}")
+                    break
+                
+                # 检查2: 报告状态已更新为下载完成
+                if report_id in self.report_status:
+                    current_status = self.report_status[report_id]
+                    if current_status.get("downloaded", False) or current_status.get("assessment", False):
+                        logger.info(f"检测到报告已处理完成，停止轮询: report_id={report_id}, downloaded={current_status.get('downloaded')}, assessment={current_status.get('assessment')}")
+                        break
+                
                 try:
                     poll_count += 1
                     current_time = time.time()
@@ -765,6 +791,11 @@ class QiniuUploader:
                     
                     logger.info(f"轮询检查报告 [第{poll_count}次]: report_id={report_id}")
                     last_request_time = time.time()
+                    
+                    # 再次检查轮询是否应该停止
+                    if poll_key not in self._active_polling:
+                        logger.info(f"轮询过程中检测到停止请求，中止轮询: report_id={report_id}")
+                        break
                     
                     # 获取情绪评估列表
                     report_list = self.get_emotion_report_list(auth_token)
@@ -797,12 +828,12 @@ class QiniuUploader:
                                 # 更新状态
                                 self.report_status[report_id] = {
                                     "upload_callback": True,
-                                    "assessment": True,  # 2表示报告已生成
+                                    "assessment": True,  # True表示报告已生成
                                     "downloaded": True
                                 }
                                 
-                                # 轮询成功完成，不再解析报告
-                                logger.info(f"报告下载完成: {report_path}")
+                                # 下载成功，只记录日志而不做其他操作
+                                logger.info(f"报告下载完成，轮询即将终止: {report_path}")
                                 
                                 # 无论是否解析成功，都更新状态为完成
                                 assessment_status = True
@@ -868,7 +899,7 @@ class QiniuUploader:
         Returns:
             报告列表
         """
-        url = "http://192.168.3.143:30080/app-api/equipment/emotion/list"
+        url = "http://qzb.oamicnet.com/app-api/equipment/emotion/list"
         
         # 当前时间戳
         timestamp = int(time.time() * 1000)
@@ -1002,7 +1033,7 @@ class QiniuUploader:
                 logger.info(f"情绪评估报告已保存: {file_path}")
                 
                 # 下载成功后，调用API删除远程报告
-                delete_url = "http://192.168.3.143:30080/app-api/equipment/emotion/download/back"
+                delete_url = "http://qzb.oamicnet.com/app-api/equipment/emotion/download/back"
                 
                 # 当前时间戳
                 timestamp = int(time.time() * 1000)
@@ -1132,12 +1163,13 @@ class QiniuUploader:
         
         此方法用于video_status端点，不需要传入report_id
         会自动获取报告列表，找到第一条数据作为report_id
+        如果报告下载成功，应当由调用方调用情绪评估文档分析接口
         
         Args:
             auth_token: 授权令牌
             
         Returns:
-            包含状态信息的字典
+            包含状态信息的字典，如果下载了报告，会包含report_path字段
         """
         try:
             # 获取报告列表
@@ -1179,6 +1211,11 @@ class QiniuUploader:
                 }
                 self.report_status[str_report_id] = current_status
             
+            # 报告下载路径
+            report_path = None
+            # 标记该次调用是否下载了新报告
+            downloaded_now = False
+            
             # 如果报告状态为1(已完成)且未下载，则下载报告
             if status == 1 and not current_status.get("downloaded", False):
                 logger.info(f"发现已生成的报告: id={str_report_id}")
@@ -1193,24 +1230,35 @@ class QiniuUploader:
                 if report_path:
                     logger.info(f"报告下载成功: {report_path}")
                     
-                    # 更新状态
+                    # 标记为本次下载
+                    downloaded_now = True
+                    
+                    # 更新状态 - 只设置状态，不进行额外操作
                     self.report_status[str_report_id] = {
                         "upload_callback": True,
-                        "assessment": 2,
+                        "assessment": True,  # 使用布尔值表示报告已生成
                         "downloaded": True
                     }
                     
                     logger.info(f"报告下载成功，已完成评估流程: {report_path}")
+                    # 注意：报告下载成功后，应由调用方决定是否调用情绪评估文档分析接口
             
             # 返回最新状态
-            return {
+            result = {
                 "success": True,
                 "report_id": str_report_id,
                 "status": status,
                 "upload_callback_status": self.report_status[str_report_id].get("upload_callback", False),
                 "assessment_status": self.report_status[str_report_id].get("assessment", False),
-                "report_downloaded": self.report_status[str_report_id].get("downloaded", False)
+                "report_downloaded": self.report_status[str_report_id].get("downloaded", False),
+                "downloaded_now": downloaded_now  # 添加下载标记
             }
+            
+            # 如果下载了报告，添加报告路径
+            if report_path:
+                result["report_path"] = report_path
+            
+            return result
             
         except Exception as e:
             logger.error(f"检查报告状态出错: {str(e)}")

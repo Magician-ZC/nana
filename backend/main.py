@@ -2092,7 +2092,31 @@ async def video_status(request: Request):
         assessment_status = status_result.get("assessment_status", False)
         report_downloaded = status_result.get("report_downloaded", False)
         
-        # 处理启动轮询请求 - 只有当明确请求启动轮询且状态未完成时才启动
+        # 如果报告被下载，处理文档分析
+        if "report_path" in status_result and status_result["report_path"]:
+            report_path = status_result["report_path"]
+            logger.info(f"报告已下载，启动文档分析: {report_path}")
+            # 创建异步任务处理文档分析
+            asyncio.create_task(process_assessment_from_report(report_path, "video_status下载"))
+            
+            # 如果报告已下载，检查并关闭对应的轮询线程
+            if current_report_id and current_report_id in POLLING_THREADS:
+                thread_info = POLLING_THREADS.get(current_report_id)
+                if thread_info and thread_info.get('thread') and thread_info['thread'].is_alive():
+                    logger.info(f"报告已下载，终止轮询线程: report_id={current_report_id}")
+                    # 清除线程信息，使轮询在下一次检查时停止
+                    POLLING_THREADS.pop(current_report_id, None)
+                    logger.info(f"已移除轮询线程信息: report_id={current_report_id}")
+        
+        # 如果报告已下载完成，不需要启动轮询
+        if report_downloaded:
+            start_polling = False
+            # 再次检查并关闭对应的轮询线程
+            if current_report_id and current_report_id in POLLING_THREADS:
+                logger.info(f"报告已标记为下载完成，关闭轮询: report_id={current_report_id}")
+                POLLING_THREADS.pop(current_report_id, None)
+        
+        # 处理启动轮询请求 - 只有当明确请求启动轮询且上传回调状态为True且评估状态未完成时才启动
         polling_started = False
         thread_id = None
         
@@ -2215,6 +2239,13 @@ async def update_assessment_status(auth_token: str, report_id: str = None):
         auth_token: 授权令牌
         report_id: 报告ID (可选)
     """
+    # 如果上传回调为False，则不执行任何操作
+    if report_id and report_id in qiniu_uploader.report_status:
+        status = qiniu_uploader.report_status[report_id]
+        if not status.get("upload_callback", False):
+            logger.info(f"上传回调为False，不进行状态更新: report_id={report_id}")
+            return
+    
     if not report_id:
         # 如果没有报告ID，直接使用check_and_download_report
         result = qiniu_uploader.check_and_download_report(auth_token)
@@ -2248,47 +2279,40 @@ async def update_assessment_status(auth_token: str, report_id: str = None):
     if report_status == 1:  # 完成状态
         logger.info(f"发现已完成的报告: id={report_id}")
         
-        # 下载报告
+        # 设置保存目录
         save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "save", "assessments")
         os.makedirs(save_dir, exist_ok=True)
         
+        # 下载报告
         report_path = qiniu_uploader.download_emotion_report(auth_token, report_id, save_dir)
         
         if report_path:
             logger.info(f"报告下载成功: {report_path}")
             
-            # 更新状态字典
+            # 更新状态
             qiniu_uploader.report_status[report_id] = {
                 "upload_callback": True,
                 "assessment": 2,  # 2表示报告已生成
                 "downloaded": True
             }
             
-            # 移除：不再调用parse_emotion_report方法
-            # parse_result = qiniu_uploader.parse_emotion_report(report_path)
-            # if parse_result:
-            #     logger.info(f"报告解析成功: {report_path}")
-            # else:
-            #     logger.error(f"报告解析失败: {report_path}")
-                
-            # 执行情绪评估自动分析
-            try:
-                # 使用新的通用函数进行处理
-                await process_assessment_from_report(report_path, "update_assessment_status中")
-            except Exception as analysis_error:
-                logger.error(f"启动情绪分析失败: {str(analysis_error)}")
-                import traceback
-                logger.error(traceback.format_exc())
+            # 下载完成后，只调用情绪评估文档分析接口，不进行其他操作
+            logger.info(f"报告下载完成，进行文档分析: {report_path}")
+            
+            # 此处应调用情绪评估的文档分析接口
+            # 创建后台任务处理报告分析
+            asyncio.create_task(process_assessment_from_report(report_path, "状态更新后"))
         else:
-            logger.warning(f"报告下载失败: {report_id}")
+            logger.error(f"报告下载失败: id={report_id}")
     else:
-        # 更新进行中状态
+        logger.info(f"报告状态未完成(status={report_status}): id={report_id}")
+        
+        # 更新状态
         qiniu_uploader.report_status[report_id] = {
             "upload_callback": True,
-            "assessment": False,
+            "assessment": False if report_status != 1 else 2,
             "downloaded": False
         }
-        logger.info(f"报告处理中: report_id={report_id}, status={report_status}")
 
 # 新增辅助函数处理报告情绪评估分析 - 用于合并重复代码
 async def process_assessment_from_report(report_path, context=""):
@@ -2332,23 +2356,37 @@ async def process_assessment_from_report(report_path, context=""):
         # 如果分析成功，保存结果
         if hasattr(result, "status_code") and result.status_code == 200:
             try:
-                # 保存评估结果到文件
-                assessment_dir = os.path.join("save", "assessments")
-                os.makedirs(assessment_dir, exist_ok=True)
-                
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                result_file = os.path.join(assessment_dir, f"assessment_{timestamp}.json")
-                
                 # 确保结果是JSON格式
-                if isinstance(result.body, (dict, list)):
+                if isinstance(result.body, dict):
                     result_data = result.body
                 else:
-                    result_data = json.loads(result.body)
+                    try:
+                        result_data = json.loads(result.body)
+                    except:
+                        logger.warning(f"{context_str}无法解析评估结果为JSON: {result.body}")
+                        return result
                 
-                with open(result_file, "w", encoding="utf-8") as f:
-                    json.dump(result_data, f, ensure_ascii=False, indent=2)
-                
-                logger.info(f"{context_str}情绪评估分析成功，结果已保存到: {result_file}")
+                # 只保存包含实际情绪评估数据的结果
+                # 检查是否包含核心情绪分析数据或是初始状态消息
+                if isinstance(result_data, dict) and (
+                    "核心状态分析" in result_data or 
+                    "重点指标异常" in result_data or 
+                    "针对性干预建议" in result_data
+                ):
+                    # 包含真正的评估结果，保存为JSON文件
+                    assessment_dir = os.path.join("save", "assessments")
+                    os.makedirs(assessment_dir, exist_ok=True)
+                    
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    result_file = os.path.join(assessment_dir, f"assessment_{timestamp}.json")
+                    
+                    with open(result_file, "w", encoding="utf-8") as f:
+                        json.dump(result_data, f, ensure_ascii=False, indent=2)
+                    
+                    logger.info(f"{context_str}情绪评估分析成功，结果已保存到: {result_file}")
+                else:
+                    # 这是一个初始状态消息，不保存
+                    logger.info(f"{context_str}收到初始状态消息，不保存为JSON文件: {result_data}")
             except Exception as save_error:
                 logger.error(f"{context_str}保存评估结果失败: {str(save_error)}")
                 import traceback
