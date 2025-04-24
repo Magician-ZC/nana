@@ -373,7 +373,7 @@ async function loadSettings() {
     superTtsVoiceList.value = data.super_tts_voice_list || []
     ttsSpeed.value = data.tts_speed || 50
     typingSpeed.value = data.typing_speed || 38
-    voiceInputMode.value = data.voice_input_mode || true
+    voiceInputMode.value = data.voice_input_mode !== undefined ? data.voice_input_mode : true
     voiceTimeout.value = data.voice_timeout || 5
     
   } catch (error) {
