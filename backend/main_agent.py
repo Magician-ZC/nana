@@ -258,18 +258,15 @@ class MainAgent:
         # 获取当前对话轮数
         turns_count = len(self.conversation_history.turns) + 1  # +1 是因为当前消息还未添加
         
-        # 获取相关记忆
-        memory_text = self._get_relevant_memories(message)
-        print("相关记忆:", memory_text)
-        
-        # 特殊处理快捷提问类别
-        if is_category:
-            print(f"检测到快捷提问类别: {message}")
-            # 获取与该类别相关的记忆
-            category_memory = self._get_relevant_category_memories(message)
-            if category_memory != "无补充信息":
-                memory_text = category_memory
-                print(f"找到与类别[{message}]相关的记忆: {memory_text}")
+        # 在引导模式下不获取相关记忆
+        memory_text = "无补充信息"  # 默认初始化
+        if not is_category:
+            # 如果不是引导模式，获取相关记忆
+            memory_text = self._get_relevant_memories(message)
+            print("相关记忆:", memory_text)
+        else:
+            # 引导模式下不使用用户记忆
+            print("引导模式中，不使用用户记忆信息")
         
         # 生成回复，传入性格参数
         reply_content, expression = await self._generate_reply(message, memory_text, personality, is_category)
@@ -360,8 +357,27 @@ class MainAgent:
         if personality:
             personality_prompt = f"\n请以以下性格特点回复: {personality}"
         
-        # 如果是快捷提问类别，使用xinli_agent作为提示词
-        category_prompt = ""
+        # 检查是否是用户对建议的回复/决策
+        is_user_decision, decision_type, decision_content = self.intent_extractor.recognizer.check_if_user_decision(message, context)
+
+        # 检查用户是否提供了新的个人信息
+        has_new_info, info_type, info_content, career_intent = self.intent_extractor.check_for_new_user_info(message)
+        
+        decision_prompt = ""
+        if is_user_decision:
+            print(f"检测到用户决策: 类型={decision_type}, 内容={decision_content}")
+            decision_prompt = f"\n检测到用户正在回复之前的建议并做出决策，决策类型：{decision_type}，决策内容：{decision_content}。请理解用户的选择，并相应地更新用户信息，尤其是'最近状况'部分中的相关条目。例如，如果用户决定'原谅同学'，请将'人际关系'中的相关描述更新为'尝试接纳同学并改善关系'等反映新决策的描述。重要：一定要在回复中包含user_info字段，更新用户信息以反映此次决策。"
+        elif has_new_info:
+            print(f"检测到用户提供了新的{info_type}信息: {info_content}")
+            if info_type == "爱好":
+                decision_prompt = f"\n检测到用户提供了新的爱好信息。请更新用户信息中的'爱好'字段，将'{info_content}'添加到现有爱好列表中。重要：一定要在回复中包含user_info字段，更新后的爱好应包括原有爱好和新爱好'{info_content}'。"
+            else:
+                decision_prompt = f"\n检测到用户提供了新的{info_type}信息：'{info_content}'。请更新用户信息中的'{info_type}'字段。重要：一定要在回复中包含user_info字段，更新后的信息应反映用户提供的新内容。"
+        
+        # 添加提示词，请求只在必要时更新用户信息
+        update_info_prompt = "\n注意：当用户明确提供新的个人信息，或对建议做出选择和决策时，才在'user_info'字段中返回更新后的用户信息。如果用户没有提供新信息或没有做出明确决策，请不要在回复中包含'user_info'字段。"
+        
+        # 在快速提问模式下，使用xinli_agent提示词；否则使用原agent提示词
         if is_category:
             # 读取xinli_agent提示词
             xinli_agent_path = os.path.join("prompts", "xinli_agent.txt")
@@ -452,30 +468,8 @@ class MainAgent:
   "question_type": "initial"
 }}
 """
-        
-        # 检查是否是用户对建议的回复/决策
-        is_user_decision, decision_type, decision_content = self.intent_extractor.recognizer.check_if_user_decision(message, context)
-
-        # 检查用户是否提供了新的个人信息
-        has_new_info, info_type, info_content, career_intent = self.intent_extractor.check_for_new_user_info(message)
-        
-        decision_prompt = ""
-        if is_user_decision:
-            print(f"检测到用户决策: 类型={decision_type}, 内容={decision_content}")
-            decision_prompt = f"\n检测到用户正在回复之前的建议并做出决策，决策类型：{decision_type}，决策内容：{decision_content}。请理解用户的选择，并相应地更新用户信息，尤其是'最近状况'部分中的相关条目。例如，如果用户决定'原谅同学'，请将'人际关系'中的相关描述更新为'尝试接纳同学并改善关系'等反映新决策的描述。重要：一定要在回复中包含user_info字段，更新用户信息以反映此次决策。"
-        elif has_new_info:
-            print(f"检测到用户提供了新的{info_type}信息: {info_content}")
-            if info_type == "爱好":
-                decision_prompt = f"\n检测到用户提供了新的爱好信息。请更新用户信息中的'爱好'字段，将'{info_content}'添加到现有爱好列表中。重要：一定要在回复中包含user_info字段，更新后的爱好应包括原有爱好和新爱好'{info_content}'。"
-            else:
-                decision_prompt = f"\n检测到用户提供了新的{info_type}信息：'{info_content}'。请更新用户信息中的'{info_type}'字段。重要：一定要在回复中包含user_info字段，更新后的信息应反映用户提供的新内容。"
-        
-        # 添加提示词，请求只在必要时更新用户信息
-        update_info_prompt = "\n注意：当用户明确提供新的个人信息，或对建议做出选择和决策时，才在'user_info'字段中返回更新后的用户信息。如果用户没有提供新信息或没有做出明确决策，请不要在回复中包含'user_info'字段。"
-        
-        # 在快速提问模式下，使用xinli_agent提示词；否则使用原agent提示词
-        if is_category:
-            # 不使用模板，直接构建promot
+            
+            # 不使用模板，直接构建promot，去掉个性和原agent模式
             prompt = f"""
 请以专业心理医生的身份回答用户问题。
 
@@ -485,11 +479,8 @@ class MainAgent:
 用户的最新问题：
 {message}
 
-相关记忆：
-{memory_text}
-
 注意：必须严格按照要求的JSON格式输出，不要在JSON前后添加任何说明性文字。直接输出有效的JSON结构。
-""" + personality_prompt + category_prompt + decision_prompt
+""" + category_prompt
         else:
             # 使用原模板
             prompt = self.prompt_template.format(
@@ -497,7 +488,7 @@ class MainAgent:
                 user_message=message,
                 memory=memory_text,
                 user_info=self.user_info
-            ) + personality_prompt + category_prompt + decision_prompt + update_info_prompt
+            ) + personality_prompt + update_info_prompt
         
         # 获取LLM回复
         retry_count = 0

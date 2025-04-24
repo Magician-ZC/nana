@@ -1096,8 +1096,17 @@ async def stream_chat(request: ChatRequest):
         try:
             # 准备对话内容
             conversation_history = request.history or [{"role": "user", "content": request.message}]
+            
+            # 追踪历史记录
+            # 如果是第一次对话，用户的消息已经通过conversation_history.add_dialog添加
+            # 如果存在历史记录，则从服务器角度看，该消息是新消息，需要添加到对话历史中
+            if request.history:
+                # 这意味着前端传递了历史记录，我们需要同步最新的用户消息到conversation_history
+                await chat_service.conversation_history.add_dialog(message=request.message, reply="")
+            
             model_name = request.model or "gpt-3.5-turbo"
             agent_id = request.agent_id
+            message = request.message
             
             # 判断是否是引导式提问
             is_quick_question = request.is_category or False
@@ -1106,6 +1115,91 @@ async def stream_chat(request: ChatRequest):
             print(f"是否是快捷提问: {is_quick_question}")
             print(f"使用对话历史: {conversation_history}")
             print(f"使用模型: {model_name}")
+            
+            # 检查是否是结束引导的明确指令
+            exit_guidance_keywords = ["结束话题", "结束引导", "不想聊了", "换个话题", "不想继续", "结束对话", "不想讨论这个", "不讨论", "换话题", "算了", "不聊了", "结束"]
+            is_exit_guidance = (chat_service.guidance_state["is_guiding"] and 
+                           (any(keyword in message for keyword in exit_guidance_keywords) or message.strip() == "结束"))
+            
+            # 如果用户表示想要结束话题，直接结束引导
+            if is_exit_guidance:
+                print(f"用户请求结束引导，直接结束：{message}")
+                chat_service.guidance_state["confirmed_exit"] = True
+                
+                # 获取对话轮数
+                conversation_turns = len(chat_service.conversation_history.turns)
+                print(f"当前对话轮数: {conversation_turns}")
+                
+                # 根据对话轮数决定是否生成总结
+                if conversation_turns > 5:
+                    print(f"对话轮数 > 5，生成会话总结")
+                    
+                    # 获取最近的对话内容用于生成总结（最多5轮）
+                    recent_turns = chat_service.conversation_history.turns[-5:]
+                    
+                    try:
+                        # 使用chat_service的方法生成总结
+                        summary_response = await chat_service._get_conversation_summary(recent_turns)
+                        reply_text = f"{summary_response}\n\n已结束当前话题。您还有其他想讨论的问题吗？"
+                    except Exception as e:
+                        print(f"生成对话总结时出错: {e}")
+                        reply_text = "已结束当前话题。您还有其他想讨论的问题吗？"
+                else:
+                    # 对话轮数少于5轮，使用默认回复
+                    print(f"对话轮数 <= 5，使用默认结束回复")
+                    reply_text = "已结束当前话题。您还有其他想讨论的问题吗？"
+                
+                # 先发送回复类型指示
+                yield json.dumps({"type": "start", "content": ""}) + "\n"
+                yield json.dumps({"type": "content", "content": reply_text}) + "\n"
+                yield json.dumps({"type": "end", "content": ""}) + "\n"
+                
+                # 重置引导状态
+                chat_service._reset_guidance_state()
+                
+                # 生成语音
+                audio_data = None
+                if Config.is_tts_enabled() and chat_service.tts_service:
+                    try:
+                        print("为结束引导回复生成普通TTS...")
+                        audio_data = chat_service.tts_service.generate_audio(reply_text)
+                        if audio_data and len(audio_data) > 100:
+                            base64_audio = base64.b64encode(audio_data).decode('ascii')
+                            audio_response = {
+                                "type": "audio",
+                                "audio_data": base64_audio
+                            }
+                            yield json.dumps(audio_response) + "\n"
+                    except Exception as e:
+                        print(f"为结束引导回复生成普通语音时出错: {e}")
+                
+                if (not audio_data or len(audio_data) < 100) and Config.is_super_tts_enabled() and chat_service.super_tts_service:
+                    try:
+                        print("为结束引导回复生成超拟人TTS...")
+                        audio_data = chat_service.super_tts_service.generate_audio(reply_text)
+                        if audio_data and len(audio_data) > 100:
+                            base64_audio = base64.b64encode(audio_data).decode('ascii')
+                            audio_response = {
+                                "type": "audio",
+                                "audio_data": base64_audio
+                            }
+                            yield json.dumps(audio_response) + "\n"
+                    except Exception as e:
+                        print(f"为结束引导回复生成超拟人语音时出错: {e}")
+                
+                return
+                
+            # 处理引导式提问状态
+            if is_quick_question and not chat_service.guidance_state["is_guiding"]:
+                print(f"开始引导式提问：{message}")
+                chat_service.guidance_state["is_guiding"] = True
+                chat_service.guidance_state["current_category"] = message
+                chat_service.guidance_state["question_count"] = 0
+                chat_service.guidance_state["conversation_summary"] = []
+                chat_service.guidance_state["off_topic_count"] = 0
+                chat_service.guidance_state["last_strategies"] = []
+                chat_service.guidance_state["awaiting_exit_confirmation"] = False
+                chat_service.guidance_state["confirmed_exit"] = False
             
             # 默认使用常规TTS
             use_f5_tts = False
@@ -1188,17 +1282,46 @@ async def stream_chat(request: ChatRequest):
                     import traceback
                     print(traceback.format_exc())
             
+            # 设置正确的引导状态标志
+            current_is_category = is_quick_question or chat_service.guidance_state["is_guiding"]
+            
             # 使用对话历史生成回复
             full_response, audio_data = await chat_service.generate_response(
                 conversation_history, 
                 model_name,
                 stream=False,  # 首先获取完整回复
                 agent_id=agent_id,
-                is_category=is_quick_question  # 传递是否快捷提问的标志
+                is_category=current_is_category  # 传递是否快捷提问的标志
             )
             
+            # 如果是引导模式且收到JSON格式的回复，需要提取实际的回复文本
+            if chat_service.guidance_state["is_guiding"]:
+                try:
+                    reply_data = json.loads(full_response)
+                    if "reply" in reply_data:
+                        # 这是引导模式返回的JSON格式
+                        response_text = reply_data["reply"]
+                        # 检查是否应该结束引导
+                        if reply_data.get("is_summary", False) or chat_service.guidance_state.get("confirmed_exit", False):
+                            print("检测到引导结束标记，重置引导状态")
+                            chat_service._reset_guidance_state()
+                    else:
+                        response_text = full_response
+                except json.JSONDecodeError:
+                    response_text = full_response
+            else:
+                response_text = full_response
+            
+            # 将助手的回复添加到对话历史中
+            try:
+                if message != "SYSTEM_GUIDANCE" and not message.startswith("SYSTEM_"):
+                    # 只有普通对话才添加到历史记录，系统消息不添加
+                    await chat_service.conversation_history.add_dialog(message="ASSISTANT_REPLY", reply=response_text)
+                    print(f"已将助手回复添加到对话历史，当前对话轮数: {len(chat_service.conversation_history.turns)}")
+            except Exception as e:
+                print(f"添加助手回复到对话历史时出错: {e}")
+            
             # 分词发送回复
-            response_text = full_response
             tokens = response_text.split(" ")
             
             accumulated_text = ""
@@ -1306,6 +1429,8 @@ async def stream_chat(request: ChatRequest):
         except Exception as e:
             error_info = str(e)
             print(f"流式聊天出错: {error_info}")
+            import traceback
+            print(traceback.format_exc())
             
             # 报告错误
             yield json.dumps({

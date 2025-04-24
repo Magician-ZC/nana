@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, List, Dict, Any
+from typing import Optional, Tuple, List, Dict, Any, AsyncGenerator
 from llm import LLMService
 from tts import TTSService
 from super_tts import SuperTTSService
@@ -8,6 +8,7 @@ from conversation import ConversationHistory
 import os
 import json
 import asyncio
+import base64
 
 class ChatService:
     def __init__(self):
@@ -26,6 +27,7 @@ class ChatService:
         os.makedirs(self.custom_agents_dir, exist_ok=True)
 
         self.current_agent = "nanaA"
+        self.current_response = ""  # 初始化当前响应变量
         self.guidance_state = {
             "is_guiding": False,
             "current_category": None,
@@ -172,7 +174,11 @@ class ChatService:
             
             # 使用 MainAgent 生成回复和表情，传入性格描述和快捷提问标志
             current_is_category = is_category or self.guidance_state["is_guiding"] 
-            reply, expression = await self.main_agent.reply(message, personality=personality, is_category=current_is_category)
+            
+            # 如果是在引导模式下，不使用原始agent的性格特点
+            current_personality = None if self.guidance_state["is_guiding"] else personality
+            
+            reply, expression = await self.main_agent.reply(message, personality=current_personality, is_category=current_is_category)
             
             # 确保回复不为空
             if not reply:
@@ -414,12 +420,109 @@ class ChatService:
             # 检查是否是引导式会话
             print(f"generate_response: 用户消息: {user_message}, 是否是快捷提问: {is_category}")
             
+            # 检查是否是结束引导的明确指令
+            exit_guidance_keywords = ["结束话题", "结束引导", "不想聊了", "换个话题", "不想继续", "结束对话", "不想讨论这个", "不讨论", "换话题", "算了", "不聊了", "结束"]
+            is_exit_guidance = (self.guidance_state["is_guiding"] and 
+                          (any(keyword in user_message for keyword in exit_guidance_keywords) or user_message.strip() == "结束"))
+            
+            # 如果用户表示想要结束话题，直接结束引导
+            if is_exit_guidance:
+                print(f"用户请求结束引导，直接结束：{user_message}")
+                self.guidance_state["confirmed_exit"] = True
+                # 准备一个回复，表明已经结束引导
+                reply_text = "已结束当前话题。您还有其他想讨论的问题吗？"
+                
+                # 重置引导状态
+                self._reset_guidance_state()
+                
+                # 生成语音
+                audio_data = None
+                if Config.is_tts_enabled() and self.tts_service:
+                    try:
+                        print("为结束引导回复生成普通TTS...")
+                        audio_data = self.tts_service.generate_audio(reply_text)
+                    except Exception as e:
+                        print(f"为结束引导回复生成普通语音时出错: {e}")
+                
+                if (not audio_data or len(audio_data) < 100) and Config.is_super_tts_enabled() and self.super_tts_service:
+                    try:
+                        print("为结束引导回复生成超拟人TTS...")
+                        audio_data = self.super_tts_service.generate_audio(reply_text)
+                    except Exception as e:
+                        print(f"为结束引导回复生成超拟人语音时出错: {e}")
+                
+                return reply_text, audio_data
+                
+            # 处理引导式提问状态
+            if is_category and not self.guidance_state["is_guiding"]:
+                print(f"开始引导式提问：{user_message}")
+                self.guidance_state["is_guiding"] = True
+                self.guidance_state["current_category"] = user_message
+                self.guidance_state["question_count"] = 0
+                self.guidance_state["conversation_summary"] = []
+                self.guidance_state["off_topic_count"] = 0
+                self.guidance_state["last_strategies"] = []
+                self.guidance_state["awaiting_exit_confirmation"] = False
+                self.guidance_state["confirmed_exit"] = False
+            
+            # 设置正确的引导状态
+            current_is_category = is_category or self.guidance_state["is_guiding"]
+            
+            # 如果是在引导模式下，不使用原始agent的性格特点
+            current_personality = None if self.guidance_state["is_guiding"] else None
+            
             # 使用 MainAgent 生成回复和表情，传递is_category参数
-            reply, expression = await self.main_agent.reply(user_message, is_category=is_category)
+            reply, expression = await self.main_agent.reply(user_message, is_category=current_is_category)
             
             # 确保回复不为空
             if not reply:
                 return "抱歉，我现在无法回答您的问题，请稍后再试。", None
+                
+            # 处理引导式提问的回复
+            if self.guidance_state["is_guiding"]:
+                try:
+                    # 尝试解析JSON响应
+                    try:
+                        reply_data = json.loads(reply)
+                        
+                        # 更新引导状态
+                        question_type = reply_data.get("question_type", "")
+                        self.guidance_state["last_question_type"] = question_type
+                        self.guidance_state["question_count"] += 1
+                        
+                        # 更新偏离主题计数
+                        if question_type == "refocus":
+                            self.guidance_state["off_topic_count"] += 1
+                        else:
+                            # 如果不是refocus，重置计数
+                            self.guidance_state["off_topic_count"] = 0
+                        
+                        # 记录对话内容
+                        if user_message and not reply_data.get("is_summary") and not reply_data.get("is_confirmation", False):
+                            self.guidance_state["conversation_summary"].append({
+                                "question": reply_data.get("reply", ""),
+                                "answer": user_message,
+                                "type": question_type
+                            })
+                        
+                        # 如果是总结或者用户已确认退出，重置引导状态
+                        if reply_data.get("is_summary") or self.guidance_state.get("confirmed_exit", False):
+                            print("引导结束，重置状态")
+                            self._reset_guidance_state()
+                            
+                        # 替换reply为实际文本内容
+                        reply = reply_data.get("reply", reply)
+                        
+                    except json.JSONDecodeError:
+                        # 不是JSON格式，检查是否应该结束引导
+                        print(f"回复不是JSON格式: {reply[:100]}...")
+                        
+                        # 如果是退出指令，强制重置状态
+                        if self.guidance_state.get("confirmed_exit", False):
+                            self._reset_guidance_state()
+                            
+                except Exception as e:
+                    print(f"处理引导回复时出错: {e}")
             
             # 生成语音 (不为自定义TTS角色生成)
             audio_data = None
@@ -443,3 +546,219 @@ class ChatService:
         except Exception as e:
             print(f"生成回复出错: {e}")
             return f"抱歉，处理出错: {str(e)}", None
+
+    async def response_stream(self, message: str, session_id: str, agent_type: Optional[str] = None, personality: Optional[str] = None, is_category: bool = False) -> AsyncGenerator[Dict, None]:
+        """流式生成回复
+
+        Args:
+            message: 用户消息
+            session_id: 会话ID
+            agent_type: 指定使用的智能体
+            personality: 智能体的性格描述
+            is_category: 是否是快捷提问类别
+
+        Yields:
+            Dict: 包含回复内容或音频数据的字典
+        """
+        try:
+            # 确保消息非空
+            if not message or not message.strip():
+                yield {"type": "content", "content": "请输入有效的消息内容"}
+                yield {"type": "complete"}
+                return
+
+            # 确保TTS服务使用最新的配置
+            self._refresh_tts_services()
+
+            # 如果收到新的agent_type，先切换智能体
+            if agent_type:
+                self.change_agent(agent_type, session_id)
+                self.current_agent = agent_type
+            
+            # 检查是否是结束引导的明确指令
+            exit_guidance_keywords = ["结束话题", "结束引导", "不想聊了", "换个话题", "不想继续", "结束对话", "不想讨论这个", "不讨论", "换话题", "算了", "不聊了", "结束"]
+            is_exit_guidance = (self.guidance_state["is_guiding"] and 
+                              (any(keyword in message for keyword in exit_guidance_keywords) or message.strip() == "结束"))
+            
+            # 如果用户表示想要结束话题，直接结束引导
+            if is_exit_guidance:
+                print(f"用户请求结束引导，直接结束：{message}")
+                self.guidance_state["confirmed_exit"] = True
+                # 准备一个回复，表明已经结束引导
+                reply_text = "已结束当前话题。您还有其他想讨论的问题吗？"
+                yield {"type": "content", "content": reply_text}
+                
+                # 重置引导状态
+                self._reset_guidance_state()
+                
+                # 生成语音
+                if Config.is_tts_enabled() and self.tts_service:
+                    try:
+                        print("为结束引导回复生成普通TTS...")
+                        audio_data = self.tts_service.generate_audio(reply_text)
+                        if audio_data and len(audio_data) > 100:
+                            yield {"type": "audio", "audio": base64.b64encode(audio_data).decode('utf-8')}
+                    except Exception as e:
+                        print(f"为结束引导回复生成普通语音时出错: {e}")
+                
+                if Config.is_super_tts_enabled() and self.super_tts_service:
+                    try:
+                        print("为结束引导回复生成超拟人TTS...")
+                        audio_data = self.super_tts_service.generate_audio(reply_text)
+                        if audio_data and len(audio_data) > 100:
+                            yield {"type": "audio", "audio": base64.b64encode(audio_data).decode('utf-8')}
+                    except Exception as e:
+                        print(f"为结束引导回复生成超拟人语音时出错: {e}")
+                
+                yield {"type": "complete"}
+                return
+            
+            # 处理引导式提问状态
+            if is_category and not self.guidance_state["is_guiding"]:
+                print(f"开始引导式提问：{message}")
+                self.guidance_state["is_guiding"] = True
+                self.guidance_state["current_category"] = message
+                self.guidance_state["question_count"] = 0
+                self.guidance_state["conversation_summary"] = []
+                self.guidance_state["off_topic_count"] = 0
+                self.guidance_state["last_strategies"] = []
+                self.guidance_state["awaiting_exit_confirmation"] = False
+                self.guidance_state["confirmed_exit"] = False
+            
+            # 使用 MainAgent 生成回复和表情，传入性格描述和快捷提问标志
+            current_is_category = is_category or self.guidance_state["is_guiding"]
+            
+            # 如果是在引导模式下，不使用原始agent的性格特点
+            current_personality = None if self.guidance_state["is_guiding"] else personality
+            
+            print(f"调用主Agent，引导状态: {self.guidance_state['is_guiding']}, 使用的性格特点: {current_personality}")
+            
+            # 发送开始标记
+            yield {"type": "start"}
+            
+            # 在开始流式生成前，先重置当前响应
+            self.current_response = ""
+            
+            # 启动流式聊天响应生成
+            async for token in self.llm_service.stream_chat(
+                message, 
+                self.conversation_history,
+                agent_type=self.current_agent,  # 使用当前设置的智能体类型
+                is_category=current_is_category,
+                personality=current_personality
+            ):
+                yield {"type": "content", "content": token}
+                
+                # 收集完整响应用于后续处理
+                self.current_response += token
+            
+            # 处理流式聊天响应生成后的逻辑
+            print(f"流式生成完成，完整响应: {self.current_response[:100]}...")
+            
+            # 保存对话历史到主智能体的历史记录中
+            await self.main_agent.conversation_history.add_dialog(message=message, reply=self.current_response)
+            
+            # 如果是在引导模式下，更新引导对话状态
+            if self.guidance_state["is_guiding"]:
+                # 增加问题计数
+                self.guidance_state["question_count"] += 1
+                
+                # 更新对话摘要
+                current_exchange = {
+                    "user": message,
+                    "assistant": self.current_response
+                }
+                self.guidance_state["conversation_summary"].append(current_exchange)
+                
+                # 检查是否应该继续引导
+                if self.guidance_state["question_count"] >= 10:
+                    # 达到最大问题数，准备结束引导
+                    self.guidance_state["awaiting_exit_confirmation"] = True
+                    print("引导问题已达到最大数量，准备结束引导")
+            
+            # 生成语音
+            if Config.is_tts_enabled() and self.tts_service:
+                try:
+                    print("生成普通TTS...")
+                    audio_data = self.tts_service.generate_audio(self.current_response)
+                    if audio_data and len(audio_data) > 100:
+                        yield {"type": "audio", "audio": base64.b64encode(audio_data).decode('utf-8')}
+                except Exception as e:
+                    print(f"生成普通语音时出错: {e}")
+            
+            if Config.is_super_tts_enabled() and self.super_tts_service:
+                try:
+                    print("生成超拟人TTS...")
+                    audio_data = self.super_tts_service.generate_audio(self.current_response)
+                    if audio_data and len(audio_data) > 100:
+                        yield {"type": "audio", "audio": base64.b64encode(audio_data).decode('utf-8')}
+                except Exception as e:
+                    print(f"生成超拟人语音时出错: {e}")
+            
+            # 清空当前响应
+            self.current_response = ""
+            
+            # 发送完成标记
+            yield {"type": "complete"}
+            
+        except Exception as e:
+            print(f"流式生成回复时出错: {e}")
+            yield {"type": "content", "content": f"抱歉，处理出错: {str(e)}"}
+            yield {"type": "complete"}
+
+    async def _get_conversation_summary(self, turns_to_summarize):
+        """生成会话总结，适用于结束话题时
+        
+        Args:
+            turns_to_summarize: 要总结的对话轮次
+            
+        Returns:
+            str: 会话总结文本
+        """
+        try:
+            # 获取当前角色是否是心理咨询师
+            is_xinli_mode = self.guidance_state.get("current_category") in [
+                "情感咨询师", "人际关系", "学业问题", "就业与职业规划压力", 
+                "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"
+            ]
+            
+            # 准备对话内容
+            all_text = "\n".join([f"用户: {turn.ask}\n助手: {turn.answer}" for turn in turns_to_summarize])
+            
+            # 根据角色选择不同的总结提示
+            if is_xinli_mode:
+                summary_prompt = f"""作为专业心理医生，请对以下对话进行简短总结。
+                
+                总结要点：
+                1. 用户提出的主要问题或困扰
+                2. 用户表现出的情感状态和核心需求
+                3. 你提供的关键建议和支持
+                4. 鼓励性的结束语，体现专业心理医生的关怀和支持
+                
+                总结控制在150字以内，语气专业、温和，避免过度亲昵或使用非专业性语言。
+                不要使用"我们"，而是使用"您"来指代用户，保持适当的专业距离。
+                
+                对话内容：
+                {all_text}
+                """
+            else:
+                # 普通角色的总结风格
+                summary_prompt = f"""请对以下对话进行简短总结。
+                
+                请总结：
+                1. 对话的主要内容
+                2. 讨论的关键点
+                3. 友好的结束语
+                
+                总结控制在100字以内。
+                
+                对话内容：
+                {all_text}
+                """
+            
+            # 使用LLM生成总结
+            summary_response = await self.llm_service.generate_response(summary_prompt)
+            return summary_response
+        except Exception as e:
+            print(f"生成对话总结时出错: {e}")
+            return "已结束当前话题。您有什么其他想要讨论的问题吗？"

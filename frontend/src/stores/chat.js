@@ -768,12 +768,45 @@ export const useChatStore = defineStore('chat', () => {
       console.log('收到回复:', data)
       
       // 添加带时间戳的助手回复到聊天记录
-      messages.value.push({ 
-        type: 'assistant', 
-        content: data.message,
-        timestamp: formatTime(),
-        agentId: currentAgent.value 
-      })
+      // 对于心理医生的引导式对话，使用打字机效果
+      const isGuidanceMode = isQuickQuestion || messages.value.some(msg => 
+        msg.type === 'user' && [
+          "情感咨询师", "人际关系", "学业问题", "就业与职业规划压力", 
+          "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"
+        ].includes(msg.content)
+      )
+      
+      if (isGuidanceMode) {
+        // 先添加一个空消息
+        const messageIndex = messages.value.length
+        messages.value.push({
+          type: 'assistant',
+          content: '',
+          timestamp: formatTime(),
+          agentId: currentAgent.value,
+          isStreaming: true
+        })
+        
+        // 逐字显示文本
+        const content = data.message
+        const charDelay = 30  // 每个字符的延迟时间(毫秒)
+        
+        for (let i = 0; i < content.length; i++) {
+          await new Promise(resolve => setTimeout(resolve, charDelay))
+          messages.value[messageIndex].content = content.substring(0, i + 1)
+        }
+        
+        // 完成流式显示
+        messages.value[messageIndex].isStreaming = false
+      } else {
+        // 常规响应模式，直接显示完整回复
+        messages.value.push({ 
+          type: 'assistant', 
+          content: data.message,
+          timestamp: formatTime(),
+          agentId: currentAgent.value 
+        })
+      }
       
       // 处理语音输出
       if (data.use_f5_tts) {
@@ -787,18 +820,50 @@ export const useChatStore = defineStore('chat', () => {
       // 如果有引导决策消息，添加为单独的一条助手消息
       if (data.guidance_message) {
         setTimeout(() => {
-          messages.value.push({ 
-            type: 'assistant', 
-            content: data.guidance_message,
-            timestamp: formatTime(),
-            agentId: currentAgent.value 
-          })
-          
-          // 如果收到引导决策的音频数据，等消息添加后播放(使用高优先级)
-          if (data.guidance_audio) {
-            setTimeout(() => {
-              playAudio(data.guidance_audio, true)
-            }, 50) // 使用更短的延迟，确保消息已添加但尽快播放
+          if (isGuidanceMode) {
+            // 对引导消息也使用打字机效果
+            const guidanceIndex = messages.value.length
+            messages.value.push({
+              type: 'assistant',
+              content: '',
+              timestamp: formatTime(),
+              agentId: currentAgent.value,
+              isStreaming: true
+            })
+            
+            // 逐字显示文本
+            const content = data.guidance_message
+            const charDelay = 30
+            
+            // 使用异步IIFE处理引导消息的打字机效果
+            (async () => {
+              for (let i = 0; i < content.length; i++) {
+                await new Promise(resolve => setTimeout(resolve, charDelay))
+                messages.value[guidanceIndex].content = content.substring(0, i + 1)
+              }
+              
+              // 完成流式显示
+              messages.value[guidanceIndex].isStreaming = false
+              
+              // 如果收到引导决策的音频数据，等消息显示完成后播放(使用高优先级)
+              if (data.guidance_audio) {
+                playAudio(data.guidance_audio, true)
+              }
+            })()
+          } else {
+            messages.value.push({ 
+              type: 'assistant', 
+              content: data.guidance_message,
+              timestamp: formatTime(),
+              agentId: currentAgent.value 
+            })
+            
+            // 如果收到引导决策的音频数据，等消息添加后播放(使用高优先级)
+            if (data.guidance_audio) {
+              setTimeout(() => {
+                playAudio(data.guidance_audio, true)
+              }, 50) // 使用更短的延迟，确保消息已添加但尽快播放
+            }
           }
         }, 500); // 添加500ms延迟，使其看起来像是分开发送的
       }
