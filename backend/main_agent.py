@@ -6,6 +6,7 @@ from conversation import ConversationHistory
 from user_info_processor import UserInfoProcessor
 from intent_extractor import IntentExtractor
 import asyncio
+import json
 
 class MainAgent:
     def __init__(self, llm_service: LLMService, conversation_history: ConversationHistory):
@@ -352,6 +353,22 @@ class MainAgent:
         # 准备prompt
         context = self.conversation_history.get_context()
         
+        # 调用带上下文的方法
+        return await self._generate_reply_with_context(message, context, memory_text, personality, is_category)
+
+    async def _generate_reply_with_context(self, message: str, context: str, memory_text: str = "无补充信息", personality: str = None, is_category: bool = False) -> Tuple[str, str]:
+        """带显式上下文的生成回复方法
+        
+        Args:
+            message: 用户消息
+            context: 对话上下文
+            memory_text: 相关记忆文本
+            personality: 可选的性格描述，用于调整回复风格
+            is_category: 是否是快捷提问类别
+            
+        Returns:
+            Tuple[str, str]: (回复内容, 表情)
+        """
         # 如果提供了性格描述，添加到提示词中
         personality_prompt = ""
         if personality:
@@ -383,6 +400,11 @@ class MainAgent:
             xinli_agent_path = os.path.join("prompts", "xinli_agent.txt")
             with open(xinli_agent_path, "r", encoding="utf-8") as f:
                 xinli_prompt = f.read()
+            
+            # 增强上下文格式，提高记忆能力
+            from chat_service import ChatService
+            enhanced_context = ChatService._format_guided_conversation_context(context, message)
+            print(f"使用增强的引导式对话上下文:\n{enhanced_context}")
             
             # 检查是否是用户回复了无关内容
             is_off_topic = self._is_meaningless_input(message) or self._is_off_topic(message, context)
@@ -426,6 +448,15 @@ class MainAgent:
             else:
                 off_topic_hint = ""
             
+            # 获取引导模式的局部用户信息
+            try:
+                from chat_service import ChatService
+                chat_service = self.llm_service.chat_service if hasattr(self.llm_service, 'chat_service') else None
+                guided_user_info = chat_service.guided_user_info if chat_service else None
+            except:
+                # 如果出错，使用全局用户信息
+                guided_user_info = self.user_info
+            
             category_prompt = f"""
 {xinli_prompt}
 
@@ -441,223 +472,101 @@ class MainAgent:
 6. 当用户明确表示要结束话题时，直接生成总结并结束引导
 7. 即使用户回复无关内容，也不要放弃引导，而是要温和地将话题拉回
 8. 当用户连续多次偏离主题时，不要重复相同的提问方式，而要尝试新的引导策略
+9. 当用户询问之前提到过的信息时，请准确回忆并回答，不要编造
 
-### 输出格式
-请严格按照以下JSON格式输出，不要添加任何额外文本或说明。确保输出有效的JSON格式：
+请仔细阅读以下对话历史和用户信息，理解用户的处境和顾虑，为其提供精确的引导：
+
+用户信息：
+{guided_user_info if guided_user_info else "无可用用户信息"}
+
+{enhanced_context}
+
+### 信息收集规则
+1. 当用户提供了重要信息（如科目困难、具体困扰、感受等），请在回复JSON中添加user_info字段
+2. user_info字段应包含键值对，如 "user_info": {{"数学困难": "几何证明题", "学习态度": "感到无趣"}}
+3. 每次对话添加1-2个关键信息，不要过度解读
+4. 不要虚构信息，只记录用户明确表达的内容
+5. 逐步积累这些信息，以便更好地理解用户
+
+请回复JSON格式，包含以下字段：
 {{
-  "reply": "<回复内容>",
-  "expression": "<表情>",
-  "is_question": <是否是提问>,
-  "is_summary": <是否是总结>,
-  "question_type": "<问题类型>"
+    "reply": "你的回复内容，面向用户的提问或建议",
+    "expression": "推荐的表情（微笑、皱眉、咪咪眼、爱心、伤心、生气等）",
+    "is_question": true/false,    // 回复是否包含问题
+    "is_summary": false,          // 是否是总结（只有在引导结束时才为true）
+    "question_type": "initial",   // 问题类型：initial（初始问题）、follow_up（跟进问题）、refocus（重新聚焦问题）、summary（总结）
+    "user_info": {{               // 可选，仅当发现用户提供了重要信息时添加
+        "key1": "value1",
+        "key2": "value2"
+    }}
 }}
 
-注意事项：
-1. 不要输出任何解释、注释或额外文本，只输出JSON格式内容
-2. "reply"字段应包含你对用户的回复内容
-3. "expression"字段必须从以下表情中选择一个：吐舌,黑脸,眼泪,脸红,nn眼,生气瘪嘴,死鱼眼,生气,咪咪眼,嘟嘴,钱钱眼,爱心,泪眼
-4. "is_question"和"is_summary"必须是布尔值（true或false）
-5. "question_type"必须是以下之一：initial, follow_up, clarification, summary, refocus, meta
-
-举例：
-{{
-  "reply": "您好，我是李梅医生。您能告诉我您在职业规划方面面临的具体挑战吗？",
-  "expression": "咪咪眼",
-  "is_question": true,
-  "is_summary": false,
-  "question_type": "initial"
-}}
+注：请确保你的JSON格式完全正确，并仔细考虑表情与内容的匹配。
 """
-            
-            # 不使用模板，直接构建promot，去掉个性和原agent模式
-            prompt = f"""
-请以专业心理医生的身份回答用户问题。
-
-对话记录：
-{context}
-
-用户的最新问题：
-{message}
-
-注意：必须严格按照要求的JSON格式输出，不要在JSON前后添加任何说明性文字。直接输出有效的JSON结构。
-""" + category_prompt
+            prompt = category_prompt
         else:
-            # 使用原模板
-            prompt = self.prompt_template.format(
-                chat_history=context,
-                user_message=message,
-                memory=memory_text,
-                user_info=self.user_info
-            ) + personality_prompt + update_info_prompt
+            # 使用当前智能体的提示词模板
+            prompt = f"{self.prompt_template}{personality_prompt}{decision_prompt}{update_info_prompt}\n\n用户信息：\n{self.user_info}\n\n当前对话记录：\n{context}\n\n当前所有对话相关的历史记忆：\n{memory_text}\n\n用户: {message}\n助手:"
         
-        # 获取LLM回复
-        retry_count = 0
-        max_retries = 2
-        
-        while retry_count <= max_retries:
-            reply = await self.llm_service.generate_response(prompt, is_json=True)
-            if not reply:
-                return "对不起，我现在有点累了，能稍后再聊吗？", "生气"
+        # 使用引导模式时，不需要额外添加用户消息，因为xinli_agent提示词中已包含引导
+        if is_category and not prompt.endswith("助手:"):
+            prompt = prompt
             
-            # 如果快速提问模式下出错或格式不对，尝试再生成一次
-            if is_category:
-                if all(k in reply for k in ["reply", "expression", "is_question", "question_type"]):
-                    break  # 格式正确，跳出循环
-                
-                retry_count += 1
-                print(f"第{retry_count}次尝试修复回复格式，当前回复：{reply}")
-                
-                try:
-                    # 尝试解析现有回复中的内容
-                    content = reply.get("reply", "")
-                    expression = reply.get("expression", "咪咪眼")
-                    
-                    # 重新构建更严格的prompt
-                    strict_prompt = f"""
-作为一名专业心理医生，请根据以下信息生成一个符合JSON格式的回复：
-
-用户点击的快捷提问类别：{message}
-用户的最新输入："{message}"
-
-请直接生成JSON格式的回复，不要添加任何额外的解释或说明。回复必须是有效的JSON格式，包含以下字段：
-- reply: 您对用户的回复内容
-- expression: 表情（从以下选择之一：吐舌,黑脸,眼泪,脸红,nn眼,生气瘪嘴,死鱼眼,生气,咪咪眼,嘟嘴,钱钱眼,爱心,泪眼）
-- is_question: 布尔值，表示是否是提问
-- is_summary: 布尔值，表示是否是总结
-- question_type: 问题类型（从以下选择之一：initial, follow_up, clarification, summary, refocus, meta）
-
-示例输出：
-{{
-  "reply": "您好，我是李梅医生。您能告诉我您在职业规划方面面临的具体挑战吗？",
-  "expression": "咪咪眼",
-  "is_question": true,
-  "is_summary": false,
-  "question_type": "initial"
-}}
-
-请确保输出的是标准的、有效的、可以被JSON解析器解析的JSON格式。不要输出任何其他文本，只输出JSON对象。
-"""
-                    # 重新生成回复
-                    retry_reply = await self.llm_service.generate_response(strict_prompt, is_json=True)
-                    if all(k in retry_reply for k in ["reply", "expression", "is_question", "question_type"]):
-                        reply = retry_reply
-                        break  # 格式正确，跳出循环
-                except Exception as e:
-                    print(f"修复回复格式时出错：{e}")
-            else:
-                break  # 非引导式提问模式，不需要特殊处理
+        # 确定使用的温度参数，引导模式（is_category=True）使用更低的温度，保持对话聚焦
+        temperature = 0.3 if is_category else 0.7
         
-        # 所有重试都失败，使用手动构建的回复
-        if is_category and not all(k in reply for k in ["reply", "expression", "is_question", "question_type"]):
-            try:
-                # 尝试提取已有内容
-                if isinstance(reply, dict) and "reply" in reply:
-                    content = reply["reply"]
-                elif isinstance(reply, str):
-                    content = reply
-                else:
-                    content = "您好，我是李梅医生。您能告诉我您面临的具体问题吗？"
+        # 生成回复
+        try:
+            reply = await self.llm_service.generate_response(
+                message=prompt,
+                temperature=temperature,
+                is_json=is_category,  # 引导模式使用JSON格式输出
+                max_tokens=1024
+            )
+            
+            if is_category:
+                # 在引导模式下，表情从JSON中获取
+                try:
+                    if isinstance(reply, dict) and 'expression' in reply:
+                        expression = reply.get('expression', '咪咪眼')
+                    else:
+                        expression = '咪咪眼'  # 默认表情
+                    
+                    # 确保回复是JSON格式的字符串
+                    if isinstance(reply, dict):
+                        reply = json.dumps(reply, ensure_ascii=False)
+                    
+                except Exception as e:
+                    print(f"解析表情时出错: {e}")
+                    expression = '咪咪眼'  # 默认表情
+            else:
+                # 标准模式分析回复，生成合适的表情
+                expression = self._determine_expression(reply)
                 
-                # 手动构建JSON回复
-                print(f"所有重试都失败，手动构建回复。提取的内容: {content}")
-                reply = {
-                    "reply": content,
-                    "expression": "咪咪眼",
+                # 检查回复中是否包含用户信息更新
+                if '"user_info"' in reply or "'user_info'" in reply:
+                    # 尝试从回复中提取用户信息并更新
+                    await self._process_user_info_sync(message, is_user_decision)
+            
+            return reply, expression
+            
+        except Exception as e:
+            error_msg = f"生成回复时出错: {str(e)}"
+            print(error_msg)
+            
+            # 在错误情况下提供基本回复
+            if is_category:
+                # 生成一个有效的JSON回复
+                error_reply = {
+                    "reply": "抱歉，我遇到了一些问题。能请您重新表述一下您的情况吗？",
+                    "expression": "疑惑",
                     "is_question": True,
                     "is_summary": False,
                     "question_type": "follow_up"
                 }
-            except Exception as e:
-                print(f"手动构建回复出错：{e}")
-                reply = {
-                    "reply": "您好，我是李梅医生。您能告诉我您面临的具体问题吗？",
-                    "expression": "咪咪眼",
-                    "is_question": True,
-                    "is_summary": False,
-                    "question_type": "initial"
-                }
-        
-        # 处理用户信息更新
-        if "user_info" in reply:
-            user_info_value = reply["user_info"]
-            # 检查user_info是否为字典类型（可能是直接返回了JSON对象）
-            if isinstance(user_info_value, dict):
-                # 将字典转换为字符串格式
-                if "最近状况" in user_info_value and isinstance(user_info_value["最近状况"], dict):
-                    # 处理最近状况特殊格式
-                    status_text = ""
-                    index = 1
-                    for key, value in user_info_value["最近状况"].items():
-                        status_text += f"{index}. {key}: {value}\n"
-                        index += 1
-                    user_info_value["最近状况"] = status_text.strip()
-                
-                # 构建完整的用户信息字符串
-                user_info_str = ""
-                basic_info_keys = ["姓名", "年龄", "性别", "学校", "专业", "年级", "爱好"]
-                
-                # 基本信息部分
-                for key in basic_info_keys:
-                    if key in user_info_value and user_info_value[key]:
-                        user_info_str += f"{key}: {user_info_value[key]}\n"
-                
-                user_info_str += "\n"
-                
-                # 最近状况部分
-                if "最近状况" in user_info_value:
-                    user_info_str += "最近状况: \n" + user_info_value["最近状况"] + "\n"
-                
-                # 其他信息部分
-                for key in user_info_value:
-                    if key not in basic_info_keys and key != "最近状况" and user_info_value[key]:
-                        user_info_str += f"{key}: {user_info_value[key]}\n"
-                
-                # 使用转换后的字符串进行更新检查
-                if self.user_info_processor.has_substantial_changes(self.user_info, user_info_str):
-                    print("检测到用户信息更新，正在保存...")
-                    self.user_info_processor.save_user_info(user_info_str)
-                    # 更新内存中的用户信息
-                    self.user_info = self.user_info_processor.user_info
-                else:
-                    print("没有检测到实质性的用户信息变化，跳过更新")
-            elif isinstance(user_info_value, str) and user_info_value.strip():
-                # 如果是已经格式化的字符串
-                if self.user_info_processor.has_substantial_changes(self.user_info, user_info_value):
-                    print("检测到用户信息更新，正在保存...")
-                    self.user_info_processor.save_user_info(user_info_value)
-                    # 更新内存中的用户信息
-                    self.user_info = self.user_info_processor.user_info
-                else:
-                    print("没有检测到实质性的用户信息变化，跳过更新")
-        elif is_user_decision or has_new_info:
-            # 如果检测到决策或新个人信息但没有返回user_info，强制要求模型更新用户信息
-            print("检测到用户决策或新个人信息，但模型未返回user_info，尝试再次请求...")
-            # 添加更明确的提示
-            force_update_prompt = ""
-            if is_user_decision:
-                force_update_prompt = prompt + "\n\n重要提示：用户已经做出决策，必须更新用户信息并在回复中包含user_info字段，反映用户的最新决策。如果不知道如何更新，至少保持原有信息完整并返回。"
-            else:  # has_new_info
-                if info_type == "爱好":
-                    force_update_prompt = prompt + f"\n\n重要提示：用户提供了新的爱好信息'{info_content}'，必须更新用户信息中的爱好字段并在回复中包含完整的user_info字段。新的爱好'{info_content}'应该添加到现有爱好列表中，格式为'编程、游戏、看书、{info_content}'。"
-                else:
-                    force_update_prompt = prompt + f"\n\n重要提示：用户提供了新的{info_type}信息'{info_content}'，必须更新用户信息中的{info_type}字段并在回复中包含完整的user_info字段。新的{info_type}信息应该替换现有内容或适当添加到相应部分。"
-            
-            retry_reply = await self.llm_service.generate_response(force_update_prompt, is_json=True)
-            
-            if "user_info" in retry_reply and retry_reply["user_info"].strip():
-                print("成功获取更新后的用户信息")
-                self.user_info_processor.save_user_info(retry_reply["user_info"])
-                self.user_info = self.user_info_processor.user_info
-                return retry_reply.get("reply", reply.get("reply", "")), retry_reply.get("expression", reply.get("expression", ""))
-            elif has_new_info:
-                # 如果两次尝试都失败，但确实有新信息，则手动更新信息
-                print(f"自动更新用户{info_type}信息...")
-                updated_info = self.user_info_processor.manually_update_user_info(info_type, info_content, career_intent)
-                if updated_info:
-                    self.user_info_processor.save_user_info(updated_info)
-                    self.user_info = self.user_info_processor.user_info
-        
-        return reply.get("reply", ""), reply.get("expression", "")
+                return json.dumps(error_reply, ensure_ascii=False), "疑惑"
+            else:
+                return "抱歉，我遇到了一些技术问题。您能换个方式提问，或者稍后再试吗？", "生气"
 
     def _get_relevant_memories(self, message: str) -> str:
         """获取相关记忆"""
@@ -730,6 +639,7 @@ class MainAgent:
         # 记录助手回复并添加到对话历史
         self._log_conversation('assistant', reply_content)
         await self.conversation_history.add_dialog(message, reply_content, self.user_info_processor)
+        print(f"对话已添加到历史记录，当前对话历史长度: {len(self.conversation_history.turns)}")
         
         # 在快速提问模式下不发送引导决策消息，因为现在使用xinli_agent管理整个引导过程
         if not is_category:
@@ -891,3 +801,37 @@ class MainAgent:
                 break
         
         return refocus_count
+
+    def _determine_expression(self, text: str) -> str:
+        """根据回复内容决定表情
+        
+        Args:
+            text: 回复文本
+            
+        Returns:
+            str: 表情名称
+        """
+        text = text.lower()
+        
+        # 情感词典
+        emotion_dict = {
+            "微笑": ["谢谢", "感谢", "很好", "不错", "很高兴", "很开心", "很荣幸", "祝贺", "恭喜"],
+            "咪咪眼": ["理解", "明白", "知道了", "认同", "赞同", "支持", "建议", "推荐", "可以考虑"],
+            "爱心": ["喜欢", "爱", "关心", "在意", "心疼", "心动", "呵护", "照顾", "疼爱", "宠爱"],
+            "伤心": ["难过", "伤心", "悲伤", "遗憾", "痛苦", "哭", "眼泪", "负面", "失望"],
+            "疑惑": ["为什么", "怎么会", "不明白", "不理解", "困惑", "疑问", "不确定", "是吗", "好吗"],
+            "生气": ["抱歉", "对不起", "错误", "失败", "问题", "错了", "失误", "故障"]
+        }
+        
+        # 查找情感关键词
+        for expression, keywords in emotion_dict.items():
+            for keyword in keywords:
+                if keyword in text:
+                    return expression
+        
+        # 如果是问句，用疑惑表情
+        if "?" in text or "？" in text:
+            return "疑惑"
+        
+        # 默认表情
+        return "咪咪眼"

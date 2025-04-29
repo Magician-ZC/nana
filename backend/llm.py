@@ -1,14 +1,25 @@
 import asyncio
-from typing import List, Dict
+from typing import List, Dict, Optional, Any, Tuple
 import json
 import re
 import base64
 from openai import OpenAI, AsyncOpenAI
+import aiohttp
+import os
+import httpx
+from datetime import datetime
 
 class LLMService:
-    def __init__(self, api_key: str, api_url: str):
+    def __init__(self, api_key: str = "", api_url: str = "", model: str = "claude-3-sonnet-20240229"):
         self.api_key = api_key
         self.api_url = api_url
+        self.model = model
+        self.chat_service = None  # 添加对ChatService的引用
+        
+        # 创建日志目录
+        self.log_dir = 'save/llm_log'
+        os.makedirs(self.log_dir, exist_ok=True)
+        
         self.client = OpenAI(
             base_url=api_url,
             api_key=api_key
@@ -21,6 +32,10 @@ class LLMService:
             self.vision_model_available = False
             print("视觉模型不可用")
         
+    def set_chat_service(self, chat_service):
+        """设置ChatService引用"""
+        self.chat_service = chat_service
+    
     async def async_chat(self, message: str, temperature: float = 0.7, max_tokens: int = 2048) -> str:
         """简单的异步聊天方法，直接返回文本回复
         
@@ -200,37 +215,72 @@ class LLMService:
                     except:
                         pass
                 
-                # 如果还是找不到有效的JSON，尝试基于启发式构建
-                heuristic_reply = {}
-                # 查找引号对"abc"之间内容
-                quote_pattern = r'"([^"]+)"'
-                quotes = re.findall(quote_pattern, cleaned_text)
-                
-                # 如果找到了多个引号对，尝试使用它们来构建回复
-                if len(quotes) >= 1:
-                    first_quote = quotes[0]
-                    if len(first_quote) > 10:  # 可能是回复内容
-                        heuristic_reply["reply"] = first_quote
-                        heuristic_reply["expression"] = "咪咪眼"
-                        heuristic_reply["is_question"] = "?" in first_quote
-                        heuristic_reply["is_summary"] = False
-                        heuristic_reply["question_type"] = "follow_up"
-                        return heuristic_reply
-                
-                # 全部尝试失败，作为最后的手段，使用整个原始文本作为回复
+                # 如果所有尝试都失败，返回一个基本的JSON对象
                 return {
-                    "reply": cleaned_text[:500],  # 限制长度
-                    "expression": "咪咪眼",
-                    "is_question": "?" in cleaned_text,
+                    "reply": "抱歉，我无法理解您的问题。",
+                    "expression": "疑惑",
+                    "is_question": False,
                     "is_summary": False,
-                    "question_type": "follow_up"
+                    "question_type": "confusion"
+                }
+            except Exception as e:
+                print(f"解析JSON时出错: {e}")
+                return {
+                    "reply": "抱歉，处理您的请求时出现了错误。",
+                    "expression": "疑惑",
+                    "is_question": False,
+                    "is_summary": False,
+                    "question_type": "error"
                 }
                 
-            except Exception as e:
-                print(f"JSON解析错误，原始响应: {raw_response}")
-                print(f"详细错误: {str(e)}")
-                # 如果所有尝试都失败，构造一个基本的回复
-                return {
-                    "reply": "对不起，我遇到了一些技术问题，无法正确回应。能请你重新表述一下吗？",
-                    "expression": "生气"
+    async def generate_streaming(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048):
+        """生成流式响应
+        
+        Args:
+            prompt: 提示词
+            temperature: 温度参数
+            max_tokens: 最大token数
+            
+        Yields:
+            str: 文本块
+        """
+        try:
+            # 构建消息列表
+            messages = [
+                {
+                    "role": "user",
+                    "content": prompt
                 }
+            ]
+            
+            # 使用流式API
+            response = await asyncio.to_thread(
+                self.client.chat.completions.create,
+                model="deepseek/deepseek-v3/community",
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True
+            )
+            
+            # 流式输出文本块
+            for chunk in response:
+                if chunk.choices and len(chunk.choices) > 0:
+                    if chunk.choices[0].delta.content:
+                        content = chunk.choices[0].delta.content
+                        # 尝试检查是否是JSON格式的数据，如果是，尝试解析JSON并只返回reply字段
+                        try:
+                            # 只对疑似JSON字符串进行检查（以{开头的内容）
+                            if '{' in content and ('"reply"' in content or '"is_question"' in content):
+                                parsed_json = json.loads(content)
+                                if isinstance(parsed_json, dict) and 'reply' in parsed_json:
+                                    yield parsed_json['reply']
+                                    continue
+                        except json.JSONDecodeError:
+                            # 如果解析失败，继续将原始内容传递
+                            pass
+                        
+                        yield content
+        except Exception as e:
+            print(f"流式生成回复时出错: {e}")
+            yield f"生成回复出错: {str(e)}"
