@@ -683,7 +683,7 @@ export const useChatStore = defineStore('chat', () => {
         
         // 如果内容为空但我们有部分响应，使用它
         if (!messages.value[assistantMessageIndex].content && fullResponse) {
-          messages.value[assistantMessageIndex].content = fullResponse || "抱歉，我遇到了一些问题，请稍后再试。"
+          messages.value[assistantMessageIndex].content = parseJsonResponse(fullResponse) || "抱歉，我遇到了一些问题，请稍后再试。"
           messages.value[assistantMessageIndex].expression = expression || "生气"
         } else if (!messages.value[assistantMessageIndex].content) {
           // 完全没有收到任何内容

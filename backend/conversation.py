@@ -1,12 +1,15 @@
-from typing import List
+import json
+import os
+import uuid
+from typing import List, Dict, Optional, Tuple, Any
+from datetime import datetime
+import re
+from config import Config
 import chromadb
 from chromadb.config import Settings
-from chromadb.api.types import EmbeddingFunction
-from datetime import datetime
-import uuid
+from chromadb.utils.embedding_functions import EmbeddingFunction
 from embedding import EmbeddingService
-from config import Config
-import re
+import httpx
 
 class APIEmbeddingFunction(EmbeddingFunction):
     def __init__(self):
@@ -68,6 +71,38 @@ class ConversationHistory:
             reply: 助手回复
             user_info_processor: 可选的UserInfoProcessor实例，用于同步用户信息
         """
+        # 检查回复是否是JSON格式，如果是，只保存reply字段
+        if reply and isinstance(reply, str):
+            # 先处理双花括号的情况 - 移除多余的花括号
+            if reply.strip().startswith('{{') and reply.strip().endswith('}}'):
+                reply = reply.strip()[1:-1]  # 移除最外层的一对花括号
+                print("检测到双花括号格式，已修正")
+
+            # 尝试解析JSON
+            if reply.strip().startswith('{') and reply.strip().endswith('}'):
+                try:
+                    json_data = json.loads(reply)
+                    if 'reply' in json_data:
+                        # 只保存reply字段内容
+                        reply = json_data['reply']
+                        print("从JSON响应中提取reply字段")
+                except json.JSONDecodeError as e:
+                    # 解析失败，尝试清理JSON并重新解析
+                    print(f"JSON解析失败: {e}，尝试修复格式")
+                    try:
+                        # 替换可能导致问题的转义字符
+                        cleaned_reply = reply.replace('\\', '\\\\').replace('\n', '\\n')
+                        # 确保属性名和值都有引号
+                        cleaned_reply = re.sub(r'([{,]\s*)(\w+)(\s*:)', r'\1"\2"\3', cleaned_reply)
+                        json_data = json.loads(cleaned_reply)
+                        if 'reply' in json_data:
+                            reply = json_data['reply']
+                            print("成功修复并解析JSON")
+                        else:
+                            print("JSON格式无效或不包含reply字段")
+                    except Exception as e2:
+                        print(f"JSON修复失败: {e2}，保持原始回复内容")
+        
         turn = ConversationTurn(message, reply)
         self.turns.append(turn)
         

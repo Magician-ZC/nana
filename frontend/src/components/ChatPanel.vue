@@ -101,6 +101,17 @@
       <div ref="messagesEndRef" />
     </div>
     
+    <!-- 语音录制组件 -->
+    <SensevoiceRecorder 
+      ref="sensevoiceRecorderRef"
+      :voiceInputMode="voiceInputMode"
+      :voiceTimeout="voiceInputTimeout"
+      :isLoading="chatStore.loading"
+      @transcript-result="handleTranscriptResult"
+      @recording-state-change="handleRecordingStateChange"
+      @send-transcript="handleSendTranscript"
+    />
+    
     <!-- 输入区域 -->
     <div class="chat-input-area">
       <div :class="['input-container', { recording: isRecording, 'voice-mode': voiceInputMode }]">
@@ -163,6 +174,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick, watch, computed } from 'vue'
 import { useChatStore } from '../stores/chat'
+import SensevoiceRecorder from './SensevoiceRecorder.vue'
 
 const chatStore = useChatStore()
 
@@ -180,21 +192,14 @@ const messagesEndRef = ref(null)
 const chatPanelRef = ref(null)
 // 消息容器引用
 const chatMessagesRef = ref(null)
-// 媒体录制器
-let mediaRecorder = null
 // 语音按钮按压状态
 const voiceButtonPressed = ref(false)
 // 语音输入模式状态 - 从localStorage获取
 const voiceInputMode = ref(localStorage.getItem('voiceInputMode') === 'false' ? false : true)
 // 语音输入超时时间（秒）
 const voiceInputTimeout = ref(parseInt(localStorage.getItem('voiceTimeout')) || 5)
-
-// 语音识别实例
-let recognition = null
-// 语音停顿计时器
-let silenceTimer = null
-// 最后一次语音识别时间
-let lastSpeechTime = 0
+// SensevoiceRecorder组件引用
+const sensevoiceRecorderRef = ref(null)
 
 // 添加上次发送的消息内容和时间戳，用于去重
 let lastSentMessage = '';
@@ -360,9 +365,9 @@ function flashVoiceButton() {
 
 // 处理语音按钮点击事件
 const handleVoiceButtonClick = () => {
-  // 只有在语音输入模式下才处理点击事件
+  // 只在语音模式下处理点击事件
   if (voiceInputMode.value) {
-    toggleRecording()
+    sensevoiceRecorderRef.value.toggleRecording()
   }
 }
 
@@ -404,251 +409,22 @@ function sendVoiceMessage(message) {
   });
 }
 
-// 开始录音
-const startRecording = async () => {
-  try {
-    // 防止重复初始化
-    if (isRecording.value) {
-      console.log('已经在录音中，忽略此次启动请求');
-      return;
-    }
-
-    console.log('开始初始化语音识别...');
-    
-    // 清理所有可能存在的定时器
-    if (silenceTimer) {
-      clearTimeout(silenceTimer);
-      silenceTimer = null;
-    }
-    
-    // 创建语音识别实例
-    try {
-      if (recognition) {
-        // 尝试停止之前的实例
-        try {
-          recognition.stop();
-        } catch (e) {
-          console.log('停止旧实例出错，忽略:', e);
-        }
-        recognition = null;
-      }
-      
-      // 创建新实例
-      recognition = new webkitSpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = 'zh-CN';
-      
-      // 绑定事件处理函数
-      recognition.onstart = () => {
-        console.log('语音识别已正式开始');
-        isRecording.value = true;
-        recordingError.value = false;
-      };
-      
-      recognition.onresult = (event) => {
-        let interimTranscript = '';
-        let finalTranscript = '';
-        
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            finalTranscript += transcript;
-          } else {
-            interimTranscript += transcript;
-          }
-        }
-        
-        const newText = finalTranscript || interimTranscript;
-        if (newText && newText !== recordingText.value) {
-          console.log('获取到语音文本:', newText);
-          recordingText.value = newText;
-          
-          // 更新最后语音时间
-          lastSpeechTime = Date.now();
-          
-          // 清除之前的定时器
-          if (silenceTimer) {
-            clearTimeout(silenceTimer);
-            silenceTimer = null;
-          }
-          
-          // 在语音输入模式下设置新的自动发送定时器
-          if (voiceInputMode.value && !chatStore.loading && !isMessageSending) {
-            silenceTimer = setTimeout(() => {
-              // 只有在停顿足够长且有内容时自动发送
-              if (recordingText.value && recordingText.value.trim() && isRecording.value) {
-                console.log(`检测到 ${voiceInputTimeout.value}秒 停顿，准备发送:`, recordingText.value);
-                
-                // 保存当前内容
-                const messageToSend = recordingText.value.trim();
-                
-                // 清空录音内容和停止录音
-                if (recognition) {
-                  try {
-                    recognition.stop();
-                  } catch (e) {
-                    console.log('停止录音出错，忽略:', e);
-                  }
-                }
-                isRecording.value = false;
-                
-                // 消息处理后再清空显示
-                setTimeout(() => {
-                  if (recordingText.value === messageToSend) {
-                    recordingText.value = '';
-                  }
-                }, 100);
-                
-                // 使用去重函数发送消息
-                sendVoiceMessage(messageToSend);
-              }
-            }, voiceInputTimeout.value * 1000);
-          }
-        }
-      };
-      
-      recognition.onerror = (event) => {
-        console.error('语音识别错误:', event.error);
-        recordingError.value = true;
-        
-        // 清除任何可能存在的定时器
-        if (silenceTimer) {
-          clearTimeout(silenceTimer);
-          silenceTimer = null;
-        }
-        
-        // 如果是语音输入模式，尝试重新启动识别
-        if (voiceInputMode.value && event.error !== 'aborted' && event.error !== 'no-speech' && !isMessageSending) {
-          setTimeout(() => {
-            if (voiceInputMode.value && !isRecording.value && !chatStore.loading) {
-              console.log('尝试恢复语音识别');
-              startRecording();
-            }
-          }, 1000);
-        }
-      };
-      
-      recognition.onend = () => {
-        console.log('语音识别会话结束');
-        isRecording.value = false;
-        
-        // 清除任何可能存在的定时器
-        if (silenceTimer) {
-          clearTimeout(silenceTimer);
-          silenceTimer = null;
-        }
-        
-        // 确保在会话结束时处理任何待发送的消息，但避免重复发送
-        if (recordingText.value && recordingText.value.trim() && !chatStore.loading && voiceInputMode.value && !isMessageSending) {
-          console.log('会话结束时发现内容，准备发送:', recordingText.value);
-          
-          const messageToSend = recordingText.value.trim();
-          
-          // 消息处理后再清空显示
-          setTimeout(() => {
-            if (recordingText.value === messageToSend) {
-              recordingText.value = '';
-            }
-          }, 100);
-          
-          // 使用去重函数发送消息
-          sendVoiceMessage(messageToSend);
-          
-          // 延迟一点后再启动新的语音识别
-          setTimeout(() => {
-            if (voiceInputMode.value && !chatStore.loading && !isRecording.value && !isMessageSending) {
-              startRecording();
-            }
-          }, 1000);
-          return;
-        }
-        
-        // 如果是语音输入模式且未主动停止，自动重启
-        if (voiceInputMode.value && !chatStore.loading && !isMessageSending) {
-          setTimeout(() => {
-            if (voiceInputMode.value && !isRecording.value && !chatStore.loading) {
-              console.log('自动重启语音识别');
-              startRecording();
-            }
-          }, 1000);
-        }
-      };
-      
-      // 启动识别
-      console.log('正式启动语音识别');
-      recognition.start();
-      isRecording.value = true;
-      
-    } catch (recError) {
-      console.error('创建或启动语音识别失败:', recError);
-      isRecording.value = false;
-      recordingError.value = true;
-      
-      // 如果在语音模式下出错，延迟后尝试重新启动
-      if (voiceInputMode.value && !isMessageSending) {
-        setTimeout(() => {
-          if (voiceInputMode.value && !isRecording.value && !chatStore.loading) {
-            console.log('初始化失败，尝试重新启动');
-            startRecording();
-          }
-        }, 2000);
-      }
-    }
-    
-    // 检查麦克风权限
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    stream.getTracks().forEach(track => track.stop()); // 立即释放麦克风权限
-    
-  } catch (error) {
-    console.error('无法获取麦克风权限:', error);
-    recordingError.value = true;
-    isRecording.value = false;
-    
-    // 如果在语音模式下出错，延迟后尝试重新启动
-    if (voiceInputMode.value && !isMessageSending) {
-      setTimeout(() => {
-        if (voiceInputMode.value && !isRecording.value && !chatStore.loading) {
-          console.log('权限错误，尝试重新启动');
-          startRecording();
-        }
-      }, 2000);
-    }
-  }
-}
-
-// 切换录音状态
-const toggleRecording = () => {
-  if (chatStore.loading) return
-  
-  if (isRecording.value) {
-    stopRecording()
-    // 如果有录音内容，发送
-    if (recordingText.value.trim()) {
-      chatStore.sendMessage(recordingText.value.trim())
-      recordingText.value = ''
-    }
-  } else {
-    startRecording()
-  }
-}
-
 // 处理语音按钮按下事件
 const handleVoiceButtonDown = () => {
   voiceButtonPressed.value = true
 
   // 如果已经在录音，先停止
   if (isRecording.value) {
-    stopRecording()
+    sensevoiceRecorderRef.value.stopRecording()
     return
   }
   // 开始录音
-  startRecording()
+  sensevoiceRecorderRef.value.startRecording()
 }
 
 // 处理语音按钮释放事件
 const handleVoiceButtonUp = () => {
-      voiceButtonPressed.value = false
+  voiceButtonPressed.value = false
   
   // 如果在语音输入模式下，不要停止录音
   if (voiceInputMode.value) {
@@ -657,157 +433,24 @@ const handleVoiceButtonUp = () => {
   
   // 非语音输入模式下，释放按钮时停止录音
   if (isRecording.value) {
-    stopRecording()
+    sensevoiceRecorderRef.value.stopRecording()
   }
 }
 
-// 停止录音
-const stopRecording = () => {
-  if (!isRecording.value) return;
-  
-  try {
-    console.log('手动停止录音，当前内容:', recordingText.value);
-    
-    // 清除任何可能存在的定时器
-    if (silenceTimer) {
-      clearTimeout(silenceTimer);
-      silenceTimer = null;
-    }
-    
-    // 停止语音识别
-    if (recognition) {
-      try {
-        recognition.stop();
-      } catch (e) {
-        console.log('停止录音出错，忽略:', e);
-      }
-    }
-    
-    isRecording.value = false;
-    
-    // 停止后处理录制的内容
-    if (recordingText.value && recordingText.value.trim()) {
-      console.log('有录音内容，准备发送:', recordingText.value.trim());
-      
-      // 保存当前内容然后发送
-      const messageToSend = recordingText.value.trim();
-      
-      // 消息处理后再清空显示
-      setTimeout(() => {
-        if (recordingText.value === messageToSend) {
-          recordingText.value = '';
-        }
-      }, 100);
-      
-      // 使用去重函数发送消息
-      sendVoiceMessage(messageToSend);
-    } else {
-      // 没有内容时也要重置状态
-      recordingText.value = '';
-    }
-  } catch (error) {
-    console.error('停止录音出错:', error);
-    recordingError.value = true;
-    isRecording.value = false;
-    recordingText.value = '';
-  }
+// 处理语音识别文本更新
+const handleTranscriptResult = (text) => {
+  recordingText.value = text
 }
 
-// 开始语音识别
-function startSpeechRecognition() {
-  // 检查浏览器是否支持语音识别
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-  if (!SpeechRecognition) {
-    console.error('浏览器不支持语音识别')
-    // 继续录音过程，但不启动识别
-    return
-  }
-  
-  try {
-    // 创建识别实例
-    recognition = new SpeechRecognition()
-    recognition.lang = 'zh-CN'
-    recognition.continuous = true
-    recognition.interimResults = true
-    
-    // 处理识别结果
-    recognition.onresult = (event) => {
-      let interimTranscript = ''
-      let finalTranscript = ''
-      
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        const transcript = event.results[i][0].transcript
-        if (event.results[i].isFinal) {
-          finalTranscript += transcript
-        } else {
-          interimTranscript += transcript
-        }
-      }
-      
-      // 更新显示文本
-      recordingText.value = finalTranscript || interimTranscript
-      
-      // 更新最后语音时间
-      lastSpeechTime = Date.now()
-      
-      // 清除之前的定时器
-      if (silenceTimer) {
-        clearTimeout(silenceTimer)
-        silenceTimer = null
-      }
-      
-      // 设置新的自动发送定时器
-      silenceTimer = setTimeout(() => {
-        // 只有在停顿足够长且有内容时自动发送
-        if (recordingText.value.trim() && isRecording.value) {
-          console.log(`检测到 ${voiceInputTimeout.value}秒 停顿，自动发送消息`)
-          stopRecording()
-        }
-      }, voiceInputTimeout.value * 1000) // 将秒转换为毫秒
-    }
-    
-    // 处理错误
-    recognition.onerror = (event) => {
-      console.error('语音识别错误:', event.error)
-      // 继续录音过程，识别错误不影响录音本身
-    }
-    
-    // 设置初始最后语音时间
-    lastSpeechTime = Date.now()
-    
-    // 开始识别
-    recognition.start()
-    
-    // 设置初始自动发送定时器
-    silenceTimer = setTimeout(() => {
-      if (recordingText.value.trim() && isRecording.value) {
-        console.log(`检测到 ${voiceInputTimeout.value}秒 停顿，自动发送消息`)
-        stopRecording()
-      }
-    }, voiceInputTimeout.value * 1000)
-    
-  } catch (error) {
-    console.error('启动语音识别失败:', error)
-    // 继续录音过程，识别失败不影响录音本身
-  }
+// 处理录音状态变化
+const handleRecordingStateChange = (isRec) => {
+  isRecording.value = isRec
 }
 
-// 停止语音识别
-function stopSpeechRecognition() {
-  try {
-    // 清除停顿定时器
-    if (silenceTimer) {
-      clearTimeout(silenceTimer)
-      silenceTimer = null
-    }
-    
-    if (recognition) {
-      recognition.stop()
-      recognition = null
-    }
-  } catch (error) {
-    console.error('停止语音识别失败:', error)
-    recognition = null
+// 处理发送语音文本
+const handleSendTranscript = (text) => {
+  if (text && text.trim()) {
+    sendVoiceMessage(text)
   }
 }
 
@@ -912,7 +555,7 @@ function toggleInputMode() {
   // 如果切换到语音模式，立即启动录音
   if (voiceInputMode.value && !isRecording.value) {
     console.log('切换到语音模式，立即启动录音');
-    startRecording();
+    sensevoiceRecorderRef.value.startRecording();
   }
 }
 
@@ -938,13 +581,15 @@ function handleSettingsChanged(newSettings) {
 watch(voiceInputMode, (newMode) => {
   if (newMode) {
     // 如果启用了语音输入模式，自动开始录音
-    if (!isRecording.value) {
-      startRecording()
+    if (!isRecording.value && !chatStore.loading && sensevoiceRecorderRef.value) {
+      console.log('切换到语音模式，自动开始录音');
+      sensevoiceRecorderRef.value.startRecording();
     }
   } else {
     // 如果禁用了语音输入模式，停止录音
-    if (isRecording.value) {
-      stopRecording()
+    if (isRecording.value && sensevoiceRecorderRef.value) {
+      console.log('切换到文本模式，停止录音');
+      sensevoiceRecorderRef.value.stopRecording();
     }
   }
 })
@@ -953,20 +598,18 @@ watch(voiceInputMode, (newMode) => {
 watch(() => chatStore.loading, (isLoading) => {
   if (isLoading) {
     // 当开始加载时，如果有正在进行的录音，先停止录音
-    if (isRecording.value) {
+    if (isRecording.value && sensevoiceRecorderRef.value) {
       console.log('检测到加载开始，暂停录音');
       // 仅停止录音但不发送消息
-      if (recognition) {
-        recognition.stop();
-      }
+      sensevoiceRecorderRef.value.stopRecording(false);
       isRecording.value = false;
       recordingText.value = '';
     }
-  } else if (voiceInputMode.value && !isRecording.value) {
+  } else if (voiceInputMode.value && !isRecording.value && sensevoiceRecorderRef.value) {
     // 当加载结束并且在语音模式下，但没有录音时，自动启动录音
     console.log('对话加载完成，自动启动语音识别');
     setTimeout(() => {
-      startRecording();
+      sensevoiceRecorderRef.value.startRecording();
     }, 500);
   }
 });
@@ -992,16 +635,18 @@ onMounted(() => {
     }
   });
   
-  // 如果启用了语音输入模式，自动开始录音
-  if (voiceInputMode.value && !isRecording.value) {
-    startRecording()
-  }
+  // 确保初始状态正确
+  isRecording.value = false;
+  recordingText.value = '';
+  
+  // 如果启用了语音输入模式，SensevoiceRecorder组件会自行处理录音
+  console.log('ChatPanel已挂载，当前语音模式:', voiceInputMode.value);
 })
 
 onUnmounted(() => {
   // 确保在组件卸载时停止录音
-  if (isRecording.value) {
-    stopRecording()
+  if (isRecording.value && sensevoiceRecorderRef.value) {
+    sensevoiceRecorderRef.value.stopRecording(false);
   }
   
   // 移除设置变化事件监听

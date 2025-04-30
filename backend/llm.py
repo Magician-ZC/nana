@@ -129,29 +129,49 @@ class LLMService:
                     }
                 ]
                 
-                # 使用异步客户端
-                response = await asyncio.to_thread(
-                    self.client.chat.completions.create,
-                    model="deepseek/deepseek-v3/community",  # 使用正确的模型
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    stream=False
-                )
-                
-                raw_response = response.choices[0].message.content.strip()
-                print("raw_response:", raw_response)
-                
-                if is_json:
-                    return self._parse_json_response(raw_response)
-                else:
-                    return raw_response
+                # 使用真正的异步API调用，而不是asyncio.to_thread
+                # 创建异步HTTP客户端，添加超时设置
+                timeout = httpx.Timeout(30.0, connect=10.0)
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    # 构建请求数据
+                    request_data = {
+                        "model": "deepseek/deepseek-v3/community",
+                        "messages": messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens
+                    }
+                    
+                    # 发送请求到API
+                    response = await client.post(
+                        f"{self.api_url}/chat/completions",
+                        json=request_data,
+                        headers={
+                            "Authorization": f"Bearer {self.api_key}",
+                            "Content-Type": "application/json"
+                        }
+                    )
+                    
+                    # 检查响应状态
+                    if response.status_code != 200:
+                        raise Exception(f"API错误: 状态码 {response.status_code}, 响应: {response.text}")
+                    
+                    # 解析响应
+                    response_data = response.json()
+                    raw_response = response_data["choices"][0]["message"]["content"].strip()
+                    print("raw_response:", raw_response)
+                    
+                    # 根据请求选择返回格式
+                    if is_json:
+                        return self._parse_json_response(raw_response)
+                    else:
+                        return raw_response
                         
             except Exception as e:
                 retry_count += 1
                 print(f"LLM Error (attempt {retry_count}/{max_retries}): {str(e)}")
                 if retry_count < max_retries:
-                    await asyncio.sleep(1)
+                    # 增加指数退避重试延迟
+                    await asyncio.sleep(2 ** retry_count)
                 else:
                     raise
                 

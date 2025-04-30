@@ -41,6 +41,10 @@ export default defineConfig({
       prefix: '[vite]',
       timestamp: true,
       clearScreen: false
+    },
+    // 添加代理配置
+    proxy: {
+      // 移除了代理配置，因为我们现在直接使用WSS连接
     }
   },
   plugins: [vue()],
