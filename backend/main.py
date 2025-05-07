@@ -1185,101 +1185,106 @@ async def stream_chat(request: ChatRequest):
         except Exception as e:
             print(f"添加助手回复到对话历史时出错: {e}")
         
-        # 分词发送回复
-        tokens = response_text.split(" ")
-        
-        accumulated_text = ""
-        chunk_size = 3  # 每个块的token数量
+        # 开始发送响应
         
         # 先发送回复类型指示
         yield json.dumps({"type": "start", "content": ""}) + "\n"
         
-        # 按块发送回复
-        for i in range(0, len(tokens), chunk_size):
-            chunk_tokens = tokens[i:i+chunk_size]
-            chunk_text = " ".join(chunk_tokens)
-            accumulated_text += chunk_text + " "  # 添加空格以确保词之间有间隔
-            
-            # 发送文本块
-            yield json.dumps({"type": "content", "content": chunk_text}) + "\n"
-            
-            # 小的延迟以模拟打字效果
-            await asyncio.sleep(0.05)  # 增加延迟以使打字效果更明显
+        # 打印当前打字机速度设置
+        print(f"当前打字机速度: {Config.TYPING_SPEED} 毫秒/字符")
         
-        # 发送表情数据（如果有）
-        if hasattr(chat_service.main_agent, 'expression') and chat_service.main_agent.expression:
-            yield json.dumps({
-                "type": "metadata", 
-                "expression": chat_service.main_agent.expression
-            }) + "\n"
+        # 计算字符延迟时间，毫秒转为秒
+        char_delay = Config.TYPING_SPEED / 1000
+        print(f"字符延迟: {char_delay:.3f} 秒/字符")
         
-        # 发送结束指示
-        yield json.dumps({"type": "end", "content": ""}) + "\n"
+        # 检查是否已有音频数据(如果TTS已经快速生成完成)
+        audio_ready = audio_data and len(audio_data) > 100
         
-        # 移除F5-TTS相关代码
-        
-        # 如果有音频数据，处理后发送
-        if audio_data and len(audio_data) > 100:  # 确保音频数据长度合理
+        # 如果已有音频数据且生成快速，先发送音频数据
+        if audio_ready:
             try:
-                # 对于大型音频数据进行分片处理
-                MAX_CHUNK_SIZE = 32 * 1024  # 32KB 分片大小，避免JSON解析问题
+                # 音频发送代码
+                MAX_CHUNK_SIZE = 32 * 1024
                 base64_audio = base64.b64encode(audio_data).decode('ascii')
-                
-                # 检查音频数据大小
                 audio_size = len(base64_audio)
-                print(f"Base64编码后的音频大小: {audio_size} 字符")
+                print(f"音频已准备好，Base64编码后的音频大小: {audio_size} 字符")
                 
                 if audio_size > MAX_CHUNK_SIZE:
-                    # 如果音频过大，分片发送
                     chunks = []
                     for i in range(0, audio_size, MAX_CHUNK_SIZE):
                         chunks.append(base64_audio[i:i+MAX_CHUNK_SIZE])
                     
                     print(f"音频数据过大，分为 {len(chunks)} 个片段发送")
                     
-                    # 发送第一个分片作为开始
-                    first_chunk = {
-                        "type": "audio_start",
-                        "total_chunks": len(chunks),
-                        "chunk_index": 0,
-                        "audio_chunk": chunks[0]
-                    }
-                    yield json.dumps(first_chunk) + "\n"
-                    
-                    # 发送中间分片
-                    for i in range(1, len(chunks) - 1):
+                    # 发送分片
+                    for i, chunk_data in enumerate(chunks):
+                        chunk_type = "audio_start" if i == 0 else "audio_chunk" if i < len(chunks) - 1 else "audio_end"
                         chunk = {
-                            "type": "audio_chunk",
+                            "type": chunk_type,
                             "chunk_index": i,
-                            "audio_chunk": chunks[i]
+                            "total_chunks": len(chunks),
+                            "audio_chunk": chunk_data
                         }
                         yield json.dumps(chunk) + "\n"
-                    
-                    # 发送最后一个分片
-                    last_chunk = {
-                        "type": "audio_end",
-                        "chunk_index": len(chunks) - 1,
-                        "audio_chunk": chunks[-1]
-                    }
-                    yield json.dumps(last_chunk) + "\n"
                 else:
-                    # 如果音频较小，直接一次性发送
-                    audio_response = {
+                    yield json.dumps({
                         "type": "audio",
                         "audio_data": base64_audio
-                    }
-                    yield json.dumps(audio_response) + "\n"
+                    }) + "\n"
             except Exception as e:
-                error_info = str(e)
-                print(f"流式聊天出错: {error_info}")
-                import traceback
-                print(traceback.format_exc())
+                print(f"发送音频数据出错: {e}")
+        
+        # 逐字发送文本（无论音频是否准备好，都开始文字输出）
+        for char in response_text:
+            yield json.dumps({"type": "content", "content": char}) + "\n"
+            await asyncio.sleep(char_delay)
+        
+        # 发送表情数据
+        if hasattr(chat_service.main_agent, 'expression') and chat_service.main_agent.expression:
+            yield json.dumps({
+                "type": "metadata", 
+                "expression": chat_service.main_agent.expression
+            }) + "\n"
+        
+        # 发送结束指示（文字已全部显示完）
+        yield json.dumps({"type": "end", "content": ""}) + "\n"
+        
+        # 如果音频是在文字显示后才准备好的，发送延迟音频
+        if not audio_ready and audio_data and len(audio_data) > 100:
+            try:
+                # 延迟音频发送代码
+                MAX_CHUNK_SIZE = 32 * 1024
+                base64_audio = base64.b64encode(audio_data).decode('ascii')
+                audio_size = len(base64_audio)
+                print(f"延迟音频已准备好，Base64编码后的音频大小: {audio_size} 字符")
                 
-                # 报告错误
-                yield json.dumps({
-                    "type": "error",
-                    "error": error_info
-                }) + "\n"
+                # 发送延迟音频标志，前端可以根据这个标志决定是否播放
+                yield json.dumps({"type": "delayed_audio_notification"}) + "\n"
+                
+                if audio_size > MAX_CHUNK_SIZE:
+                    chunks = []
+                    for i in range(0, audio_size, MAX_CHUNK_SIZE):
+                        chunks.append(base64_audio[i:i+MAX_CHUNK_SIZE])
+                    
+                    print(f"延迟音频数据过大，分为 {len(chunks)} 个片段发送")
+                    
+                    # 发送分片
+                    for i, chunk_data in enumerate(chunks):
+                        chunk_type = "delayed_audio_start" if i == 0 else "delayed_audio_chunk" if i < len(chunks) - 1 else "delayed_audio_end"
+                        chunk = {
+                            "type": chunk_type,
+                            "chunk_index": i,
+                            "total_chunks": len(chunks),
+                            "audio_chunk": chunk_data
+                        }
+                        yield json.dumps(chunk) + "\n"
+                else:
+                    yield json.dumps({
+                        "type": "delayed_audio",
+                        "audio_data": base64_audio
+                    }) + "\n"
+            except Exception as e:
+                print(f"发送延迟音频数据出错: {e}")
         
     # 返回流式响应
     return StreamingResponse(generate_stream_response(), media_type="text/event-stream")
@@ -2533,4 +2538,4 @@ def process_json_response(response_text):
     return reply, expression, is_summary
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8666, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8666, reload=True, ssl_keyfile=None, ssl_certfile=None)
