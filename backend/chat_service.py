@@ -388,10 +388,24 @@ class ChatService:
                     
                     # 尝试为解析失败的回复也生成语音
                     audio_data = None
+                    
+                    # 处理可能是JSON格式的回复
+                    reply_text = reply
+                    try:
+                        if reply.strip().startswith('{') and reply.strip().endswith('}'):
+                            # 尝试解析JSON
+                            reply_json = json.loads(reply)
+                            if "reply" in reply_json:
+                                reply_text = reply_json["reply"]
+                                print(f"解析失败，但从JSON中提取到纯文本: {reply_text}")
+                    except:
+                        # 如果解析失败，使用原始回复
+                        pass
+                    
                     if Config.is_tts_enabled() and self.tts_service:
                         try:
                             print("为解析失败的回复生成普通TTS...")
-                            audio_data = self.tts_service.generate_audio(reply)
+                            audio_data = self.tts_service.generate_audio(reply_text)  # 使用处理过的纯文本
                             if audio_data and len(audio_data) > 100:
                                 print(f"解析失败回复普通TTS生成成功，音频大小: {len(audio_data)} 字节")
                             else:
@@ -403,7 +417,7 @@ class ChatService:
                     if (not audio_data or len(audio_data) < 100) and Config.is_super_tts_enabled() and self.super_tts_service:
                         try:
                             print("为解析失败的回复生成超拟人TTS...")
-                            audio_data = self.super_tts_service.generate_audio(reply)
+                            audio_data = self.super_tts_service.generate_audio(reply_text)  # 使用处理过的纯文本
                             if audio_data and len(audio_data) > 100:
                                 print(f"解析失败回复超拟人TTS生成成功，音频大小: {len(audio_data)} 字节")
                             else:
@@ -429,11 +443,24 @@ class ChatService:
             super_tts_error = None
             tts_error = None
             
+            # 处理可能是JSON格式的回复
+            reply_text = reply
+            try:
+                if reply.strip().startswith('{') and reply.strip().endswith('}'):
+                    # 尝试解析JSON
+                    reply_json = json.loads(reply)
+                    if "reply" in reply_json:
+                        reply_text = reply_json["reply"]
+                        print(f"从JSON格式的回复中提取纯文本: {reply_text}")
+            except:
+                # 如果解析失败，使用原始回复
+                pass
+            
             # 根据配置决定使用哪个TTS服务
             if Config.is_tts_enabled() and self.tts_service:
                 try:
                     print("尝试使用普通TTS生成语音...")
-                    audio_data = self.tts_service.generate_audio(reply)
+                    audio_data = self.tts_service.generate_audio(reply_text)  # 使用处理过的纯文本
                     if audio_data and len(audio_data) > 100:  # 确保生成的音频数据有效
                         print(f"普通TTS生成成功，音频大小: {len(audio_data)} 字节")
                     else:
@@ -447,7 +474,7 @@ class ChatService:
             if (not audio_data or len(audio_data) < 100) and Config.is_super_tts_enabled() and self.super_tts_service:
                 try:
                     print("尝试使用超拟人TTS生成语音...")
-                    audio_data = self.super_tts_service.generate_audio(reply)
+                    audio_data = self.super_tts_service.generate_audio(reply_text)  # 使用处理过的纯文本
                     if audio_data and len(audio_data) > 100:
                         print(f"超拟人TTS生成成功，音频大小: {len(audio_data)} 字节")
                     else:
@@ -520,7 +547,7 @@ class ChatService:
             print(f"生成回复时出错: {e}")
             return "抱歉，发生了错误，请稍后再试。", None
 
-    async def generate_response(self, conversation_history: List[Dict[str, str]], model_name: str, stream: bool = False, agent_id: Optional[str] = None, is_category: bool = False) -> Tuple[str, Optional[bytes]]:
+    async def generate_response(self, conversation_history: List[Dict[str, str]], model_name: str, stream: bool = False, agent_id: Optional[str] = None, is_category: bool = False, message: Optional[str] = None) -> Tuple[str, Optional[bytes]]:
         """生成回复
         
         Args:
@@ -529,6 +556,7 @@ class ChatService:
             stream: 是否使用流式响应
             agent_id: 智能体ID
             is_category: 是否是引导式提问
+            message: 可选的消息覆盖，用于传递系统消息
             
         Returns:
             Tuple[str, Optional[bytes]]: (回复文本, 语音数据)
@@ -541,7 +569,8 @@ class ChatService:
             if agent_id:
                 self.change_agent(agent_id, "default_session")
             
-            user_message = conversation_history[-1]["content"] if conversation_history else ""
+            # 使用传入的message覆盖，或从对话历史中获取
+            user_message = message if message else (conversation_history[-1]["content"] if conversation_history else "")
             print(f"generate_response: 用户消息: {user_message}, 是否是快捷提问: {is_category}")
             
             # 生成回复

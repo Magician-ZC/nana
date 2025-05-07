@@ -1,4 +1,6 @@
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, List, Dict, Any
+from conversation import ConversationHistory
+from config import Config
 
 class LLMService:
     async def stream_chat(self, message: str, conversation_history: ConversationHistory, 
@@ -45,7 +47,7 @@ class LLMService:
         
         # 流式生成回复
         try:
-            # 调用ChatGPT API流式生成回复
+            # 调用LLM API流式生成回复
             model = Config.LLM_MODEL
             temperature = 0.7  # 设置生成的随机性
             
@@ -53,6 +55,7 @@ class LLMService:
             if is_category:
                 temperature = 0.5
             
+            # 使用OpenAI客户端流式生成
             response = await self.client.chat.completions.create(
                 model=model,
                 messages=messages,

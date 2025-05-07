@@ -369,6 +369,15 @@ class MainAgent:
         Returns:
             Tuple[str, str]: (回复内容, 表情)
         """
+        # 处理系统消息
+        if message == "SYSTEM_TOPIC_SUGGESTIONS":
+            print("收到话题建议系统消息，生成话题建议")
+            # 导入并调用generate_topic_suggestions函数
+            from main import generate_topic_suggestions
+            suggestion_text = generate_topic_suggestions()
+            expression = "微笑"  # 使用友好的表情
+            return suggestion_text, expression
+            
         # 如果提供了性格描述，添加到提示词中
         personality_prompt = ""
         if personality:
