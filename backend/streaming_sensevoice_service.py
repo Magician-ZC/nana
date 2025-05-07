@@ -67,18 +67,18 @@ class StreamingSensevoiceService:
             
             # Add more detailed exception handling and connection options
             try:
-            self.ws = await websockets.connect(
+                self.ws = await websockets.connect(
                     url,
-                ssl=ssl_context,
+                    ssl=ssl_context,
                     ping_interval=20,  # 增加心跳包频率
                     ping_timeout=10,   # 减少ping超时时间
                     close_timeout=5,   # 关闭超时时间
                     max_size=None,     # 不限制消息大小
                     compression=None   # 禁用压缩以简化处理
-            )
-            self.connected = True
+                )
+                self.connected = True
                 logger.info(f"已成功连接到语音识别服务器: {url}")
-            return True
+                return True
             except (websockets.exceptions.InvalidStatusCode, 
                     websockets.exceptions.InvalidHandshake) as e:
                 logger.error(f"WebSocket握手失败: {e}")
@@ -98,8 +98,8 @@ class StreamingSensevoiceService:
         """断开与WebSocket服务器的连接"""
         if self.ws:
             try:
-            await self.ws.close()
-            logger.info("已断开与语音识别服务器的连接")
+                await self.ws.close()
+                logger.info("已断开与语音识别服务器的连接")
             except Exception as e:
                 logger.error(f"断开WebSocket连接时出错: {e}")
         self.connected = False

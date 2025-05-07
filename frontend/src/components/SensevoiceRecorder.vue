@@ -198,34 +198,38 @@ function startRecording() {
 function connectToWebSocket(url) {
   console.log(`尝试连接到WebSocket: ${url}`);
   
+  // 首先使用fetch尝试连接以接受证书
+  const serverUrl = url.replace('wss://', 'https://').split('/api/')[0];
+  console.log(`尝试先访问服务器接受证书: ${serverUrl}`);
+  
+  fetch(serverUrl, { 
+    method: 'GET',
+    mode: 'no-cors' // 使用no-cors模式
+  })
+  .then(() => {
+    console.log('已预先访问服务器，现在尝试WebSocket连接');
+    createWebSocketConnection(url);
+  })
+  .catch(error => {
+    console.warn('预先访问服务器失败，尝试直接连接WebSocket:', error);
+    createWebSocketConnection(url);
+  });
+}
+
+// 创建WebSocket连接
+function createWebSocketConnection(url) {
+  // 设置连接超时检测
+  const connectionTimeout = setTimeout(() => {
+    console.error(`WebSocket连接超时: ${url}`);
+    isConnecting.value = false;
+    recordingError.value = true;
+  }, 5000);
+  
   try {
-    if (ws) {
-      try {
-        ws.close();
-      } catch (e) {
-        console.error('关闭现有WebSocket连接时出错:', e);
-      }
-      ws = null;
-    }
-    
     ws = new WebSocket(url);
     ws.binaryType = 'arraybuffer';
     
-    // 设置超时检测
-    const connectionTimeout = setTimeout(() => {
-      if (ws && ws.readyState !== WebSocket.OPEN) {
-        console.log(`连接超时: ${url}`);
-        try {
-          ws.close();
-        } catch (e) {
-          console.error('关闭超时WebSocket连接时出错:', e);
-        }
-        ws = null;
-        recordingError.value = true;
-        updateRecordingState(false);
-        isConnecting.value = false;
-      }
-    }, 5000);
+    // 注意：connectionTimeout已在上面定义
     
     ws.onopen = function(event) {
       console.log(`WebSocket连接成功: ${url}`);
