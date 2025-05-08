@@ -13,7 +13,8 @@ import httpx
 
 class APIEmbeddingFunction(EmbeddingFunction):
     def __init__(self):
-        self.embedding_service = EmbeddingService(
+        # 使用单例模式获取EmbeddingService实例
+        self.embedding_service = EmbeddingService.get_instance(
             api_key=Config.EMBEDDING_API_KEY,
             api_url=Config.EMBEDDING_API_URL,
             model=Config.EMBEDDING_MODEL,
@@ -31,7 +32,7 @@ class APIEmbeddingFunction(EmbeddingFunction):
                     embedding = [0.0] * Config.EMBEDDING_DIMENSION
                 embeddings.append(embedding)
             except Exception as e:
-                print(f"获取embedding时出错喵: {e}")
+                print(f"获取embedding时出错: {e}")
                 embedding = [0.0] * Config.EMBEDDING_DIMENSION
                 embeddings.append(embedding)
         return embeddings

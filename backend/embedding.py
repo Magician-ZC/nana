@@ -6,6 +6,9 @@ import threading
 from queue import Queue
 import concurrent.futures
 
+# 全局变量用于存储单例实例
+_global_embedding_service = None
+
 class EmbeddingService:
     def __init__(self, api_key: str, api_url: str, model: str, dimension: int):
         self.api_key = api_key
@@ -18,6 +21,15 @@ class EmbeddingService:
         
         # 启动后台工作线程
         self._start_background_worker()
+    
+    @classmethod
+    def get_instance(cls, api_key: str, api_url: str, model: str, dimension: int):
+        """获取EmbeddingService的全局单例实例"""
+        global _global_embedding_service
+        if _global_embedding_service is None:
+            print("创建全局EmbeddingService实例")
+            _global_embedding_service = cls(api_key, api_url, model, dimension)
+        return _global_embedding_service
 
     def _start_background_worker(self):
         """启动后台工作线程处理embedding请求"""
@@ -112,7 +124,7 @@ class EmbeddingService:
         
         while retry_count <= max_retries:
             try:
-                with httpx.Client(verify=False, timeout=30.0) as client:
+                with httpx.Client(verify=False, timeout=10.0) as client:  # 增加超时时间
                     headers = {
                         "Content-Type": "application/json",
                         "Authorization": f"Bearer {self.api_key}"
