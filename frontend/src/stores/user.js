@@ -1,28 +1,29 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { getApiUrl } from '../utils/api'
 
 export const useUserStore = defineStore('user', () => {
   // 状态
   const authToken = ref(localStorage.getItem('auth_token') || '')
-  const isAuthenticated = ref(!!authToken.value)
+  const sessionId = ref(localStorage.getItem('session_id') || '')
+  const isAuthenticated = ref(!!sessionId.value)
   const userProfile = ref(JSON.parse(localStorage.getItem('user_profile')) || null)
   
-  // 开发环境的默认测试令牌
-  const DEFAULT_DEV_TOKEN = 'bdcfce39a84c47ac8e41b16d054f5999'
-  
   // 登录状态计算属性
-  const isLoggedIn = computed(() => !!authToken.value)
+  const isLoggedIn = computed(() => !!sessionId.value)
+  const username = computed(() => userProfile.value?.username || '')
+  const email = computed(() => userProfile.value?.email || '')
   
   // 初始化token - 应用启动时调用
-  function initializeToken() {
-    // 从localStorage获取token
-    const storedToken = localStorage.getItem('auth_token')
+  function initializeSession() {
+    // 从localStorage获取session ID
+    const storedSessionId = localStorage.getItem('session_id')
     
-    if (storedToken) {
-      // 如果localStorage中有token，使用它
-      authToken.value = storedToken
+    if (storedSessionId) {
+      // 如果localStorage中有session ID，使用它
+      sessionId.value = storedSessionId
       isAuthenticated.value = true
-      console.log('从localStorage初始化token成功')
+      console.log('从localStorage初始化会话成功')
       
       // 尝试获取用户档案
       const storedProfile = localStorage.getItem('user_profile')
@@ -33,223 +34,330 @@ export const useUserStore = defineStore('user', () => {
           console.error('解析用户档案失败', e)
         }
       }
+      
+      // 验证会话有效性
+      verifySession(storedSessionId)
     } else {
-      // 生产环境中清除token状态
-      clearAuthToken()
+      // 如果没有会话ID，清除状态
+      clearAuthState()
     }
     
-    return authToken.value
+    return sessionId.value
   }
   
-  // 设置认证令牌
-  function setAuthToken(token) {
-    if (!token) return
+  // 设置认证会话
+  function setSession(session) {
+    if (!session || !session.session_id) return
     
-    // 更新内存中的token
-    authToken.value = token
+    // 更新内存中的session ID
+    sessionId.value = session.session_id
     // 统一保存到localStorage
-    localStorage.setItem('auth_token', token)
+    localStorage.setItem('session_id', session.session_id)
     // 更新认证状态
     isAuthenticated.value = true
     
-    console.log('Token已设置并保存到localStorage')
-    return token
-  }
-  
-  // 获取认证令牌
-  function getAuthToken() {
-    // 如果内存中没有token但localStorage中有，更新内存
-    if (!authToken.value) {
-      const storedToken = localStorage.getItem('auth_token')
-      if (storedToken) {
-        authToken.value = storedToken
-        isAuthenticated.value = true
-      }
+    // 如果有用户信息，也保存
+    if (session.user) {
+      setUserProfile(session.user)
     }
-    return authToken.value
-  }
-  
-  // 清除认证令牌
-  function clearAuthToken() {
-    // 清除内存和localStorage中的token
-    authToken.value = ''
-    localStorage.removeItem('auth_token')
-    localStorage.removeItem('user_profile')
-    userProfile.value = null
-    isAuthenticated.value = false
-    console.log('Token和用户资料已清除')
+    
+    console.log('会话已设置并保存到localStorage')
+    return session.session_id
   }
   
   // 设置用户资料
-  function setUserProfile(profile) {
-    userProfile.value = profile
+  function setUserProfile(user) {
+    if (!user) return
     
-    // 持久化存储
-    if (profile) {
-      localStorage.setItem('user_profile', JSON.stringify(profile))
-    } else {
-      localStorage.removeItem('user_profile')
-    }
+    userProfile.value = user
+    localStorage.setItem('user_profile', JSON.stringify(user))
+    console.log('用户资料已保存到localStorage')
+    return user
   }
   
-  // 获取用户资料
-  function getUserProfile() {
-    return userProfile.value
+  // 清除认证状态
+  function clearAuthState() {
+    sessionId.value = ''
+    authToken.value = ''
+    userProfile.value = null
+    isAuthenticated.value = false
+    
+    localStorage.removeItem('session_id')
+    localStorage.removeItem('auth_token')
+    localStorage.removeItem('user_profile')
+    
+    console.log('认证状态已清除')
   }
   
-  // 检查是否认证
+  // 检查认证状态
   function checkAuth() {
-    // 确保认证状态与token一致
-    isAuthenticated.value = !!getAuthToken()
     return isAuthenticated.value
   }
   
-  // 设置默认开发测试令牌
-  function setDevelopmentToken() {
-    // 使用统一的开发测试token
-    setAuthToken(DEFAULT_DEV_TOKEN)
-    console.log('已设置开发测试令牌:', DEFAULT_DEV_TOKEN)
-    return DEFAULT_DEV_TOKEN
+  // 验证会话有效性
+  async function verifySession(sid = null) {
+    const sessionToVerify = sid || sessionId.value
+    
+    if (!sessionToVerify) {
+      console.log('没有会话ID，无法验证')
+      return false
+    }
+    
+    try {
+      const response = await fetch(getApiUrl('verify_session'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ session_id: sessionToVerify }),
+      })
+      
+      const data = await response.json()
+      
+      if (data.success && data.user) {
+        // 会话有效，更新用户资料
+        setUserProfile(data.user)
+        return true
+      } else {
+        // 会话无效，清除状态
+        console.warn('会话验证失败:', data.message)
+        clearAuthState()
+        return false
+      }
+    } catch (error) {
+      console.error('验证会话时出错:', error)
+      return false
+    }
   }
   
   // 用户登录函数
   async function login(username, password) {
-    // 在实际应用中，这里应该调用后端API
-    // 这里模拟一个登录过程
-    return new Promise((resolve, reject) => {
-      setTimeout(() => {
-        // 模拟API响应
-        const mockResponse = {
-          success: true,
-          token: `user_${Math.random().toString(36).substring(2, 15)}`,
-          user: {
-            id: 1,
-            username: username,
-            name: username,
-            email: `${username}@example.com`,
-            avatar: null
-          }
-        }
-        
-        // 保存token和用户资料
-        setAuthToken(mockResponse.token)
-        setUserProfile(mockResponse.user)
-        
-        resolve(mockResponse)
-      }, 800) // 模拟网络延迟
-    })
+    try {
+      const response = await fetch(getApiUrl('login'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ username, password }),
+      })
+      
+      const data = await response.json()
+      
+      if (data.success) {
+        // 保存会话ID和用户资料
+        setSession(data)
+        return data
+      } else {
+        throw new Error(data.message || '登录失败')
+      }
+    } catch (error) {
+      console.error('登录失败:', error)
+      throw error
+    }
   }
   
   // 用户注册函数
   async function register(userData) {
-    // 在实际应用中，这里应该调用后端API
-    // 这里模拟一个注册过程
-    return new Promise((resolve, reject) => {
-      setTimeout(() => {
-        // 模拟API响应
-        const mockResponse = {
-          success: true,
-          token: `user_${Math.random().toString(36).substring(2, 15)}`,
-          user: {
-            id: Date.now(),
-            username: userData.username,
+    try {
+      const response = await fetch(getApiUrl('register'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          username: userData.username,
+          email: userData.email,
+          password: userData.password,
+          profile: {
             name: userData.username,
-            email: userData.email,
             avatar: null
           }
-        }
-        
-        // 保存token和用户资料
-        setAuthToken(mockResponse.token)
-        setUserProfile(mockResponse.user)
-        
-        resolve(mockResponse)
-      }, 800) // 模拟网络延迟
-    })
+        }),
+      })
+      
+      const data = await response.json()
+      
+      if (data.success) {
+        // 注册成功后自动登录
+        return await login(userData.username, userData.password)
+      } else {
+        throw new Error(data.message || '注册失败')
+      }
+    } catch (error) {
+      console.error('注册失败:', error)
+      throw error
+    }
   }
   
-  // 注销函数
+  // 用户登出函数
   async function logout() {
-    // 先获取当前用户信息，用于日志和清除特定用户的聊天记录
-    const currentUser = userProfile.value?.username || userProfile.value?.name || 'guest'
-    
-    // 如果用户已登录，清除其前端本地聊天记录
-    if (currentUser !== 'guest') {
-      try {
-        // 清除当前用户的localStorage聊天记录
-        const key = `chat_history_${currentUser}`
-        localStorage.removeItem(key)
-        console.log(`已清除用户 ${currentUser} 的localStorage聊天记录`)
-        
-        // 导入API工具
-        const apiModule = await import('../utils/api')
-        
-        // 结束引导模式
-        try {
-          const endGuidanceResponse = await fetch(apiModule.getApiUrl('end_guidance'), {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              session_id: "default",
-              agent_type: null
-            }),
-          })
-          
-          const endGuidanceResult = await endGuidanceResponse.json()
-          console.log('引导模式重置结果:', endGuidanceResult)
-        } catch (error) {
-          console.error('重置引导模式失败:', error)
-        }
-        
-        // 注意：不再清除后端服务器中的聊天记录，以便在再次登录时恢复
-        console.log('保留后端聊天记录，以便在再次登录时恢复')
-        
-        // 导入chat store，清空内存中的消息
-        try {
-          const { useChatStore } = await import('./chat')
-          const chatStore = useChatStore()
-          chatStore.clearMessages()
-          console.log('已清空内存中的消息')
-        } catch (e) {
-          console.error('清空内存中消息失败', e)
-        }
-      } catch (e) {
-        console.error('清除聊天记录失败', e)
+    try {
+      if (sessionId.value) {
+        // 调用后端登出接口
+        await fetch(getApiUrl('logout'), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ session_id: sessionId.value }),
+        })
       }
+    } catch (error) {
+      console.error('登出API调用失败:', error)
+    } finally {
+      // 无论API调用是否成功，都清除本地状态
+      clearAuthState()
+    }
+  }
+  
+  // 更新用户资料
+  async function updateProfile(profileData) {
+    if (!sessionId.value || !userProfile.value?.username) {
+      throw new Error('用户未登录')
     }
     
-    // 清除用户信息和令牌
-    userProfile.value = null
-    authToken.value = null
-    localStorage.removeItem('auth_token')
-    localStorage.removeItem('user_profile')
-    isAuthenticated.value = false
-    
-    // 不再尝试控制路由，而是返回成功，让调用者（如Home.vue）处理路由跳转
-    console.log('注销完成: 已清除用户信息和令牌')
-    return true
+    try {
+      const response = await fetch(getApiUrl('update_profile'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          session_id: sessionId.value,
+          username: userProfile.value.username,
+          profile_data: profileData
+        }),
+      })
+      
+      const data = await response.json()
+      
+      if (data.success) {
+        // 更新本地资料
+        const updatedProfile = {
+          ...userProfile.value,
+          ...data.profile
+        }
+        setUserProfile(updatedProfile)
+        return data
+      } else {
+        throw new Error(data.message || '更新资料失败')
+      }
+    } catch (error) {
+      console.error('更新资料失败:', error)
+      throw error
+    }
   }
+  
+  // 修改密码
+  async function changePassword(currentPassword, newPassword) {
+    if (!sessionId.value || !userProfile.value?.username) {
+      throw new Error('用户未登录')
+    }
+    
+    try {
+      const response = await fetch(getApiUrl('change_password'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          session_id: sessionId.value,
+          username: userProfile.value.username,
+          current_password: currentPassword,
+          new_password: newPassword
+        }),
+      })
+      
+      const data = await response.json()
+      
+      if (data.success) {
+        // 密码修改成功需要重新登录
+        clearAuthState()
+        return data
+      } else {
+        throw new Error(data.message || '修改密码失败')
+      }
+    } catch (error) {
+      console.error('修改密码失败:', error)
+      throw error
+    }
+  }
+  
+  // 忘记密码
+  async function forgotPassword(email) {
+    try {
+      const response = await fetch(getApiUrl('forgot_password'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email }),
+      })
+      
+      const data = await response.json()
+      
+      if (data.success) {
+        return data
+      } else {
+        throw new Error(data.message || '重置密码请求失败')
+      }
+    } catch (error) {
+      console.error('重置密码请求失败:', error)
+      throw error
+    }
+  }
+  
+  // 重置密码
+  async function resetPassword(resetToken, newPassword) {
+    try {
+      const response = await fetch(getApiUrl('reset_password'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          reset_token: resetToken,
+          new_password: newPassword
+        }),
+      })
+      
+      const data = await response.json()
+      
+      if (data.success) {
+        return data
+      } else {
+        throw new Error(data.message || '重置密码失败')
+      }
+    } catch (error) {
+      console.error('重置密码失败:', error)
+      throw error
+    }
+  }
+  
+  // 组件加载时自动初始化
+  initializeSession()
   
   return {
     // 状态
+    sessionId,
     authToken,
-    isAuthenticated,
     userProfile,
+    isAuthenticated,
     isLoggedIn,
+    username,
+    email,
     
     // 方法
-    initializeToken,
-    setAuthToken,
-    getAuthToken,
-    clearAuthToken,
-    setUserProfile,
-    getUserProfile,
-    checkAuth,
-    setDevelopmentToken,
     login,
     register,
-    logout
+    logout,
+    checkAuth,
+    verifySession,
+    updateProfile,
+    changePassword,
+    forgotPassword,
+    resetPassword,
+    clearAuthState,
+    initializeSession
   }
 }) 

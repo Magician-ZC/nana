@@ -2737,5 +2737,368 @@ async def startup_event():
     await db_manager.init_db()
     logger.info("应用启动时初始化数据库成功")
 
+# 添加新的用户管理API端点
+
+# 用户注册API
+@app.post("/api/register")
+async def register_user(request: Request):
+    """用户注册API
+    
+    Request Body:
+        username: 用户名
+        email: 电子邮箱
+        password: 密码
+        profile: 可选的用户资料数据
+    
+    Returns:
+        注册结果
+    """
+    try:
+        data = await request.json()
+        username = data.get("username", "")
+        email = data.get("email", "")
+        password = data.get("password", "")
+        profile = data.get("profile", {})
+        
+        if not username or not email or not password:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "message": "用户名、邮箱和密码不能为空"}
+            )
+        
+        # 调用db_manager进行用户注册
+        result = await db_manager.register_user(username, email, password, profile)
+        
+        if not result["success"]:
+            return JSONResponse(
+                status_code=400,
+                content=result
+            )
+        
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error(f"用户注册API错误: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": f"服务器错误: {str(e)}"}
+        )
+
+# 用户登录API
+@app.post("/api/login")
+async def login_user(request: Request):
+    """用户登录API
+    
+    Request Body:
+        username: 用户名
+        password: 密码
+    
+    Returns:
+        登录结果，包含会话ID和用户信息
+    """
+    try:
+        data = await request.json()
+        username = data.get("username", "")
+        password = data.get("password", "")
+        
+        if not username or not password:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "message": "用户名和密码不能为空"}
+            )
+        
+        # 调用db_manager进行用户认证
+        result = await db_manager.authenticate_user(username, password)
+        
+        if not result["success"]:
+            return JSONResponse(
+                status_code=401,
+                content=result
+            )
+        
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error(f"用户登录API错误: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": f"服务器错误: {str(e)}"}
+        )
+
+# 验证会话API
+@app.post("/api/verify_session")
+async def verify_user_session(request: Request):
+    """验证用户会话API
+    
+    Request Body:
+        session_id: 会话ID
+    
+    Returns:
+        验证结果，包含用户信息
+    """
+    try:
+        data = await request.json()
+        session_id = data.get("session_id", "")
+        
+        if not session_id:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "message": "会话ID不能为空"}
+            )
+        
+        # 调用db_manager验证会话
+        result = await db_manager.verify_session(session_id)
+        
+        if not result["success"]:
+            return JSONResponse(
+                status_code=401,
+                content=result
+            )
+        
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error(f"验证会话API错误: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": f"服务器错误: {str(e)}"}
+        )
+
+# 用户登出API
+@app.post("/api/logout")
+async def logout_user(request: Request):
+    """用户登出API
+    
+    Request Body:
+        session_id: 会话ID
+    
+    Returns:
+        登出结果
+    """
+    try:
+        data = await request.json()
+        session_id = data.get("session_id", "")
+        
+        if not session_id:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "message": "会话ID不能为空"}
+            )
+        
+        # 调用db_manager删除会话
+        result = await db_manager.logout_user(session_id)
+        
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error(f"用户登出API错误: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": f"服务器错误: {str(e)}"}
+        )
+
+# 更新用户资料API
+@app.post("/api/update_profile")
+async def update_user_profile(request: Request):
+    """更新用户资料API
+    
+    Request Body:
+        session_id: 会话ID
+        username: 用户名
+        profile_data: 要更新的资料数据
+    
+    Returns:
+        更新结果
+    """
+    try:
+        data = await request.json()
+        session_id = data.get("session_id", "")
+        username = data.get("username", "")
+        profile_data = data.get("profile_data", {})
+        
+        if not session_id or not username:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "message": "会话ID和用户名不能为空"}
+            )
+        
+        # 先验证会话
+        session_result = await db_manager.verify_session(session_id)
+        if not session_result["success"]:
+            return JSONResponse(
+                status_code=401,
+                content=session_result
+            )
+        
+        # 确保当前会话用户和请求的用户名匹配
+        if session_result["user"]["username"] != username:
+            return JSONResponse(
+                status_code=403,
+                content={"success": False, "message": "无权更新其他用户的资料"}
+            )
+        
+        # 调用db_manager更新资料
+        result = await db_manager.update_user_profile(username, profile_data)
+        
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error(f"更新用户资料API错误: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": f"服务器错误: {str(e)}"}
+        )
+
+# 修改密码API
+@app.post("/api/change_password")
+async def change_user_password(request: Request):
+    """修改用户密码API
+    
+    Request Body:
+        session_id: 会话ID
+        username: 用户名
+        current_password: 当前密码
+        new_password: 新密码
+    
+    Returns:
+        修改结果
+    """
+    try:
+        data = await request.json()
+        session_id = data.get("session_id", "")
+        username = data.get("username", "")
+        current_password = data.get("current_password", "")
+        new_password = data.get("new_password", "")
+        
+        if not session_id or not username or not current_password or not new_password:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "message": "会话ID、用户名、当前密码和新密码不能为空"}
+            )
+        
+        # 先验证会话
+        session_result = await db_manager.verify_session(session_id)
+        if not session_result["success"]:
+            return JSONResponse(
+                status_code=401,
+                content=session_result
+            )
+        
+        # 确保当前会话用户和请求的用户名匹配
+        if session_result["user"]["username"] != username:
+            return JSONResponse(
+                status_code=403,
+                content={"success": False, "message": "无权修改其他用户的密码"}
+            )
+        
+        # 调用db_manager修改密码
+        result = await db_manager.change_password(username, current_password, new_password)
+        
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error(f"修改密码API错误: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": f"服务器错误: {str(e)}"}
+        )
+
+# 忘记密码请求API
+@app.post("/api/forgot_password")
+async def forgot_password(request: Request):
+    """忘记密码请求API
+    
+    Request Body:
+        email: 电子邮箱
+    
+    Returns:
+        结果，包含重置令牌
+    """
+    try:
+        data = await request.json()
+        email = data.get("email", "")
+        
+        if not email:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "message": "电子邮箱不能为空"}
+            )
+        
+        # 调用db_manager生成重置令牌
+        result = await db_manager.generate_password_reset_token(email)
+        
+        # 注意：在实际应用中，应该发送邮件，而不是直接返回令牌
+        # 这里简化处理，直接返回令牌信息
+        
+        if not result["success"]:
+            return JSONResponse(
+                status_code=400,
+                content=result
+            )
+        
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error(f"忘记密码API错误: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": f"服务器错误: {str(e)}"}
+        )
+
+# 重置密码API
+@app.post("/api/reset_password")
+async def reset_password(request: Request):
+    """重置密码API
+    
+    Request Body:
+        reset_token: 重置令牌
+        new_password: 新密码
+    
+    Returns:
+        重置结果
+    """
+    try:
+        data = await request.json()
+        reset_token = data.get("reset_token", "")
+        new_password = data.get("new_password", "")
+        
+        if not reset_token or not new_password:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "message": "重置令牌和新密码不能为空"}
+            )
+        
+        # 调用db_manager重置密码
+        result = await db_manager.reset_password_with_token(reset_token, new_password)
+        
+        if not result["success"]:
+            return JSONResponse(
+                status_code=400,
+                content=result
+            )
+        
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error(f"重置密码API错误: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": f"服务器错误: {str(e)}"}
+        )
+
+# 获取用户列表API
+@app.get("/api/list_users")
+async def list_users():
+    """获取用户列表API
+    
+    Returns:
+        用户列表
+    """
+    try:
+        # 在实际应用中，应该添加管理员权限验证
+        # 这里简化处理，直接返回用户列表
+        
+        users = await db_manager.get_all_users()
+        
+        return JSONResponse(content={"success": True, "users": users})
+    except Exception as e:
+        logger.error(f"获取用户列表API错误: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": f"服务器错误: {str(e)}"}
+        )
+
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8666, reload=True, ssl_keyfile=None, ssl_certfile=None)

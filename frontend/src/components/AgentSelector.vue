@@ -298,6 +298,14 @@ onMounted(async () => {
   transform: scale(1.05);
 }
 
+.dark .agent-selector-button {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+.dark .agent-selector-button:hover {
+  background-color: rgba(255, 255, 255, 0.3);
+}
+
 .agent-dropdown-container {
   position: absolute;
   top: calc(100% + 10px);
@@ -312,6 +320,10 @@ onMounted(async () => {
   z-index: 1001;
   isolation: isolate; /* 创建新的堆叠上下文 */
   pointer-events: all; /* 确保可以接收所有鼠标事件 */
+}
+
+.dark .agent-dropdown-container {
+  background-color: rgba(50, 50, 50, 0.95);
 }
 
 .agent-dropdown {

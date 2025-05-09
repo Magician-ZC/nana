@@ -13,7 +13,7 @@ app.use(router)
 
 // 初始化应用后，初始化用户认证token
 const userStore = useUserStore(pinia)
-userStore.initializeToken()
+userStore.initializeSession()
 
 // 初始化聊天存储
 const chatStore = useChatStore(pinia)

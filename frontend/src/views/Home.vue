@@ -347,6 +347,18 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.app {
+  width: 100vw;
+  height: 100vh;
+  background: linear-gradient(90deg, #d4c1ec 0%, #a6c1f4 100%);
+  position: relative;
+}
+
+/* Remove the dark mode background style to keep the main background consistent */
+/* .dark.app {
+  background: linear-gradient(90deg, #1e293b 0%, #0f172a 100%);
+} */
+
 .logout-button {
   width: 40px;
   height: 40px;

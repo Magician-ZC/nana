@@ -1,5 +1,9 @@
 <template>
-  <router-view />
+  <router-view v-slot="{ Component }">
+    <transition name="fade" mode="out-in">
+      <component :is="Component" />
+    </transition>
+  </router-view>
 </template>
 
 <script setup>
@@ -13,6 +17,16 @@
   --background-color: #1a1a1a;
   --text-color: #ffffff;
   --accent-color: #f06292;
+}
+
+/* 页面过渡效果 */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 
 * {

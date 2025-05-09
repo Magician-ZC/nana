@@ -23,6 +23,11 @@
             <p class="text-gray-600 dark:text-gray-400">登录您的账户继续使用</p>
           </div>
           
+          <!-- 添加通用错误消息显示 -->
+          <div v-if="errors.general" class="mb-4 p-3 bg-red-100 border-l-4 border-red-500 text-red-700 dark:bg-red-900 dark:text-red-200 rounded-md">
+            {{ errors.general }}
+          </div>
+          
           <form @submit.prevent="handleLogin" class="space-y-6">
             <div>
               <label for="username" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">用户名</label>
@@ -31,7 +36,7 @@
                 v-model="username"
                 type="text" 
                 required
-                class="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 dark:bg-gray-700 dark:text-white transition-colors"
+                class="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 dark:bg-gray-700 dark:text-white text-gray-800 transition-colors"
                 :class="{ 'border-red-500 dark:border-red-500': errors.username }"
               />
               <p v-if="errors.username" class="mt-1 text-sm text-red-500">{{ errors.username }}</p>
@@ -44,7 +49,7 @@
                 v-model="password"
                 type="password" 
                 required
-                class="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 dark:bg-gray-700 dark:text-white transition-colors"
+                class="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 dark:bg-gray-700 dark:text-white text-gray-800 transition-colors"
                 :class="{ 'border-red-500 dark:border-red-500': errors.password }"
               />
               <p v-if="errors.password" class="mt-1 text-sm text-red-500">{{ errors.password }}</p>
@@ -96,7 +101,7 @@
       </div>
     </div>
     
-    <div class="py-4 text-center text-gray-500 dark:text-gray-400 text-sm">
+    <div class="py-4 text-center text-gray-600 dark:text-gray-400 text-sm">
       © 2023 Nana. All rights reserved.
     </div>
   </div>
@@ -220,6 +225,9 @@ const handleLogin = async () => {
 onMounted(() => {
   // 检查并应用保存的主题设置
   checkSystemPreference()
+  
+  // 强制立即应用主题，确保不会出现黑屏
+  updateTheme()
   
   // 检查是否有保存的用户名
   const rememberedUser = localStorage.getItem('remember_user')

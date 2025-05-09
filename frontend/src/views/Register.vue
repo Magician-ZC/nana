@@ -23,6 +23,11 @@
             <p class="text-gray-600 dark:text-gray-400">注册一个新账户开始使用</p>
           </div>
           
+          <!-- 添加通用错误消息显示 -->
+          <div v-if="errors.general" class="mb-4 p-3 bg-red-100 border-l-4 border-red-500 text-red-700 dark:bg-red-900 dark:text-red-200 rounded-md">
+            {{ errors.general }}
+          </div>
+          
           <form @submit.prevent="handleRegister" class="space-y-5">
             <div>
               <label for="username" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">用户名</label>
@@ -31,7 +36,7 @@
                 v-model="username"
                 type="text" 
                 required
-                class="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 dark:bg-gray-700 dark:text-white transition-colors"
+                class="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 dark:bg-gray-700 dark:text-white text-gray-800 transition-colors"
                 :class="{ 'border-red-500 dark:border-red-500': errors.username }"
               />
               <p v-if="errors.username" class="mt-1 text-sm text-red-500">{{ errors.username }}</p>
@@ -44,7 +49,7 @@
                 v-model="email"
                 type="email" 
                 required
-                class="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 dark:bg-gray-700 dark:text-white transition-colors"
+                class="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 dark:bg-gray-700 dark:text-white text-gray-800 transition-colors"
                 :class="{ 'border-red-500 dark:border-red-500': errors.email }"
               />
               <p v-if="errors.email" class="mt-1 text-sm text-red-500">{{ errors.email }}</p>
@@ -57,7 +62,7 @@
                 v-model="password"
                 type="password" 
                 required
-                class="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 dark:bg-gray-700 dark:text-white transition-colors"
+                class="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 dark:bg-gray-700 dark:text-white text-gray-800 transition-colors"
                 :class="{ 'border-red-500 dark:border-red-500': errors.password }"
               />
               <p v-if="errors.password" class="mt-1 text-sm text-red-500">{{ errors.password }}</p>
@@ -70,7 +75,7 @@
                 v-model="confirmPassword"
                 type="password" 
                 required
-                class="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 dark:bg-gray-700 dark:text-white transition-colors"
+                class="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 dark:bg-gray-700 dark:text-white text-gray-800 transition-colors"
                 :class="{ 'border-red-500 dark:border-red-500': errors.confirmPassword }"
               />
               <p v-if="errors.confirmPassword" class="mt-1 text-sm text-red-500">{{ errors.confirmPassword }}</p>
@@ -121,7 +126,7 @@
       </div>
     </div>
     
-    <div class="py-4 text-center text-gray-500 dark:text-gray-400 text-sm">
+    <div class="py-4 text-center text-gray-600 dark:text-gray-400 text-sm">
       © 2023 Nana. All rights reserved.
     </div>
   </div>
@@ -257,7 +262,8 @@ const handleRegister = async () => {
     
   } catch (error) {
     console.error('注册失败:', error)
-    errors.general = '注册失败，请稍后再试'
+    // 设置通用错误消息
+    errors.general = error.message || '注册失败，请检查输入信息或稍后重试'
   } finally {
     isLoading.value = false
   }

@@ -71,6 +71,14 @@ function handleSettingsChanged(settings) {
   background-color: rgba(50, 50, 50, 0.8);
 }
 
+.dark .settings-toggle-btn {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+.dark .settings-toggle-btn:hover {
+  background-color: rgba(255, 255, 255, 0.3);
+}
+
 .settings-toggle-btn i {
   font-size: 18px;
 }
