@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { getApiUrl } from '../utils/api'
+import { useUserStore } from './user'
 
 // agent角色配置
 const AGENT_WELCOME_MESSAGES = {
@@ -28,7 +29,53 @@ function formatTime() {
   }
 }
 
+// Add a parseJsonResponse helper function at the top of the file, before the store definition
+function parseJsonResponse(text) {
+  if (!text || typeof text !== 'string') return { success: false, data: text };
+  
+  const trimmed = text.trim();
+  let jsonText = trimmed;
+  
+  // Handle double-braced format {{...}}
+  if (trimmed.startsWith('{{') && trimmed.endsWith('}}')) {
+    jsonText = trimmed.substring(2, trimmed.length - 2);
+  }
+  // Handle standard format {...}
+  else if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    return { success: false, data: text };
+  }
+  
+  try {
+    const parsed = JSON.parse(jsonText);
+    return { 
+      success: true, 
+      data: parsed,
+      reply: parsed.reply || null,
+      expression: parsed.expression || null
+    };
+  } catch (e) {
+    console.error('JSON parsing failed:', e);
+    return { success: false, data: text };
+  }
+}
+
+// 添加节流函数
+const debounce = (fn, delay) => {
+  let timer = null
+  return function() {
+    const context = this
+    const args = arguments
+    clearTimeout(timer)
+    timer = setTimeout(() => {
+      fn.apply(context, args)
+    }, delay)
+  }
+}
+
 export const useChatStore = defineStore('chat', () => {
+  // 获取用户存储
+  const userStore = useUserStore()
+  
   // 状态
   const messages = ref([])
   const loading = ref(false)
@@ -52,6 +99,33 @@ export const useChatStore = defineStore('chat', () => {
   const currentAgentInfo = computed(() => 
     AGENT_WELCOME_MESSAGES[currentModel.value] || AGENT_WELCOME_MESSAGES.nanaA
   )
+  
+  // 初始化聊天存储
+  function initializeChat() {
+    console.log('初始化聊天存储')
+    // 不再重置欢迎语状态，保持一天只显示一次
+    
+    // 检查用户是否已登录
+    if (userStore.isLoggedIn && userStore.userProfile) {
+      console.log('用户已登录，尝试加载聊天记录')
+      // 加载用户的聊天记录
+      const loaded = loadMessages()
+      
+      // 如果没有历史记录或记录为空，显示欢迎消息
+      if (!loaded || messages.value.length === 0) {
+        console.log('没有历史记录，显示欢迎消息')
+        showWelcomeMessage()
+      } else {
+        console.log('已加载历史记录，消息数:', messages.value.length)
+        // 不再强制显示欢迎语，而是检查今天是否已经显示过
+      }
+    } else {
+      console.log('用户未登录，显示欢迎消息')
+      // 未登录时清空消息，显示欢迎消息
+      messages.value = []
+      showWelcomeMessage()
+    }
+  }
   
   // 方法
   function setTrackingStatus(status) {
@@ -185,10 +259,73 @@ export const useChatStore = defineStore('chat', () => {
     console.log(`Chat Store - changeAgent: agentId=${agentId}, modelId=${newModelId}`)
     currentModel.value = newModelId
     
-    // 每次切换角色都显示欢迎消息，不再检查是否已经显示过
-    showWelcomeMessage()
+    // 检查该角色今天是否已经显示过欢迎语
+    if (messages.value.length === 0) {
+      // 当没有消息时才显示欢迎语
+      showWelcomeMessage()
+    }
   }
   
+  // 添加一个新函数用于检查当前是否处于引导会话中
+  function isInGuidanceMode() {
+    // 检查最近的消息，判断是否处于引导式会话中
+    if (messages.value.length === 0) return false
+    
+    // 获取最后的几条用户消息
+    const recentUserMessages = messages.value
+      .filter(msg => msg.type === 'user')
+      .slice(-5)
+    
+    // 检查是否有快捷提问类别
+    const guidanceCategories = [
+      "情感咨询师", "人际关系", "学业问题", "就业与职业规划压力", 
+      "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"
+    ]
+    
+    // 检查最近的消息中是否有引导式会话结束的标志
+    const hasEndGuidanceCommand = recentUserMessages.some(msg => 
+      ["结束话题", "退出话题", "返回主菜单", "结束引导", "退出引导"].includes(msg.content.trim())
+    )
+    
+    // 如果有结束指令，则不再处于引导模式
+    if (hasEndGuidanceCommand) {
+      console.log("检测到用户已发送结束引导指令，不再处于引导模式")
+      return false
+    }
+    
+    // 检查是否有快捷提问类别的消息
+    const hasGuidanceCategory = recentUserMessages.some(msg => 
+      guidanceCategories.includes(msg.content)
+    )
+    
+    // 检查最后5条助手消息是否有引导结束的迹象
+    const recentAssistantMessages = messages.value
+      .filter(msg => msg.type === 'assistant')
+      .slice(-5)
+    
+    const endKeywords = [
+      "已结束当前话题", "已经结束话题", "话题已结束", 
+      "结束了本次", "结束了这个话题", "已经为您结束",
+      "确定要结束", "确认结束", "要结束这个话题", 
+      "确定不继续", "结束引导", "退出引导",
+      "总结一下", "总结如下", "总结这次", 
+      "建议如下", "还有其他想讨论", "还有什么想讨论",
+      "有其他想讨论", "已结束本次", "希望我的回答", 
+      "希望我的建议", "希望对您有所帮助", "结束了引导"
+    ]
+    
+    const assistantIndicatesEnd = recentAssistantMessages.some(msg => 
+      endKeywords.some(keyword => msg.content.includes(keyword))
+    )
+    
+    if (assistantIndicatesEnd) {
+      console.log("检测到助手回复中已结束引导对话，不再处于引导模式")
+      return false
+    }
+    
+    return hasGuidanceCategory && !hasEndGuidanceCommand && !assistantIndicatesEnd
+  }
+
   // 发送流式消息
   async function sendStreamMessage(message) {
     if (!message.trim()) return
@@ -203,11 +340,19 @@ export const useChatStore = defineStore('chat', () => {
       return false
     }
     
+    // 检查当前是否在引导模式下
+    const currentlyInGuidanceMode = isInGuidanceMode()
+    
     // 检查是否是直接结束引导的指令
-    const directEndCommands = ["结束话题", "退出话题", "返回主菜单", "结束引导", "退出引导"];
-    if (directEndCommands.includes(message.toLowerCase().trim())) {
-      console.log("检测到用户结束引导指令，将在消息发送后结束引导");
-      // 让消息正常发送，后续会通过消息监听处理
+    const directEndCommands = ["结束话题", "退出话题", "返回主菜单", "结束引导", "退出引导"]
+    const isEndGuidanceCommand = directEndCommands.includes(message.toLowerCase().trim())
+    
+    if (isEndGuidanceCommand) {
+      console.log("检测到用户结束引导指令，将在消息发送后结束引导")
+      // 发送结束引导的事件
+      setTimeout(() => {
+        forceEndGuidance()
+      }, 100)
     }
     
     // 添加带时间戳的用户消息到聊天记录
@@ -232,10 +377,10 @@ export const useChatStore = defineStore('chat', () => {
     // 添加消息变化监视器，仅用于调试
     const messageChangeInterval = setInterval(() => {
       if (assistantMessageIndex < messages.value.length) {
-        const msg = messages.value[assistantMessageIndex];
-        console.log(`[调试] 消息内容 (${msg.isStreaming ? '流式中' : '完成'}):", ${msg.content.substring(0, 30)}${msg.content.length > 30 ? '...' : ''}`);
+        const msg = messages.value[assistantMessageIndex]
+        console.log(`[调试] 消息内容 (${msg.isStreaming ? '流式中' : '完成'}):", ${msg.content.substring(0, 30)}${msg.content.length > 30 ? '...' : ''}`)
       }
-    }, 1000);
+    }, 1000)
     
     loading.value = true
     
@@ -244,7 +389,6 @@ export const useChatStore = defineStore('chat', () => {
     let expression = ""
     let guidanceMessage = null
     let audioData = null
-    let guidanceAudio = null  // 新增：存储引导决策的音频数据
     
     // 用于存储分片的音频数据
     let audioChunks = []
@@ -260,7 +404,10 @@ export const useChatStore = defineStore('chat', () => {
         "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"
       ].includes(message)
       
-      console.log(`发送消息: ${message}, 是否是快捷提问: ${isQuickQuestion}`)
+      // 当前的引导模式状态：如果是快捷提问则开始新引导，如果是结束指令则强制结束，否则使用当前状态
+      const guidanceMode = isQuickQuestion ? true : (isEndGuidanceCommand ? false : currentlyInGuidanceMode)
+      
+      console.log(`发送消息: ${message}, 是否是快捷提问: ${isQuickQuestion}, 当前引导模式: ${guidanceMode}`)
       
       // 创建流式请求
       const controller = new AbortController()
@@ -277,6 +424,7 @@ export const useChatStore = defineStore('chat', () => {
           agent_type: currentAgent.value,
           personality: agentPersonality,
           is_category: isQuickQuestion,
+          in_guidance_mode: guidanceMode, // 添加当前是否在引导模式下的标记
           // 确保所有必要的字段都被传递
           model: currentModel.value,
           agent_id: currentAgent.value
@@ -357,97 +505,130 @@ export const useChatStore = defineStore('chat', () => {
                   }
                 }
                 else if (data.type === 'content') {
-                  // 处理文本内容块
+                  // Process text content
                   if (data.content !== undefined) {
-                    console.log('收到content数据:', data.content);
+                    console.log('Received content data:', data.content);
+                    
+                    // Update accumulated text
                     fullResponse += data.content;
                     
-                    // 确保消息对象仍然存在且是我们创建的那个
-                    if (assistantMessageIndex < messages.value.length) {
-                      messages.value[assistantMessageIndex].content = fullResponse;
+                    // Try to parse the entire response so far as JSON
+                    let parsedContent = fullResponse;
+                    
+                    // Check if it might be JSON format (either standard or double-braced)
+                    if ((fullResponse.trim().startsWith('{') && fullResponse.trim().endsWith('}')) ||
+                        (fullResponse.trim().startsWith('{{') && fullResponse.trim().endsWith('}}'))) {
                       
-                      // 尝试解析JSON响应 (用于引导式会话)
                       try {
-                        // 检查fullResponse是否是一个完整的JSON
-                        if (fullResponse.trim().startsWith('{') && fullResponse.trim().endsWith('}')) {
-                          const jsonData = JSON.parse(fullResponse);
-                          console.log('检测到JSON响应数据:', jsonData);
+                        // Handle double-braced format
+                        let jsonContent = fullResponse.trim();
+                        if (jsonContent.startsWith('{{') && jsonContent.endsWith('}}')) {
+                          jsonContent = jsonContent.substring(2, jsonContent.length - 2);
+                        } else if (jsonContent.startsWith('{') && jsonContent.endsWith('}')) {
+                          // Standard JSON, keep as is
+                        }
+                        
+                        // Try to parse the JSON
+                        const parsedJson = JSON.parse(jsonContent);
+                        
+                        // Extract the reply field if it exists
+                        if (parsedJson.reply) {
+                          parsedContent = parsedJson.reply;
+                          console.log('Successfully extracted reply from JSON:', parsedContent.substring(0, 30));
                           
-                          // 如果含有reply字段，说明是引导式会话响应
-                          if (jsonData.reply) {
-                            messages.value[assistantMessageIndex].content = jsonData.reply;
-                            
-                            // 如果有表情，更新表情
-                            if (jsonData.expression) {
-                              messages.value[assistantMessageIndex].expression = jsonData.expression;
-                            }
-                            
-                            // 检查是否是引导式问题
-                            if (jsonData.is_question === true) {
-                              console.log('检测到引导式问题:', jsonData.question_type);
-                            }
-                            
-                            // 检查是否是最终总结
-                            if (jsonData.is_summary === true) {
-                              console.log('检测到引导式会话总结');
-                              // 触发引导式会话结束事件
-                              setTimeout(() => {
-                                const guidanceEndEvent = new CustomEvent('guidance-end', {
-                                  detail: { type: 'summary', category: currentAgent.value }
-                                });
-                                window.dispatchEvent(guidanceEndEvent);
-                                console.log('已发送引导结束事件 (content阶段)');
-                              }, 500);
-                            }
+                          // Update expression if available
+                          if (parsedJson.expression && assistantMessageIndex < messages.value.length) {
+                            messages.value[assistantMessageIndex].expression = parsedJson.expression;
                           }
                         }
                       } catch (e) {
-                        // 不是JSON或JSON不完整，继续正常处理
+                        // If parsing fails, it's likely incomplete JSON - keep accumulating
+                        console.log('JSON parsing failed, likely incomplete:', e.message);
+                        // Continue using the raw text
                       }
+                    }
+                    
+                    // Update message content with either parsed reply or raw text
+                    if (assistantMessageIndex < messages.value.length) {
+                      messages.value[assistantMessageIndex].content = parsedContent;
                     }
                   }
                 }
                 else if (data.type === 'end') {
-                  // 文本内容结束
-                  console.log('流式文本内容接收完成');
-                  // 标记消息不再流式传输
+                  // Text content streaming has finished
+                  console.log('Stream text content completed');
+                  
+                  // Mark message as no longer streaming
                   if (assistantMessageIndex < messages.value.length) {
                     messages.value[assistantMessageIndex].isStreaming = false;
                     
-                    // 在结束时，尝试最后一次解析可能的JSON响应
+                    // 最终处理完整消息，确保内容是纯文本
+                    let finalContent = messages.value[assistantMessageIndex].content;
+                    let finalExpression = messages.value[assistantMessageIndex].expression;
+                    let isSummary = false;
+                    
+                    // 检查是否是JSON格式并提取纯文本
                     try {
-                      const content = messages.value[assistantMessageIndex].content;
-                      // 检查是否是一个完整的JSON
-                      if (content && content.trim().startsWith('{') && content.trim().endsWith('}')) {
-                        const jsonData = JSON.parse(content);
-                        console.log('结束时解析JSON数据:', jsonData);
+                      // 首先检查是双花括号还是标准JSON
+                      if (finalContent.trim().startsWith('{{') && finalContent.trim().endsWith('}}')) {
+                        // 处理双花括号格式
+                        const jsonContent = finalContent.trim().substring(2, finalContent.trim().length - 2);
+                        const parsedData = JSON.parse(jsonContent);
                         
-                        // 如果含有reply字段，说明是引导式会话响应
-                        if (jsonData.reply) {
-                          messages.value[assistantMessageIndex].content = jsonData.reply;
+                        if (parsedData.reply) {
+                          finalContent = parsedData.reply;
+                          console.log('从最终消息的双花括号JSON提取reply:', finalContent.substring(0, 30));
                           
-                          // 如果有表情，更新表情
-                          if (jsonData.expression) {
-                            messages.value[assistantMessageIndex].expression = jsonData.expression;
+                          if (parsedData.expression) {
+                            finalExpression = parsedData.expression;
+                          }
+                          
+                          if (parsedData.is_summary === true) {
+                            isSummary = true;
                           }
                         }
+                      } 
+                      else if (finalContent.trim().startsWith('{') && finalContent.trim().endsWith('}')) {
+                        // 处理标准JSON格式
+                        const parsedData = JSON.parse(finalContent);
                         
-                        // 检查是否是总结消息，触发自定义事件
-                        if (jsonData.is_summary === true) {
-                          console.log('检测到引导式会话结束 (总结)');
+                        if (parsedData.reply) {
+                          finalContent = parsedData.reply;
+                          console.log('从最终消息的标准JSON提取reply:', finalContent.substring(0, 30));
                           
-                          // 触发导式会话结束事件
-                          setTimeout(() => {
-                            const guidanceEndEvent = new CustomEvent('guidance-end', {
-                              detail: { type: 'summary', category: currentAgent.value }
-                            });
-                            window.dispatchEvent(guidanceEndEvent);
-                          }, 500);
+                          if (parsedData.expression) {
+                            finalExpression = parsedData.expression;
+                          }
+                          
+                          if (parsedData.is_summary === true) {
+                            isSummary = true;
+                          }
                         }
                       }
                     } catch (e) {
-                      // 解析失败，保持原始内容
-                      console.log('结束时JSON解析失败，使用原始内容');
+                      console.log('最终消息不是有效的JSON格式或解析失败:', e.message);
+                      // 不是有效JSON，保持原始内容
+                    }
+                    
+                    // 更新消息内容为纯文本
+                    messages.value[assistantMessageIndex].content = finalContent;
+                    
+                    // 更新表情
+                    if (finalExpression) {
+                      messages.value[assistantMessageIndex].expression = finalExpression;
+                    }
+                    
+                    // 处理引导式对话结束
+                    if (isSummary) {
+                      console.log('Detected guided conversation end (summary)');
+                      
+                      // 触发引导结束事件
+                      setTimeout(() => {
+                        const guidanceEndEvent = new CustomEvent('guidance-end', {
+                          detail: { type: 'summary', category: currentAgent.value }
+                        });
+                        window.dispatchEvent(guidanceEndEvent);
+                      }, 500);
                     }
                   }
                 }
@@ -729,6 +910,21 @@ export const useChatStore = defineStore('chat', () => {
       return false
     }
     
+    // 检查当前是否在引导模式下
+    const currentlyInGuidanceMode = isInGuidanceMode()
+    
+    // 检查是否是直接结束引导的指令
+    const directEndCommands = ["结束话题", "退出话题", "返回主菜单", "结束引导", "退出引导"]
+    const isEndGuidanceCommand = directEndCommands.includes(message.toLowerCase().trim())
+    
+    if (isEndGuidanceCommand) {
+      console.log("检测到用户结束引导指令，将在消息发送后结束引导")
+      // 发送结束引导的事件
+      setTimeout(() => {
+        forceEndGuidance()
+      }, 100)
+    }
+    
     // 添加带时间戳的用户消息到聊天记录
     messages.value.push({ 
       type: 'user', 
@@ -748,7 +944,10 @@ export const useChatStore = defineStore('chat', () => {
         "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"
       ].includes(message)
       
-      console.log(`发送普通消息: ${message}, 是否是快捷提问: ${isQuickQuestion}`)
+      // 当前的引导模式状态：如果是快捷提问则开始新引导，如果是结束指令则强制结束，否则使用当前状态
+      const guidanceMode = isQuickQuestion ? true : (isEndGuidanceCommand ? false : currentlyInGuidanceMode)
+      
+      console.log(`发送普通消息: ${message}, 是否是快捷提问: ${isQuickQuestion}, 当前引导模式: ${guidanceMode}`)
       
       const response = await fetch(getApiUrl('chat'), {
         method: 'POST',
@@ -760,12 +959,30 @@ export const useChatStore = defineStore('chat', () => {
           session_id: 'default',
           agent_type: currentAgent.value,  // 使用agent ID而不是model ID
           personality: agentPersonality,
-          is_category: isQuickQuestion
+          is_category: isQuickQuestion,
+          in_guidance_mode: guidanceMode // 添加当前是否在引导模式下的标记
         }),
       })
       
       const data = await response.json()
       console.log('收到回复:', data)
+      
+      // Process possible JSON response
+      if (typeof data.message === 'string') {
+        const result = parseJsonResponse(data.message);
+        
+        // If we successfully parsed JSON with a reply field, update the message
+        if (result.success && result.reply) {
+          data.message = result.reply;
+          console.log('Updated message from JSON:', result.reply);
+          
+          // Update expression if available
+          if (result.expression) {
+            data.expression = result.expression;
+            console.log('Updated expression from JSON:', result.expression);
+          }
+        }
+      }
       
       // 添加带时间戳的助手回复到聊天记录
       // 对于心理医生的引导式对话，使用打字机效果
@@ -804,7 +1021,9 @@ export const useChatStore = defineStore('chat', () => {
           type: 'assistant', 
           content: data.message,
           timestamp: formatTime(),
-          agentId: currentAgent.value 
+          agentId: currentAgent.value,
+          // 如果是快捷提问类别，添加标记
+          isQuickQuestion: isQuickQuestion 
         })
       }
       
@@ -906,16 +1125,48 @@ export const useChatStore = defineStore('chat', () => {
     }
     
     if (agentInfo) {
+      // 检查今天是否已经显示过欢迎语
+      const today = new Date().toLocaleDateString()
+      const welcomeLastShownKey = `welcome_shown_${agentId}`
+      const welcomeLastShown = localStorage.getItem(welcomeLastShownKey)
+      
+      // 检查是否需要显示欢迎消息
+      const shouldShowWelcome = !welcomeLastShown || welcomeLastShown !== today
+      
+      // 检查页面刷新后是否已经有欢迎消息
+      const hasWelcomeMessage = messages.value.some(msg => 
+        msg.type === 'assistant' && msg.isWelcomeMessage && msg.agentId === agentId
+      )
+      
+      // 如果今天已经显示过且当前消息列表中没有欢迎消息，则不再显示
+      if (!shouldShowWelcome && !hasWelcomeMessage) {
+        console.log(`今天(${today})已经显示过${agentId}的欢迎语，不再重复显示`)
+        return
+      }
+      
+      // 如果消息列表中已有欢迎消息，不再添加新的
+      if (hasWelcomeMessage) {
+        console.log(`当前消息列表中已有${agentId}的欢迎消息，不再添加`)
+        return
+      }
+      
+      console.log(`显示${agentId}的欢迎语，并记录显示日期: ${today}`)
+      
+      // 显示欢迎语并记录今天已显示
       messages.value.push({ 
         type: 'assistant', 
         content: agentInfo.message,
         timestamp: formatTime(),
-        agentId: agentId
+        agentId: agentId,
+        isWelcomeMessage: true // 标记为欢迎消息
       })
-      // 记录已经显示过欢迎消息，此行可保留用于兼容性
+      
+      // 记录今天已经显示过欢迎消息
+      localStorage.setItem(welcomeLastShownKey, today)
       hasShownWelcome.value[agentId] = true
       
-      // 为欢迎语请求TTS音频
+      // 只有在确实添加了欢迎消息到界面时，才请求欢迎语音频
+      console.log(`请求${agentId}的欢迎语音频`)
       fetch(getApiUrl('welcome_tts'), {
         method: 'POST',
         headers: {
@@ -929,6 +1180,7 @@ export const useChatStore = defineStore('chat', () => {
       .then(response => response.json())
       .then(data => {
         if (data.audio) {
+          console.log(`收到${agentId}的欢迎语音频，长度:`, data.audio.length)
           playAudio(data.audio)
         }
       })
@@ -940,16 +1192,275 @@ export const useChatStore = defineStore('chat', () => {
   
   // 强制结束引导式会话
   function forceEndGuidance() {
-    console.log('强制结束引导式会话');
+    console.log('强制结束引导式会话')
+    
+    // 主动发送一个结束指令到后端
+    // 这个请求可以是一个简单的通知，不需要等待响应
+    try {
+      fetch(getApiUrl('end_guidance'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ 
+          session_id: 'default',
+          agent_type: currentAgent.value
+        }),
+      }).catch(err => console.error('发送结束引导请求失败:', err))
+    } catch (e) {
+      console.error('发送结束引导请求出错:', e)
+    }
     
     // 触发引导式会话结束事件
     setTimeout(() => {
       const guidanceEndEvent = new CustomEvent('guidance-end', {
         detail: { type: 'force-end', category: null }
-      });
-      window.dispatchEvent(guidanceEndEvent);
-      console.log('已发送强制结束引导事件');
-    }, 100);
+      })
+      window.dispatchEvent(guidanceEndEvent)
+      console.log('已发送强制结束引导事件')
+    }, 100)
+  }
+  
+  // 保存消息到localStorage和后端
+  async function saveMessages() {
+    // 防止重复保存 - 使用一个标志控制
+    if (saveMessages.isSaving) {
+      console.log('已有保存操作正在进行中，跳过')
+      return
+    }
+
+    // 使用用户名作为唯一标识符，这样每个账号都有自己的历史记录
+    const username = userStore.userProfile?.username || userStore.userProfile?.name || 'guest'
+    if (username === 'guest') {
+      console.log('未登录用户，不保存聊天记录')
+      return // 不保存未登录用户的聊天记录
+    }
+    
+    // 如果没有消息，不需要保存
+    if (messages.value.length === 0) {
+      console.log('没有消息需要保存')
+      return
+    }
+    
+    // 检查是否有正在流式传输的消息，如果有则不保存
+    const hasStreamingMessage = messages.value.some(msg => msg.isStreaming === true)
+    if (hasStreamingMessage) {
+      console.log('有消息正在流式传输中，延迟保存')
+      return
+    }
+    
+    // 设置保存标志
+    saveMessages.isSaving = true
+    
+    try {
+      // 向消息对象添加元数据标记，确保所有类型的消息都能被正确处理
+      const messagesWithMetadata = messages.value.map(msg => {
+        // 检查是否是主题提问类消息
+        const isQuickQuestion = [
+          "情感咨询师", "人际关系", "学业问题", "就业与职业规划压力", 
+          "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"
+        ].includes(msg.content);
+        
+        return {
+          ...msg,
+          isQuickQuestion: msg.isQuickQuestion || isQuickQuestion,
+          saveTime: new Date().toISOString()
+        }
+      })
+      
+      // 1. 首先存储到后端数据库
+      try {
+        // 导入API模块
+        const apiModule = await import('../utils/api')
+        const apiUrl = apiModule.getApiUrl('save_chat_history')
+        
+        // 发送保存请求
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            username: username,
+            messages: messagesWithMetadata
+          })
+        })
+        
+        const result = await response.json()
+        if (result.success) {
+          console.log('聊天历史成功保存到后端数据库', new Date().toLocaleTimeString())
+        } else {
+          console.warn('保存聊天历史到后端数据库失败，将回退到localStorage:', result.message)
+          // 保存失败时，回退到localStorage
+          saveToLocalStorage(username, messagesWithMetadata)
+        }
+      } catch (error) {
+        console.error('保存聊天历史到后端数据库时出错，将回退到localStorage:', error)
+        // 出错时回退到localStorage
+        saveToLocalStorage(username, messagesWithMetadata)
+      }
+    } finally {
+      // 无论成功失败，清除保存标志
+      saveMessages.isSaving = false
+    }
+  }
+  
+  // 辅助函数：保存到localStorage
+  function saveToLocalStorage(username, messagesData) {
+    try {
+      const key = `chat_history_${username}`
+      localStorage.setItem(key, JSON.stringify({
+        messages: messagesData,
+        timestamp: Date.now()
+      }))
+      console.log('聊天历史已保存到localStorage备份')
+    } catch (e) {
+      console.error('保存到localStorage失败:', e)
+    }
+  }
+  
+  // 加载消息，首先尝试从后端加载，如果失败则从localStorage加载
+  async function loadMessages() {
+    // 使用用户名作为唯一标识符
+    const username = userStore.userProfile?.username || userStore.userProfile?.name || 'guest'
+    if (username === 'guest') {
+      console.log('未登录用户，不加载聊天记录')
+      return false
+    }
+    
+    // 记录加载开始时间，用于调试
+    const startTime = Date.now()
+    
+    // 1. 尝试从后端数据库加载
+    try {
+      // 导入API模块
+      const apiModule = await import('../utils/api')
+      const apiUrl = apiModule.getApiUrl(`load_chat_history/${username}`)
+      
+      // 发送加载请求
+      const response = await fetch(apiUrl)
+      const result = await response.json()
+      
+      if (result.success && Array.isArray(result.messages) && result.messages.length > 0) {
+        // 使用从后端加载的消息替换当前消息
+        messages.value = result.messages
+        console.log(`从后端数据库加载了${result.messages.length}条消息历史，耗时${Date.now() - startTime}ms`)
+        return true
+      } else {
+        console.log('后端未找到聊天历史或历史为空，尝试从localStorage加载')
+        // 从后端加载失败，尝试从localStorage加载
+        return loadMessagesFromLocalStorage(username)
+      }
+    } catch (error) {
+      console.error('从后端加载聊天历史失败，尝试从localStorage加载:', error)
+      // 出错时尝试从localStorage加载
+      return loadMessagesFromLocalStorage(username)
+    }
+  }
+  
+  // 从localStorage加载消息的辅助函数
+  function loadMessagesFromLocalStorage(username) {
+    try {
+      const key = `chat_history_${username}`
+      const savedData = localStorage.getItem(key)
+      
+      if (savedData) {
+        const data = JSON.parse(savedData)
+        if (Array.isArray(data.messages) && data.messages.length > 0) {
+          // 使用从localStorage加载的消息替换当前消息
+          messages.value = data.messages
+          console.log(`从localStorage加载了${data.messages.length}条消息历史`)
+          return true
+        }
+      }
+      
+      console.log('localStorage中没有找到聊天历史')
+      return false
+    } catch (e) {
+      console.error('从localStorage加载聊天历史失败:', e)
+      return false
+    }
+  }
+  
+  // 与后端同步消息
+  async function syncMessages(username, messagesData) {
+    if (!username || username === 'guest' || !Array.isArray(messagesData)) {
+      console.log('无效的同步参数，跳过同步操作')
+      return false
+    }
+    
+    try {
+      // 导入API模块
+      const apiModule = await import('../utils/api')
+      
+      // 发送同步请求
+      const response = await fetch(apiModule.getApiUrl('save_chat_history'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          username: username,
+          messages: messagesData
+        })
+      })
+      
+      const result = await response.json()
+      console.log('消息同步结果:', result.success ? '成功' : '失败')
+      return result.success
+    } catch (error) {
+      console.error('同步消息失败:', error)
+      return false
+    }
+  }
+  
+  // 监听消息变化，保存到localStorage
+  watch(messages, debounce(() => {
+    // 检查是否有流式消息正在处理中
+    const hasStreamingMessage = messages.value.some(msg => msg.isStreaming)
+    if (hasStreamingMessage) {
+      console.log('有消息正在流式处理中，延迟保存')
+      return
+    }
+    
+    // 检查是否有消息
+    if (messages.value.length === 0) {
+      console.log('没有消息需要保存')
+      return
+    }
+    
+    // 所有消息都完成后再保存
+    console.log('所有消息流式处理已完成，保存消息')
+    saveMessages()
+  }, 2000), { deep: true }) // 延迟2秒，确保流式消息完全加载完毕
+  
+  // 监听用户变化，加载对应用户的消息
+  watch(() => userStore.userProfile, () => {
+    loadMessages()
+  }, { deep: true })
+  
+  // 清空聊天记录
+  async function clearMessages() {
+    console.log('清空聊天记录')
+    // 使用用户名作为唯一标识符
+    const username = userStore.userProfile?.username || userStore.userProfile?.name || 'guest'
+    if (username !== 'guest') {
+      // 清除localStorage中的记录
+      const key = `chat_history_${username}`
+      localStorage.removeItem(key)
+      console.log(`已清除用户 ${username} 的localStorage聊天记录`)
+      
+      // 注意：我们不再清除后端数据库中的记录，只清空前端显示
+      console.log('保留后端数据库中的聊天记录，仅清空前端显示')
+    }
+    
+    // 清空内存中的消息
+    messages.value = []
+    
+    // 清空后只有在需要时才显示欢迎语
+    showWelcomeMessage()
+    
+    return true
   }
   
   return {
@@ -964,6 +1475,7 @@ export const useChatStore = defineStore('chat', () => {
     agents,
     useStreamResponse,
     // 方法
+    initializeChat,
     setTrackingStatus,
     changeAgent,
     sendMessage,
@@ -971,6 +1483,9 @@ export const useChatStore = defineStore('chat', () => {
     showWelcomeMessage,
     loadCustomAgents,
     playAudio,
-    forceEndGuidance
+    forceEndGuidance,
+    saveMessages,
+    loadMessages,
+    clearMessages
   }
 }) 

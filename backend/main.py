@@ -14,6 +14,7 @@ from typing import Optional, List, Dict, Any, Union
 import asyncio
 import logging
 import random
+import db_manager  # 导入新的数据库模块
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Form, File, UploadFile, Body, Header, Depends, HTTPException, Response
@@ -1151,8 +1152,22 @@ async def stream_chat(request: ChatRequest):
         # 删除F5-TTS相关代码
         use_f5_tts = False
         
-        # 设置正确的引导状态标志
-        current_is_category = request.is_category or chat_service.guidance_state["is_guiding"]
+        # 检查是否强制指定了引导模式状态
+        forced_guidance_mode = getattr(request, 'in_guidance_mode', None)
+        
+        # 确定正确的引导状态
+        if forced_guidance_mode is not None:
+            # 如果前端明确指定了引导模式状态，使用它
+            current_is_category = forced_guidance_mode
+            print(f"前端指定引导模式状态: {current_is_category}")
+            
+            # 如果前端强制关闭引导模式，重置引导状态
+            if not current_is_category and chat_service.guidance_state["is_guiding"]:
+                print("前端强制关闭引导模式，重置引导状态")
+                chat_service._reset_guidance_state()
+        else:
+            # 否则使用常规逻辑
+            current_is_category = request.is_category or chat_service.guidance_state["is_guiding"]
         
         # 使用对话历史生成回复
         full_response, audio_data = await chat_service.generate_response(
@@ -1164,12 +1179,17 @@ async def stream_chat(request: ChatRequest):
             message=message_for_processing  # 使用处理后的消息
         )
         
+        # 打印原始回复进行调试
+        print(f"LLM原始回复: {full_response}")
+        
         # 统一处理JSON格式的回复，不区分引导模式和非引导模式
         response_text, extracted_expression, is_summary = process_json_response(full_response)
+        print(f"处理后的纯文本回复: {response_text}")
         
         # 更新表情（如果有）
         if extracted_expression:
             chat_service.main_agent.expression = extracted_expression
+            print(f"已设置表情: {extracted_expression}")
         
         # 检查是否应该结束引导（仅在引导模式下）
         if is_summary and chat_service.guidance_state["is_guiding"]:
@@ -1180,6 +1200,7 @@ async def stream_chat(request: ChatRequest):
         try:
             if request.message != "SYSTEM_GUIDANCE" and not request.message.startswith("SYSTEM_"):
                 # 只有普通对话才添加到历史记录，系统消息不添加
+                # 使用处理后的纯文本回复保存到历史中
                 await chat_service.conversation_history.add_dialog(message="ASSISTANT_REPLY", reply=response_text)
                 print(f"已将助手回复添加到对话历史，当前对话轮数: {len(chat_service.conversation_history.turns)}")
         except Exception as e:
@@ -1391,20 +1412,26 @@ async def normal_chat_flow(request: ChatRequest):
         is_category=request.is_category
     )
     
+    # 增加原始回复日志以便调试
     print("-- /api/chat --")
     print("agent_type:", request.agent_type)
     print("personality:", request.personality)
     print("is_category:", request.is_category)
-    print("reply:", reply)
-    print("expression:", expression)
+    print("原始回复:", reply)
+    print("原始表情:", expression)
     if guidance_message:
         print("guidance_message:", guidance_message)
     
     # 处理JSON格式回复，提取reply字段
     processed_reply, processed_expression, is_summary = process_json_response(reply)
+    
+    # 优先使用处理后的内容
     if processed_reply:
+        print(f"处理后的纯文本回复: {processed_reply}")
         reply = processed_reply
+    
     if processed_expression:
+        print(f"处理后的表情: {processed_expression}")
         expression = processed_expression
     
     # 如果检测到引导结束标记，重置引导状态
@@ -1420,8 +1447,9 @@ async def normal_chat_flow(request: ChatRequest):
     if audio_data and len(audio_data) > 100:
         audio_base64 = base64.b64encode(audio_data).decode('ascii')
     
+    # 确保回复是纯文本，不再包含JSON格式
     response_data = {
-        "message": reply,
+        "message": reply,  # 处理后的纯文本回复
         "audio": audio_base64,
         "expression": expression,
         "use_f5_tts": use_f5_tts  # 保留字段但设为False
@@ -1429,7 +1457,9 @@ async def normal_chat_flow(request: ChatRequest):
     
     # 如果有引导决策消息，添加到响应中
     if guidance_message:
-        response_data["guidance_message"] = guidance_message
+        # 处理引导消息中可能包含的JSON
+        guidance_text, guidance_expression, _ = process_json_response(guidance_message)
+        response_data["guidance_message"] = guidance_text
         
         # 检查是否有引导决策的音频数据
         guidance_audio = None
@@ -2510,32 +2540,202 @@ def process_json_response(response_text):
     expression = None
     is_summary = False
     
+    # 首先检查是否为空
+    if not response_text or not response_text.strip():
+        return reply, expression, is_summary
+        
+    # 处理双花括号格式 {{...}}
+    if response_text.strip().startswith('{{') and response_text.strip().endswith('}}'):
+        try:
+            # 去除双花括号
+            json_content = response_text.strip()[2:-2].strip()
+            print("检测到双花括号格式，已修正为标准JSON")
+            
+            # 解析JSON
+            data = json.loads(json_content)
+            if 'reply' in data:
+                reply = data['reply']
+                print(f"从双花括号JSON中提取reply内容: {reply}")
+                
+                if 'expression' in data:
+                    expression = data['expression']
+                    print(f"从双花括号JSON中提取表情: {expression}")
+                    
+                if 'is_summary' in data and data['is_summary']:
+                    is_summary = True
+                    print("从双花括号JSON中检测到引导结束标记")
+                    
+                return reply, expression, is_summary
+        except json.JSONDecodeError:
+            print("双花括号内容不是有效的JSON格式，继续处理")
+        except Exception as e:
+            print(f"处理双花括号JSON回复时出错: {e}")
+    
+    # 处理标准JSON格式 {...}
     try:
         # 检查是否是JSON格式
-        if response_text and response_text.strip().startswith('{') and response_text.strip().endswith('}'):
-            print("检测到JSON格式回复，提取reply字段")
-            reply_data = json.loads(response_text)
+        if response_text.strip().startswith('{') and response_text.strip().endswith('}'):
+            print("检测到标准JSON格式回复，提取reply字段")
+            reply_data = json.loads(response_text.strip())
             if "reply" in reply_data:
                 # 提取reply字段
                 reply = reply_data["reply"]
-                print(f"从JSON中提取reply内容: {reply}")
+                print(f"从标准JSON中提取reply内容: {reply}")
                 
                 # 如果JSON中有表情信息，保存
                 if "expression" in reply_data:
                     expression = reply_data["expression"]
-                    print(f"从JSON中提取表情: {expression}")
+                    print(f"从标准JSON中提取表情: {expression}")
                 
                 # 检查是否是引导结束
                 if "is_summary" in reply_data and reply_data["is_summary"]:
                     is_summary = True
-                    print("检测到引导结束标记")
+                    print("从标准JSON中检测到引导结束标记")
     except json.JSONDecodeError:
         # 如果不是JSON格式，直接使用完整回复
-        print("回复不是有效的JSON格式，使用原始回复")
+        print("回复不是有效的JSON格式，使用原始回复内容")
     except Exception as e:
-        print(f"处理JSON回复时出错: {e}")
+        print(f"处理标准JSON回复时出错: {e}")
     
     return reply, expression, is_summary
+
+# 添加结束引导模式的API请求模型
+class EndGuidanceRequest(BaseModel):
+    session_id: str
+    agent_type: Optional[str] = None
+
+# 添加重置引导模式的API端点
+@app.post("/api/end_guidance")
+async def end_guidance(request: EndGuidanceRequest):
+    """结束引导式对话模式
+    
+    Args:
+        request: 请求体，包含会话ID和智能体类型
+    
+    Returns:
+        dict: 操作结果
+    """
+    try:
+        print(f"收到结束引导模式请求: {request}")
+        
+        # 重置全局聊天服务的引导状态
+        chat_service._reset_guidance_state()
+        
+        return {
+            "success": True,
+            "message": "引导模式已重置"
+        }
+    except Exception as e:
+        print(f"重置引导模式时发生错误: {e}")
+        return {
+            "success": False,
+            "message": f"重置引导模式失败: {str(e)}"
+        }
+
+# 聊天历史API请求模型
+class ChatHistoryRequest(BaseModel):
+    username: str
+    messages: List[Dict[str, Any]]
+
+# 聊天历史同步API请求模型
+class ChatHistorySyncRequest(BaseModel):
+    username: str
+    last_sync_time: Optional[str] = None
+
+# 添加两个新API端点来保存和加载聊天历史
+
+@app.post("/api/save_chat_history")
+async def save_chat_history(request: ChatHistoryRequest):
+    """保存用户的聊天历史到后端数据库
+    
+    Args:
+        request: 请求体，包含用户名和消息列表
+    
+    Returns:
+        保存结果
+    """
+    try:
+        # 使用数据库模块保存聊天历史
+        success = await db_manager.save_user_chat_history(request.username, request.messages)
+        
+        if success:
+            return {"success": True, "message": "聊天历史保存成功"}
+        else:
+            return {"success": False, "message": "聊天历史保存失败"}
+    except Exception as e:
+        logger.error(f"保存聊天历史失败: {str(e)}")
+        return {"success": False, "message": f"保存聊天历史失败: {str(e)}"}
+
+@app.get("/api/load_chat_history/{username}")
+async def load_chat_history(username: str):
+    """从数据库加载用户的聊天历史
+    
+    Args:
+        username: 用户名
+    
+    Returns:
+        用户的聊天历史
+    """
+    try:
+        # 使用数据库模块加载聊天历史
+        messages = await db_manager.load_user_chat_history(username)
+        
+        return {
+            "success": True, 
+            "messages": messages, 
+            "last_updated": time.time(),
+            "update_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        }
+    except Exception as e:
+        logger.error(f"加载聊天历史失败: {str(e)}")
+        return {"success": False, "messages": [], "message": f"加载聊天历史失败: {str(e)}"}
+
+# 添加新的API端点，用于清除用户的聊天历史
+@app.delete("/api/clear_chat_history/{username}")
+async def clear_chat_history(username: str):
+    """清除用户的聊天历史
+    
+    Args:
+        username: 用户名
+    
+    Returns:
+        清除结果
+    """
+    try:
+        # 使用数据库模块清除聊天历史
+        success = await db_manager.clear_user_chat_history(username)
+        
+        if success:
+            return {"success": True, "message": "聊天历史清除成功"}
+        else:
+            return {"success": False, "message": "聊天历史清除失败"}
+    except Exception as e:
+        logger.error(f"清除聊天历史失败: {str(e)}")
+        return {"success": False, "message": f"清除聊天历史失败: {str(e)}"}
+
+# 添加新的API端点，用于获取所有用户
+@app.get("/api/list_chat_users")
+async def list_chat_users():
+    """获取所有有聊天历史的用户
+    
+    Returns:
+        用户列表
+    """
+    try:
+        # 使用数据库模块获取所有用户
+        users = await db_manager.get_all_users()
+        
+        return {"success": True, "users": users}
+    except Exception as e:
+        logger.error(f"获取用户列表失败: {str(e)}")
+        return {"success": False, "users": [], "message": f"获取用户列表失败: {str(e)}"}
+
+# 添加应用启动事件处理器，初始化数据库
+@app.on_event("startup")
+async def startup_event():
+    # 确保数据库已初始化
+    await db_manager.init_db()
+    logger.info("应用启动时初始化数据库成功")
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8666, reload=True, ssl_keyfile=None, ssl_certfile=None)

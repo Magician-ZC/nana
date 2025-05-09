@@ -12,6 +12,7 @@ import base64
 from datetime import datetime
 import re
 import traceback
+import time
 
 class ChatService:
     def __init__(self):
@@ -41,14 +42,11 @@ class ChatService:
         self.current_response = ""  # 初始化当前响应变量
         self.guidance_state = {
             "is_guiding": False,
-            "current_category": None,
+            "category": None,
+            "stage": None,
             "question_count": 0,
-            "last_question_type": None,
-            "conversation_summary": [],
-            "off_topic_count": 0,  # 跟踪连续偏离主题的次数
-            "last_strategies": [],  # 记录已经使用过的策略
-            "awaiting_exit_confirmation": False,  # 是否正在等待用户确认退出
-            "confirmed_exit": False  # 用户是否已确认退出
+            "divergent_count": 0,
+            "last_update_time": time.time()
         }
 
         # 初始化主智能体
@@ -65,29 +63,36 @@ class ChatService:
             self.super_tts_service = None  # 确保在失败时也设置属性
 
     def _reset_guidance_state(self):
-        """重置引导状态并切换回普通对话历史"""
-        # 重置引导状态
+        """重置引导式会话状态"""
+        print("重置引导式会话状态")
+        
+        # 重置引导状态标志
         self.guidance_state = {
             "is_guiding": False,
-            "current_category": None,
+            "category": None,
+            "stage": None,
             "question_count": 0,
-            "last_question_type": None,
-            "conversation_summary": [],
-            "off_topic_count": 0,  # 跟踪连续偏离主题的次数
-            "last_strategies": [],  # 记录已经使用过的策略
-            "awaiting_exit_confirmation": False,  # 是否正在等待用户确认退出
-            "confirmed_exit": False  # 用户是否已确认退出
+            "divergent_count": 0,
+            "last_update_time": time.time()
         }
         
-        # 清空引导模式用户信息
+        # 重置引导式用户信息
         self.guided_user_info = None
         
-        # 清空引导模式对话历史
-        self.guided_conversation_history = ConversationHistory(max_turns=Config.MAX_TURNS)
+        # 清除引导式对话历史的临时属性
+        if hasattr(self.main_agent.conversation_history, 'last_guidance_message'):
+            delattr(self.main_agent.conversation_history, 'last_guidance_message')
         
-        # 切换回普通对话历史
-        self.main_agent.conversation_history = self.conversation_history
-        print(f"已退出引导模式，清空引导模式对话历史并切换回普通对话历史，当前普通对话历史长度: {len(self.conversation_history.turns)}")
+        if hasattr(self.main_agent.conversation_history, 'guidance_audio'):
+            delattr(self.main_agent.conversation_history, 'guidance_audio')
+            
+        # 清除可能导致状态混乱的标记
+        # 重置最近的消息分类，防止普通消息被误认为引导消息
+        for turn in self.main_agent.conversation_history.turns[-5:]:
+            if hasattr(turn, 'is_guidance'):
+                delattr(turn, 'is_guidance')
+                
+        print("引导式会话状态已完全重置")
 
     def change_agent(self, agent_name: str, session_id: str) -> bool:
         """
@@ -547,19 +552,19 @@ class ChatService:
             print(f"生成回复时出错: {e}")
             return "抱歉，发生了错误，请稍后再试。", None
 
-    async def generate_response(self, conversation_history: List[Dict[str, str]], model_name: str, stream: bool = False, agent_id: Optional[str] = None, is_category: bool = False, message: Optional[str] = None) -> Tuple[str, Optional[bytes]]:
-        """生成回复
+    async def generate_response(self, history, model_name="gpt-3.5-turbo", stream=False, agent_id=None, is_category=False, message=None):
+        """生成流式响应
         
         Args:
-            conversation_history: 对话历史
+            history: 对话历史
             model_name: 模型名称
-            stream: 是否使用流式响应
-            agent_id: 智能体ID
-            is_category: 是否是引导式提问
-            message: 可选的消息覆盖，用于传递系统消息
+            stream: 是否流式响应
+            agent_id: 角色ID
+            is_category: 是否是快捷提问类别
+            message: 当前消息
             
         Returns:
-            Tuple[str, Optional[bytes]]: (回复文本, 语音数据)
+            tuple: (回复内容, 音频数据)
         """
         try:
             # 确保TTS服务使用最新的配置
@@ -570,16 +575,55 @@ class ChatService:
                 self.change_agent(agent_id, "default_session")
             
             # 使用传入的message覆盖，或从对话历史中获取
-            user_message = message if message else (conversation_history[-1]["content"] if conversation_history else "")
-            print(f"generate_response: 用户消息: {user_message}, 是否是快捷提问: {is_category}")
+            user_msg = message if message else (history[-1]["content"] if history else "")
+            print(f"generate_response: 用户消息: {user_msg}, 是否是快捷提问: {is_category}")
             
             # 生成回复
-            reply, audio_data = await self.generate_reply(
-                message=user_message,
+            raw_response, audio_data = await self.generate_reply(
+                message=user_msg,
                 session_id="default", 
                 agent_type=model_name,
                 is_category=is_category
             )
+            
+            # 处理JSON格式回复
+            response = raw_response
+            expression = None
+            
+            # 处理双花括号格式 {{...}}
+            if raw_response.strip().startswith('{{') and raw_response.strip().endswith('}}'):
+                try:
+                    # 去除双花括号
+                    json_content = raw_response.strip()[2:-2].strip()
+                    print("检测到双花括号格式，已修正为标准JSON")
+                    
+                    # 解析JSON
+                    data = json.loads(json_content)
+                    if 'reply' in data:
+                        print(f"从双花括号JSON中提取reply内容")
+                        response = data['reply']
+                        if 'expression' in data:
+                            expression = data['expression']
+                            self.main_agent.expression = expression
+                except json.JSONDecodeError:
+                    print("双花括号内容不是有效的JSON格式，使用原始回复")
+                except Exception as e:
+                    print(f"处理双花括号JSON回复时出错: {e}")
+            
+            # 处理单花括号格式 {...}
+            elif raw_response.strip().startswith('{') and raw_response.strip().endswith('}'):
+                try:
+                    data = json.loads(raw_response)
+                    if 'reply' in data:
+                        print("从JSON响应中提取reply字段")
+                        response = data['reply']
+                        if 'expression' in data:
+                            expression = data['expression']
+                            self.main_agent.expression = expression
+                except json.JSONDecodeError:
+                    print("回复不是有效的JSON格式，使用原始回复")
+                except Exception as e:
+                    print(f"处理JSON响应失败: {e}")
             
             # 如果不在引导模式中但已存在引导模式数据，清理引导模式的用户信息和对话历史
             if not is_category and not self.guidance_state["is_guiding"] and self.guided_user_info:
@@ -587,11 +631,15 @@ class ChatService:
                 self.guided_user_info = None
                 self.guided_conversation_history = ConversationHistory(max_turns=Config.MAX_TURNS)
                 print("清理了旧的引导模式数据")
+                
+            # 记录用户消息和回复到对话历史
+            await self.conversation_history.add_dialog(message=user_msg, reply=response)
+            print(f"对话历史: 当前共有{len(self.conversation_history.turns)}轮对话")
             
-            return reply, audio_data
+            return response, audio_data
         except Exception as e:
-            print(f"生成回复出错: {e}")
-            return "抱歉，处理您的请求时出现了错误。", None
+            print(f"生成回复时出错: {e}")
+            return "抱歉，我遇到了一些问题，请稍后再试。", None
 
     async def response_stream(self, message: str, session_id: str, agent_type: Optional[str] = None, personality: Optional[str] = None, is_category: bool = False):
         """流式生成回复，以generator形式返回
