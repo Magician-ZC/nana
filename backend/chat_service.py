@@ -127,6 +127,9 @@ class ChatService:
         # 加载用户聊天历史
         await self._load_user_chat_history(username)
         
+        # 加载用户配置并应用
+        await self._load_user_settings(username)
+        
         return True
 
     async def _load_user_chat_history(self, username: str):
@@ -164,6 +167,64 @@ class ChatService:
                 
         except Exception as e:
             print(f"加载用户聊天历史时出错: {e}")
+            return False
+
+    async def _load_user_settings(self, username: str):
+        """加载用户设置并应用
+        
+        Args:
+            username: 用户名
+            
+        Returns:
+            bool: 是否成功加载
+        """
+        try:
+            # 初始化用户信息管理器
+            from user_info_manager import UserInfoManager
+            user_info_manager = UserInfoManager(username)
+            
+            # 获取用户UI设置
+            ui_settings = await user_info_manager.get_ui_settings()
+            
+            if ui_settings:
+                # 应用UI设置到全局配置
+                from config import Config
+                
+                # 更新TTS启用状态
+                if "enable_tts" in ui_settings:
+                    Config.ENABLE_TTS = ui_settings["enable_tts"]
+                if "enable_super_tts" in ui_settings:
+                    Config.ENABLE_SUPER_TTS = ui_settings["enable_super_tts"]
+                
+                # 更新TTS语音配置
+                if "tts_voice" in ui_settings:
+                    Config.TTS_VCN = ui_settings["tts_voice"]
+                if "super_tts_voice" in ui_settings:
+                    Config.SUPER_TTS_VCN = ui_settings["super_tts_voice"]
+                
+                # 更新其他配置
+                if "tts_speed" in ui_settings:
+                    Config.TTS_SPEED = ui_settings["tts_speed"]
+                if "typing_speed" in ui_settings:
+                    Config.TYPING_SPEED = ui_settings["typing_speed"]
+                if "voice_input_mode" in ui_settings:
+                    Config.VOICE_INPUT_MODE = ui_settings["voice_input_mode"]
+                if "voice_timeout" in ui_settings:
+                    Config.VOICE_TIMEOUT = ui_settings["voice_timeout"]
+                
+                # 重新初始化TTS服务以应用新设置
+                self._refresh_tts_services()
+                
+                print(f"已加载并应用用户 {username} 的设置: {ui_settings}")
+                return True
+            else:
+                print(f"用户 {username} 没有设置，使用默认配置")
+                return False
+                
+        except Exception as e:
+            print(f"加载用户设置时出错: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def change_agent(self, agent_name: str, session_id: str) -> bool:

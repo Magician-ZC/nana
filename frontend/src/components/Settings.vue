@@ -293,7 +293,7 @@
 <script setup>
 import { ref, onMounted, watch, computed, onUnmounted } from 'vue'
 import { useChatStore } from '../stores/chat'
-import { getApiUrl } from '../utils/api'
+import { getApiUrl, fetchApi, showNotification } from '../utils/api'
 
 const props = defineProps({
   isOpen: {
@@ -362,8 +362,11 @@ watch(() => props.isOpen, async (newValue) => {
 // 加载当前设置
 async function loadSettings() {
   try {
-    const response = await fetch(getApiUrl('tts_settings'))
+    // 使用封装的fetchApi函数
+    const response = await fetchApi('tts_settings')
     const data = await response.json()
+    
+    console.log('加载到的配置:', data)
     
     enableTTS.value = data.enable_tts
     enableSuperTTS.value = data.enable_super_tts
@@ -409,11 +412,9 @@ async function saveSettings() {
     // 更新打字机效果设置
     chatStore.useStreamResponse = useTypewriterEffect.value
     
-    const response = await fetch(getApiUrl('tts_settings'), {
+    // 使用封装的fetchApi函数
+    const response = await fetchApi('tts_settings', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
       body: JSON.stringify({
         enable_tts: enableTTS.value,
         enable_super_tts: enableSuperTTS.value,
@@ -428,7 +429,9 @@ async function saveSettings() {
     
     const result = await response.json()
     
-    if (result.success) {
+    console.log('保存设置响应:', result)
+    
+    if (result.code === 0) {
       // 创建保存的设置数据对象
       const settingsData = {
         enableTTS: enableTTS.value,
@@ -458,29 +461,19 @@ async function saveSettings() {
       emit('close')
       
       // 显示成功消息
-      showToast('设置已保存', 'success')
+      showNotification('设置已保存', 'success')
     } else {
       error.value = result.message || '保存设置失败'
+      showNotification(error.value, 'error')
     }
     
   } catch (err) {
     console.error('保存设置失败:', err)
     error.value = '保存设置时发生错误'
+    showNotification(error.value, 'error')
   } finally {
     isSaving.value = false
   }
-}
-
-// 显示消息通知
-function showToast(message, type = 'success') {
-  const toastEl = document.createElement('div')
-  toastEl.className = `fixed bottom-4 right-4 ${type === 'success' ? 'bg-green-500' : 'bg-red-500'} text-white px-6 py-3 rounded-lg shadow-lg z-50 animate-fade-in`
-  toastEl.textContent = message
-  document.body.appendChild(toastEl)
-  
-  setTimeout(() => {
-    toastEl.remove()
-  }, 3000)
 }
 
 // 自定义下拉选择框
@@ -525,8 +518,17 @@ function handleOutsideClick(e) {
   to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes fade-out {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(-10px); }
+}
+
 .animate-fade-in {
   animation: fade-in 0.3s ease-out forwards;
+}
+
+.animate-fade-out {
+  animation: fade-out 0.3s ease-out forwards;
 }
 
 /* 修改range滑块的默认样式 */

@@ -1682,13 +1682,32 @@ async def normal_chat_flow(request: ChatRequest):
     return JSONResponse(content=response_data)
 
 @app.get("/api/tts_settings")
-async def get_tts_settings():
+async def get_tts_settings(request: Request):
     """获取TTS设置
 
     Returns:
         dict: TTS设置
     """
-    return {
+    # 获取当前的会话ID
+    session_id = None
+    try:
+        # 尝试从cookies获取
+        cookies = request.cookies
+        session_id = cookies.get("session_id")
+        
+        # 如果cookies中没有，尝试从请求头获取
+        if not session_id:
+            auth_header = request.headers.get("Authorization")
+            if auth_header and auth_header.startswith("Bearer "):
+                session_id = auth_header.split(" ")[1]
+                
+        print(f"获取TTS设置，会话ID: {session_id}")
+    except Exception as e:
+        print(f"获取会话ID时出错: {e}")
+        pass
+    
+    # 默认使用系统配置
+    settings = {
         "enable_tts": Config.ENABLE_TTS,
         "enable_super_tts": Config.ENABLE_SUPER_TTS,
         "tts_voice": Config.TTS_VCN,
@@ -1700,86 +1719,156 @@ async def get_tts_settings():
         "voice_input_mode": getattr(Config, "VOICE_INPUT_MODE", True),
         "voice_timeout": getattr(Config, "VOICE_TIMEOUT", 5)
     }
+    
+    # 如果有会话ID，获取当前用户的设置
+    if session_id:
+        try:
+            # 获取用户ID
+            user = await db_manager.get_user_by_session(session_id)
+            
+            if user:
+                username = user["username"]
+                print(f"获取用户 {username} 的TTS设置")
+                
+                # 从数据库获取用户设置
+                from user_info_manager import UserInfoManager
+                user_info_manager = UserInfoManager(username)
+                user_settings = await user_info_manager.get_ui_settings()
+                
+                if user_settings:
+                    # 更新设置
+                    settings.update(user_settings)
+                    print(f"加载到用户 {username} 的设置: {user_settings}")
+        except Exception as e:
+            print(f"获取用户设置时出错: {e}")
+    
+    return settings
 
 @app.post("/api/tts_settings")
-async def update_tts_settings(settings: TTSSettingsRequest):
+async def update_tts_settings(request: Request):
     """更新TTS设置
-
-    Args:
-        settings: 新的TTS设置
 
     Returns:
         dict: 更新结果
     """
     try:
-        # 检查TTS设置是否有冲突
-        if settings.enable_tts and settings.enable_super_tts:
-            return {"success": False, "message": "不能同时启用普通TTS和超拟人TTS"}
+        # 获取请求数据
+        data = await request.json()
         
-        # 更新启用状态
-        Config.ENABLE_TTS = settings.enable_tts
-        Config.ENABLE_SUPER_TTS = settings.enable_super_tts
+        # 获取当前的会话ID
+        session_id = None
+        cookies = request.cookies
+        session_id = cookies.get("session_id")
         
-        # 更新语音配置
-        if settings.tts_voice:
-            # 检查是否为有效的TTS音色
-            if any(voice["value"] == settings.tts_voice for voice in Config.TTS_VOICE_LIST):
-                Config.TTS_VCN = settings.tts_voice
+        # 如果cookies中没有，尝试从请求头获取
+        if not session_id:
+            auth_header = request.headers.get("Authorization")
+            if auth_header and auth_header.startswith("Bearer "):
+                session_id = auth_header.split(" ")[1]
+        
+        print(f"更新TTS设置，会话ID: {session_id}，设置: {data}")
+        
+        # 如果有会话ID，更新当前用户的设置
+        if session_id:
+            # 获取用户ID
+            user = await db_manager.get_user_by_session(session_id)
             
-        if settings.super_tts_voice:
-            # 检查是否为有效的超拟人TTS音色
-            if any(voice["value"] == settings.super_tts_voice for voice in Config.SUPER_TTS_VOICE_LIST):
-                Config.SUPER_TTS_VCN = settings.super_tts_voice
+            if user:
+                username = user["username"]
+                print(f"更新用户 {username} 的TTS设置为: {data}")
                 
-        # 更新语速
-        if settings.tts_speed is not None:
-            try:
-                speed_value = int(settings.tts_speed)
-                if 0 <= speed_value <= 100:
-                    Config.TTS_SPEED = speed_value
-            except (ValueError, TypeError):
-                pass
-    
-        # 更新打字速度
-        if settings.typing_speed is not None:
-            try:
-                typing_value = int(settings.typing_speed)
-                if 10 <= typing_value <= 200:
-                    Config.TYPING_SPEED = typing_value
-            except (ValueError, TypeError):
-                pass
+                # 更新用户设置到数据库
+                from user_info_manager import UserInfoManager
+                user_info_manager = UserInfoManager(username)
+                success = await user_info_manager.update_ui_settings(data)
+                
+                if success:
+                    # 同时更新全局配置
+                    if "enable_tts" in data:
+                        Config.ENABLE_TTS = data["enable_tts"]
+                    if "enable_super_tts" in data:
+                        Config.ENABLE_SUPER_TTS = data["enable_super_tts"]
+                    if "tts_voice" in data:
+                        Config.TTS_VCN = data["tts_voice"]
+                    if "super_tts_voice" in data:
+                        Config.SUPER_TTS_VCN = data["super_tts_voice"]
+                    if "tts_speed" in data:
+                        Config.TTS_SPEED = data["tts_speed"]
+                    if "typing_speed" in data:
+                        Config.TYPING_SPEED = data["typing_speed"]
+                    if "voice_input_mode" in data:
+                        Config.VOICE_INPUT_MODE = data["voice_input_mode"]
+                    if "voice_timeout" in data:
+                        Config.VOICE_TIMEOUT = data["voice_timeout"]
+                    
+                    # 通知聊天服务重新加载TTS服务
+                    try:
+                        # 首先尝试从app.state获取chat_service
+                        if hasattr(request.app, 'state') and hasattr(request.app.state, 'chat_service'):
+                            chat_service_instance = request.app.state.chat_service
+                            print("从app.state获取chat_service成功")
+                            chat_service_instance._refresh_tts_services()
+                        elif 'chat_service' in globals():
+                            # 如果不存在，使用全局变量
+                            print("使用全局chat_service变量")
+                            chat_service._refresh_tts_services()
+                        else:
+                            print("未找到chat_service实例，无法刷新TTS服务")
+                        
+                        print("TTS服务已刷新")
+                    except Exception as e:
+                        print(f"刷新TTS服务时出错: {e}")
+                        import traceback
+                        traceback.print_exc()
+                    
+                    return {"code": 0, "message": "设置更新成功"}
+                else:
+                    return {"code": 1, "message": "更新用户设置失败"}
         
-        # 更新语音输入模式设置
-        if settings.voice_input_mode is not None:
-            Config.VOICE_INPUT_MODE = settings.voice_input_mode
+        # 如果没有会话ID或用户不存在，只更新全局配置
+        if "enable_tts" in data:
+            Config.ENABLE_TTS = data["enable_tts"]
+        if "enable_super_tts" in data:
+            Config.ENABLE_SUPER_TTS = data["enable_super_tts"]
+        if "tts_voice" in data:
+            Config.TTS_VCN = data["tts_voice"]
+        if "super_tts_voice" in data:
+            Config.SUPER_TTS_VCN = data["super_tts_voice"]
+        if "tts_speed" in data:
+            Config.TTS_SPEED = data["tts_speed"]
+        if "typing_speed" in data:
+            Config.TYPING_SPEED = data["typing_speed"]
+        if "voice_input_mode" in data:
+            Config.VOICE_INPUT_MODE = data["voice_input_mode"]
+        if "voice_timeout" in data:
+            Config.VOICE_TIMEOUT = data["voice_timeout"]
+        
+        # 重新初始化TTS服务
+        try:
+            # 首先尝试从app.state获取chat_service
+            if hasattr(request.app, 'state') and hasattr(request.app.state, 'chat_service'):
+                chat_service_instance = request.app.state.chat_service
+                print("从app.state获取chat_service成功")
+                chat_service_instance._refresh_tts_services()
+            elif 'chat_service' in globals():
+                # 如果不存在，使用全局变量
+                print("使用全局chat_service变量")
+                chat_service._refresh_tts_services()
+            else:
+                print("未找到chat_service实例，无法刷新TTS服务")
             
-        # 更新语音输入超时设置
-        if settings.voice_timeout is not None:
-            try:
-                timeout_value = int(settings.voice_timeout)
-                if 2 <= timeout_value <= 10:
-                    Config.VOICE_TIMEOUT = timeout_value
-            except (ValueError, TypeError):
-                pass
-
-        # 返回成功
-        return {
-            "success": True,
-            "message": "设置更新成功",
-            "data": {
-                "tts_voice": settings.tts_voice if settings.tts_voice else None,
-                "super_tts_voice": settings.super_tts_voice if settings.super_tts_voice else None,
-                "enable_tts": settings.enable_tts,
-                "enable_super_tts": settings.enable_super_tts,
-                "tts_speed": Config.TTS_SPEED,
-                "typing_speed": Config.TYPING_SPEED,
-                "voice_input_mode": Config.VOICE_INPUT_MODE if hasattr(Config, "VOICE_INPUT_MODE") else True,
-                "voice_timeout": Config.VOICE_TIMEOUT if hasattr(Config, "VOICE_TIMEOUT") else 5
-            }
-        }
+            print("TTS服务已刷新")
+        except Exception as e:
+            print(f"刷新TTS服务时出错: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        return {"code": 0, "message": "设置更新成功"}
     except Exception as e:
-        # 处理异常情况
-        return {"success": False, "message": f"更新设置失败: {str(e)}"}
+        print(f"更新TTS设置时出错: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"code": 1, "message": f"更新设置失败: {str(e)}"}
 
 @app.post("/api/welcome_tts")
 async def welcome_tts(request: dict = Body(...)):
@@ -2974,6 +3063,15 @@ async def startup_event():
     # 确保数据库已初始化
     await db_manager.init_db()
     logger.info("应用启动时初始化数据库成功")
+    
+    try:
+        # 将chat_service设置为应用的状态
+        app.state.chat_service = chat_service
+        logger.info("应用启动时chat_service已设置到app.state")
+    except Exception as e:
+        logger.error(f"应用启动时设置chat_service到app.state失败: {e}")
+        import traceback
+        traceback.print_exc()
 
 # 添加新的用户管理API端点
 
