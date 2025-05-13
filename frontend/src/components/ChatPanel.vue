@@ -372,7 +372,7 @@ const handleVoiceButtonClick = () => {
 }
 
 // 发送语音消息的封装函数，添加去重逻辑
-function sendVoiceMessage(message) {
+function sendVoiceMessage(message, forcedGuidanceMode = null) {
   if (!message || !message.trim()) {
     console.log('消息为空，不发送');
     return;
@@ -399,14 +399,21 @@ function sendVoiceMessage(message) {
   lastSentMessage = messageText;
   lastSentTime = now;
   
-  console.log('发送语音消息:', messageText);
+  // 检查是否是结束引导命令
+  const endCommands = ["结束话题", "退出话题", "返回主菜单", "结束引导", "退出引导"];
+  const isEndCommand = endCommands.some(cmd => messageText.includes(cmd));
   
-  // 实际发送消息，完成后重置发送状态
-  chatStore.sendMessage(messageText).finally(() => {
-    setTimeout(() => {
+  // 只有结束命令时才明确传递false，其他情况不传递引导模式状态，让后端维持当前状态
+  const guidanceMode = isEndCommand ? false : null;
+  
+  console.log('发送语音消息:', messageText, 
+              isEndCommand ? '明确结束引导模式' : '不干预引导模式，使用后端当前状态');
+  
+  // 实际发送消息，只有明确结束命令时才传递引导模式状态
+  chatStore.sendStreamMessage(messageText, guidanceMode)
+    .finally(() => {
       isMessageSending = false;
-    }, 1000);
-  });
+    });
 }
 
 // 处理语音按钮按下事件
@@ -448,9 +455,22 @@ const handleRecordingStateChange = (isRec) => {
 }
 
 // 处理发送语音文本
-const handleSendTranscript = (text) => {
+const handleSendTranscript = (text, options = {}) => {
   if (text && text.trim()) {
-    sendVoiceMessage(text)
+    console.log('处理语音发送文本:', text);
+    
+    // 检查是否是结束引导命令，只有明确的结束命令才会传递引导模式状态
+    const endCommands = ["结束话题", "退出话题", "返回主菜单", "结束引导", "退出引导"];
+    const isEndCommand = endCommands.some(cmd => text.includes(cmd));
+    
+    // 只有结束命令时才传递明确的false，否则不传递引导模式状态，让后端保持当前状态
+    const guidanceMode = isEndCommand ? false : null;
+    
+    console.log('发送语音文本:', text, 
+                isEndCommand ? '明确结束引导模式' : '不干预引导模式，使用后端当前状态');
+    
+    // 调用语音消息发送函数
+    sendVoiceMessage(text, guidanceMode);
   }
 }
 
@@ -583,13 +603,15 @@ watch(voiceInputMode, (newMode) => {
     // 如果启用了语音输入模式，自动开始录音
     if (!isRecording.value && !chatStore.loading && sensevoiceRecorderRef.value) {
       console.log('切换到语音模式，自动开始录音');
-      sensevoiceRecorderRef.value.startRecording();
+      setTimeout(() => {
+        sensevoiceRecorderRef.value.startRecording();
+      }, 300); // 延迟300ms确保UI已更新
     }
   } else {
     // 如果禁用了语音输入模式，停止录音
     if (isRecording.value && sensevoiceRecorderRef.value) {
       console.log('切换到文本模式，停止录音');
-      sensevoiceRecorderRef.value.stopRecording();
+      sensevoiceRecorderRef.value.stopRecording(false); // 停止录音但不发送当前内容
     }
   }
 })
@@ -609,7 +631,9 @@ watch(() => chatStore.loading, (isLoading) => {
     // 当加载结束并且在语音模式下，但没有录音时，自动启动录音
     console.log('对话加载完成，自动启动语音识别');
     setTimeout(() => {
-      sensevoiceRecorderRef.value.startRecording();
+      if (voiceInputMode.value && !isRecording.value && !chatStore.loading) {
+        sensevoiceRecorderRef.value.startRecording();
+      }
     }, 500);
   }
 });

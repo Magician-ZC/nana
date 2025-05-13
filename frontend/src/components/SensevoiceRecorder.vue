@@ -178,6 +178,10 @@ function startRecording() {
     return;
   }
 
+  // 确保在尝试开始新的录音前，完全清理旧的状态和资源
+  cleanupTimers();
+  cleanupAudioResources();
+  
   console.log('开始语音录音...');
   resetRecordingEnvironment();
   reconnectAttempts = 0;
@@ -279,21 +283,32 @@ function setupActivityDetection() {
   
   activityTimeoutId = setTimeout(() => {
     const timeSinceLastActivity = Date.now() - lastActivityTime;
+    console.log(`检查语音活动情况，距离上次活动: ${timeSinceLastActivity/1000}秒, 超时设置: ${INACTIVITY_TIMEOUT/1000}秒`);
+    
     if (timeSinceLastActivity > INACTIVITY_TIMEOUT && isRecording.value) {
-      console.log(`No speech activity detected for ${INACTIVITY_TIMEOUT/1000} seconds, sending current transcript`);
+      console.log(`${INACTIVITY_TIMEOUT/1000}秒内未检测到语音活动，准备结束录音`);
       if (recordingText.value && recordingText.value.trim() && props.voiceInputMode) {
-        // 只在语音模式下自动发送
+        // 在无活动超时情况下自动发送内容
+        console.log(`无活动检测触发自动发送: "${recordingText.value}"`);
         sendCurrentTranscript(true);
+      } else if (props.voiceInputMode) {
+        // 如果没有有效内容但处于语音模式，重新开始录音
+        console.log('无活动检测触发但没有有效内容，重新开始录音');
+        stopRecording(false);
+        setTimeout(() => {
+          if (props.voiceInputMode && !isRecording.value && !props.isLoading) {
+            startRecording();
+          }
+        }, 500);
       } else {
-        console.log('No transcript to send or not in voice mode, continuing recording');
-        // Reset the timer to check again
+        // 重置定时器继续检查
         setupActivityDetection();
       }
     } else {
-      // Reset the timer to check again
+      // 重置定时器继续检查
       setupActivityDetection();
     }
-  }, 5000); // Check every 5 seconds
+  }, 3000); // 每3秒检查一次
 }
 
 // 处理WebSocket消息
@@ -364,6 +379,25 @@ function handleWebSocketMessage(evt) {
         if (resJson["is_active"]) {
           // Update activity timestamp on voice detection
           lastActivityTime = Date.now();
+          
+          // 当检测到有语音活动时，重置silenceTimer
+          if (silenceTimer) {
+            clearTimeout(silenceTimer);
+            silenceTimer = null;
+          }
+        } else if (!resJson["is_active"] && recordingText.value.trim() && props.voiceInputMode) {
+          // 当检测到语音活动结束，且有文本内容时，设置自动发送定时器
+          if (silenceTimer) {
+            clearTimeout(silenceTimer);
+          }
+          
+          console.log(`检测到语音停止，设置 ${props.voiceTimeout}秒 后自动发送`);
+          silenceTimer = setTimeout(() => {
+            if (recordingText.value && recordingText.value.trim() && isRecording.value && props.voiceInputMode) {
+              console.log(`语音停止 ${props.voiceTimeout}秒，自动发送消息: "${recordingText.value}"`);
+              sendCurrentTranscript(true);
+            }
+          }, props.voiceTimeout * 1000);
         }
         break;
         
@@ -516,6 +550,17 @@ function stopRecording(sendTranscript = true) {
     transcriptionList.value = [];
     emit('transcript-result', '');
   }
+  
+  // 确保在语音模式下，如果不是因为AI响应而停止的，则在短暂延迟后尝试重新开始录音
+  if (props.voiceInputMode && !props.isLoading) {
+    console.log('语音模式下停止录音，计划在短暂延迟后重新开始录音');
+    setTimeout(() => {
+      if (props.voiceInputMode && !isRecording.value && !props.isLoading) {
+        console.log('语音模式自动重新开始录音');
+        startRecording();
+      }
+    }, 1000);
+  }
 }
 
 // Send the current transcript
@@ -531,7 +576,12 @@ function sendCurrentTranscript(sendToParent = false) {
     }
     
     if (sendToParent) {
-      // 触发特殊的"send-transcript"事件，表示需要发送到聊天
+      // 简化：直接发送文本到父组件，不再传递额外参数
+      // 检查是否是结束引导的命令
+      const endCommands = ["结束话题", "退出话题", "返回主菜单", "结束引导", "退出引导"];
+      const isEndCommand = endCommands.some(cmd => textToSend.includes(cmd));
+      
+      console.log('发送文本到父组件:', textToSend, isEndCommand ? '(结束引导命令)' : '');
       emit('send-transcript', textToSend);
     } else {
       // 只更新显示但不发送到聊天

@@ -69,6 +69,8 @@ class ChatRequest(BaseModel):
     agent_type: Optional[str] = None
     personality: Optional[str] = None
     is_category: Optional[bool] = False
+    # 添加引导模式字段
+    in_guidance_mode: Optional[bool] = None
     # 添加stream_chat所需字段
     history: Optional[List[Dict[str, str]]] = None
     model: Optional[str] = None
@@ -516,17 +518,42 @@ def extract_text_from_file(file_path, file_extension):
     return "不支持的文件格式"
 
 # 添加无意义输入判断函数
-def is_meaningless_input(message: str) -> bool:
+def is_meaningless_input(message: str, in_guidance_mode: bool = False) -> bool:
     """判断输入是否无意义（过短或过于简单）
     
     Args:
         message: 用户输入消息
+        in_guidance_mode: 是否在引导模式下
         
     Returns:
         bool: 是否无意义
     """
+    # 去除空白字符后的消息
+    message = message.strip()
+    
+    # 如果消息为空，一定是无意义的
+    if not message:
+        return True
+    
+    # 在引导模式下，只有极短输入（1个字符）才被视为无意义
+    # 因为引导模式下用户可能会用简短回复如"是"、"否"、"没有"等
+    if in_guidance_mode:
+        # 判断是否属于有意义的短回复
+        meaningful_short_replies = [
+            "是", "否", "好", "嗯", "恩", "对", "不", "行", "要", "哦", "嗯", "啊",
+            "有", "无", "没", "可"
+        ]
+        
+        # 如果是长度为1的字符，但在有意义的短回复列表中，不视为无意义
+        if len(message) == 1 and message in meaningful_short_replies:
+            return False
+            
+        # 只有长度为1且不在有意义短回复列表中的输入才算无意义
+        return len(message) == 1
+    
+    # 非引导模式下使用原始标准
     # 如果消息太短，可能没有实际意义
-    if len(message.strip()) < 2:
+    if len(message) < 2:
         return True
         
     # 常见无意义输入
@@ -537,7 +564,7 @@ def is_meaningless_input(message: str) -> bool:
     ]
     
     # 检查是否是这些无意义输入
-    if message.strip().lower() in meaningless_inputs:
+    if message.lower() in meaningless_inputs:
         return True
     
     return False
@@ -1123,7 +1150,18 @@ async def delete_custom_agent(agent_id: str):
 
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
-    return await normal_chat_flow(request)
+    """
+    旧的非流式聊天API，已被弃用
+    重定向到stream_chat接口
+    """
+    return JSONResponse(
+        content={
+            "message": "此接口已弃用，请使用/api/stream_chat",
+            "success": False,
+            "error": "API_DEPRECATED"
+        },
+        status_code=410  # Gone
+    )
 
 @app.post("/api/stream_chat")
 async def stream_chat(request: ChatRequest):
@@ -1144,36 +1182,94 @@ async def stream_chat(request: ChatRequest):
         
         # 检查是否是无意义输入
         message_for_processing = request.message
-        if is_meaningless_input(request.message):
-            print(f"检测到无意义输入：{request.message}，替换为话题建议请求")
-            # 将用户消息替换为系统指令，获取话题建议
-            message_for_processing = "SYSTEM_TOPIC_SUGGESTIONS"
-            
+        # 获取当前引导模式状态
+        in_guidance_mode = chat_service.guidance_state["is_guiding"]
+
+        # 在检测无意义输入时传递引导模式状态
+        if is_meaningless_input(request.message, in_guidance_mode):
+            if in_guidance_mode:
+                # 在引导模式下，不替换为话题建议，而是发送一个特殊指令让模型继续相关主题的问题
+                print(f"检测到引导模式下的无意义输入：{request.message}，转换为主题相关提问")
+                message_for_processing = "SYSTEM_CONTINUE_GUIDANCE"
+            else:
+                # 在普通模式下，依然替换为话题建议请求
+                print(f"检测到无意义输入：{request.message}，替换为话题建议请求")
+                message_for_processing = "SYSTEM_TOPIC_SUGGESTIONS"
+        
         # 删除F5-TTS相关代码
         use_f5_tts = False
         
         # 检查是否强制指定了引导模式状态
         forced_guidance_mode = getattr(request, 'in_guidance_mode', None)
         
-        # 确定正确的引导状态
+        # 确定正确的引导状态 - 简化逻辑
         if forced_guidance_mode is not None:
             # 如果前端明确指定了引导模式状态，使用它
-            current_is_category = forced_guidance_mode
-            print(f"前端指定引导模式状态: {current_is_category}")
+            print(f"前端明确指定了引导模式状态: {forced_guidance_mode}")
             
-            # 如果前端强制关闭引导模式，重置引导状态
-            if not current_is_category and chat_service.guidance_state["is_guiding"]:
-                print("前端强制关闭引导模式，重置引导状态")
-                chat_service._reset_guidance_state()
+            if forced_guidance_mode:
+                # 如果前端指示处于引导模式，确保后端状态同步
+                if not chat_service.guidance_state["is_guiding"]:
+                    print("前端指示处于引导模式，但后端状态未记录，更新后端状态")
+                    chat_service.guidance_state["is_guiding"] = True
+                    chat_service.guidance_state["category"] = request.message
+                    chat_service.guidance_state["last_update_time"] = time.time()
+                current_is_category = True
+            else:
+                # 如果前端明确指示不在引导模式，重置后端状态
+                if chat_service.guidance_state["is_guiding"]:
+                    print("前端指示不处于引导模式，重置引导状态")
+                    chat_service._reset_guidance_state()
+                current_is_category = False
         else:
-            # 否则使用常规逻辑
-            current_is_category = request.is_category or chat_service.guidance_state["is_guiding"]
+            # 前端未指定引导模式状态，检查后端当前状态和消息内容
+            
+            # 检查是否是快捷提问类别 - 开始新引导
+            is_quick_question = request.is_category or request.message in [
+                "情感咨询师", "人际关系", "学业问题", "就业与职业规划压力", 
+                "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"
+            ]
+            
+            # 检查是否是明确的结束引导指令
+            is_end_command = any(cmd in request.message for cmd in [
+                "结束话题", "退出话题", "返回主菜单", "结束引导", "退出引导"
+            ])
+            
+            # 简化判断逻辑：
+            # 1. 如果是快捷提问类别，开始新引导
+            # 2. 如果是明确的结束指令且当前在引导模式中，结束引导
+            # 3. 其他情况保持当前状态
+            if is_quick_question and not chat_service.guidance_state["is_guiding"]:
+                # 开始新的引导
+                print(f"检测到快捷提问类别: {request.message}，开始引导模式")
+                chat_service.guidance_state["is_guiding"] = True
+                chat_service.guidance_state["category"] = request.message
+                chat_service.guidance_state["last_update_time"] = time.time()
+                current_is_category = True
+            elif is_end_command and chat_service.guidance_state["is_guiding"]:
+                # 结束当前引导
+                print(f"检测到结束引导指令: {request.message}，结束引导模式")
+                chat_service._reset_guidance_state()
+                current_is_category = False
+            else:
+                # 保持当前状态
+                current_is_category = chat_service.guidance_state["is_guiding"]
+                print(f"保持当前引导模式状态: {'处于引导模式中' if current_is_category else '非引导模式'}")
+        
+        # 打印最终决定的引导模式状态
+        print(f"最终决定的引导模式状态: is_category={current_is_category}, 当前后端状态: is_guiding={chat_service.guidance_state['is_guiding']}")
+        
+        # 在引导模式下，强制使用xinli_agent (心理医生)而不是用户指定的agent
+        agent_type = request.agent_type
+        if current_is_category:
+            print("检测到处于引导模式中，使用心理医生agent(xinli_agent)")
+            agent_type = "xinli_agent"  # 强制使用心理医生agent
         
         # 使用对话历史生成回复
         full_response, audio_data = await chat_service.generate_reply(
             message=message_for_processing,
             session_id=request.session_id,
-            agent_type=request.agent_type,
+            agent_type=agent_type,  # 使用可能被覆盖的agent_type
             personality=request.personality,
             is_category=current_is_category
         )
@@ -1452,20 +1548,71 @@ async def normal_chat_flow(request: ChatRequest):
     # 有效消息才增加计数  
     assessment_api.increment_dialog_counter(request.message)
     
+    # 检查是否强制指定了引导模式状态
+    forced_guidance_mode = getattr(request, 'in_guidance_mode', None)
+    
+    # 确定当前是否处于引导模式
+    if forced_guidance_mode is not None:
+        print(f"前端明确指定了引导模式状态: {forced_guidance_mode}")
+        # 如果前端指定了模式，使用它
+        if forced_guidance_mode:
+            # 如果不是主动设置引导模式但前端传递了引导模式状态，确保后端状态同步
+            if not chat_service.guidance_state["is_guiding"]:
+                print("前端指示处于引导模式，但后端状态未记录，更新后端状态")
+                chat_service.guidance_state["is_guiding"] = True
+                chat_service.guidance_state["category"] = request.message
+                chat_service.guidance_state["last_update_time"] = time.time()
+            is_category = True
+        else:
+            # 如果前端强制关闭引导模式，重置状态
+            if chat_service.guidance_state["is_guiding"]:
+                print("前端指示不处于引导模式，但后端状态记录中，重置引导状态")
+                chat_service._reset_guidance_state()
+            is_category = False
+    else:
+        # 前端未指定引导模式状态，使用当前状态
+        # 检查是否是快捷提问类别
+        is_quick_question = request.is_category or request.message in [
+            "情感咨询师", "人际关系", "学业问题", "就业与职业规划压力", 
+            "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"
+        ]
+        
+        # 如果是快捷提问，开始新的引导
+        if is_quick_question and not chat_service.guidance_state["is_guiding"]:
+            print("检测到快捷提问类别，开始新的引导会话")
+            chat_service.guidance_state["is_guiding"] = True
+            chat_service.guidance_state["category"] = request.message
+            chat_service.guidance_state["last_update_time"] = time.time()
+            is_category = True
+        else:
+            # 否则，保持当前状态
+            # 关键：保持当前后端记录的引导状态，而不是使用请求的状态
+            current_is_category = chat_service.guidance_state["is_guiding"]
+            if current_is_category:
+                print("保持当前引导模式状态: 处于引导模式中")
+    
+    print(f"最终决定的引导模式状态: is_category={is_category}, 当前后端状态: is_guiding={chat_service.guidance_state['is_guiding']}")
+    
+    # 在引导模式下，强制使用xinli_agent (心理医生)而不是用户指定的agent
+    agent_type = request.agent_type
+    if is_category:
+        print("检测到处于引导模式中，使用心理医生agent(xinli_agent)")
+        agent_type = "xinli_agent"  # 强制使用心理医生agent
+    
     # 对话流程处理
     reply, audio_data = await chat_service.generate_reply(
         message=request.message,
         session_id=request.session_id,
-        agent_type=request.agent_type,
+        agent_type=agent_type,  # 使用可能被覆盖的agent_type
         personality=request.personality,
-        is_category=request.is_category
+        is_category=is_category
     )
     
     # 增加原始回复日志以便调试
     print("-- /api/chat --")
     print("agent_type:", request.agent_type)
     print("personality:", request.personality)
-    print("is_category:", request.is_category)
+    print("is_category:", is_category)
     print("原始回复:", reply)
     
     # 处理JSON格式回复，提取reply字段
@@ -2604,7 +2751,37 @@ def process_json_response(response_text):
     # 首先检查是否为空
     if not response_text or not response_text.strip():
         return reply, expression, is_summary
-        
+    
+    # 处理带有```json标记的回复
+    if '```json' in response_text:
+        try:
+            # 提取```json和```之间的内容
+            pattern = r'```json\s*(.*?)\s*```'
+            match = re.search(pattern, response_text, re.DOTALL)
+            if match:
+                json_content = match.group(1).strip()
+                print(f"检测到```json标记，提取JSON内容: {json_content}")
+                
+                # 解析JSON
+                data = json.loads(json_content)
+                if 'reply' in data:
+                    reply = data['reply']
+                    print(f"从```json标记中提取reply内容: {reply}")
+                    
+                    if 'expression' in data:
+                        expression = data['expression']
+                        print(f"从```json标记中提取表情: {expression}")
+                        
+                    if 'is_summary' in data and data['is_summary']:
+                        is_summary = True
+                        print("从```json标记中检测到引导结束标记")
+                        
+                    return reply, expression, is_summary
+        except json.JSONDecodeError:
+            print("```json标记内容不是有效的JSON格式，继续处理")
+        except Exception as e:
+            print(f"处理```json标记回复时出错: {e}")
+    
     # 处理双花括号格式 {{...}}
     if response_text.strip().startswith('{{') and response_text.strip().endswith('}}'):
         try:

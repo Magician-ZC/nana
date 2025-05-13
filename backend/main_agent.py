@@ -178,96 +178,12 @@ class MainAgent:
                         # 熵值高意味着字符组合更随机
                         if entropy > 2.0:  # 熵阈值设为2.0，可根据需要调整
                             has_meaningful_text = False
-        else:
-            # 英文消息中至少要有一个完整单词(至少3个字母)
-            import re
-            
-            # 修改检测策略：三重检查
-            # 1. 首先检查是否与常见英文单词相似
-            # 常见的1000个英文单词的前缀（为了便于匹配，只使用常见单词的前3-4个字母作为前缀检查）
-            common_word_prefixes = ["the", "and", "for", "are", "but", "not", "you", "all", "any", "can", "had", "her", "was", "one", 
-                                   "our", "out", "day", "get", "has", "him", "his", "how", "man", "new", "now", "old", "see", "two", 
-                                   "way", "who", "boy", "did", "its", "let", "put", "say", "she", "too", "use", "that", "with", "have", 
-                                   "this", "will", "your", "from", "they", "know", "want", "been", "good", "much", "some", "time"]
-            
-            # 检查输入是否与任何常见单词前缀匹配
-            input_lower = message.lower()
-            prefix_match = False
-            
-            for prefix in common_word_prefixes:
-                if input_lower.startswith(prefix) or any(word.startswith(prefix) for word in input_lower.split()):
-                    prefix_match = True
-                    break
-            
-            # 2. 检查是否含有元音字母和合理的辅音元音分布
-            vowel_pattern = re.compile(r'[aeiou]')
-            has_vowels = bool(vowel_pattern.search(input_lower))
-            
-            # 计算元音和辅音比例
-            vowel_count = sum(c in 'aeiou' for c in input_lower)
-            consonant_count = sum(c in 'bcdfghjklmnpqrstvwxyz' for c in input_lower)
-            total_letters = vowel_count + consonant_count
-            
-            # 检查字母组合是否像自然语言（元音通常占20%-60%）
-            natural_vowel_ratio = (total_letters > 0) and (0.2 <= vowel_count / total_letters <= 0.6)
-            
-            # 3. 检查特有的无意义输入模式
-            # a. 检查辅音连续超过3个或元音连续超过3个（自然英语单词中很少有这种情况）
-            max_consecutive_consonants = 0
-            max_consecutive_vowels = 0
-            current_consonants = 0
-            current_vowels = 0
-            
-            for c in input_lower:
-                if c in 'aeiou':
-                    current_vowels += 1
-                    current_consonants = 0
-                    if current_vowels > max_consecutive_vowels:
-                        max_consecutive_vowels = current_vowels
-                elif c in 'bcdfghjklmnpqrstvwxyz':
-                    current_consonants += 1
-                    current_vowels = 0
-                    if current_consonants > max_consecutive_consonants:
-                        max_consecutive_consonants = current_consonants
-                else:
-                    current_consonants = 0
-                    current_vowels = 0
-            
-            unnatural_consonant_pattern = max_consecutive_consonants > 3
-            unnatural_vowel_pattern = max_consecutive_vowels > 3
-            
-            # b. 检查是否有重复的辅音-元音模式（如"sasasa"或"dadada"）
-            has_repetitive_pattern = False
-            if len(message) >= 4:
-                # 提取2-3个字符的可能重复模式
-                for pattern_length in [2, 3]:
-                    if len(message) >= pattern_length * 2:
-                        pattern = message[:pattern_length]
-                        repetitions = 1
-                        
-                        for i in range(pattern_length, len(message), pattern_length):
-                            if i + pattern_length <= len(message) and message[i:i+pattern_length] == pattern:
-                                repetitions += 1
-                            else:
-                                break
-                        
-                        # 如果同一模式重复出现至少2次，且占据消息长度的大部分
-                        if repetitions >= 2 and (repetitions * pattern_length) / len(message) > 0.6:
-                            has_repetitive_pattern = True
-                            break
-            
-            # 综合判断是否是有意义的文本：
-            # 1. 与常见单词前缀匹配，且有合理的元音辅音分布
-            # 2. 没有不自然的辅音/元音连续模式
-            # 3. 没有明显的重复模式
-            has_meaningful_text = (prefix_match or natural_vowel_ratio) and not (unnatural_consonant_pattern or unnatural_vowel_pattern or has_repetitive_pattern)
-            
-            # 额外的安全检查：如果是常见的无意义输入模式如"asdasd"，"qwerty"，直接判定为无意义
-            common_random_inputs = ["asdf", "qwer", "zxcv", "hjkl", "wasd", "qwerty", "asdasd", "dfdfdf", "jkjk", "ghgh", "sdfsd", "asdasdasd", "qwerty"]
-            if any(rand_input in input_lower for rand_input in common_random_inputs):
-                has_meaningful_text = False
         
-        return not has_meaningful_text
+        # 如果没有有意义的文本，认为是无意义输入
+        if not has_meaningful_text:
+            return True
+            
+        return False
 
     def _log_conversation(self, role: str, content: str) -> None:
         """记录对话到日志文件"""
@@ -413,7 +329,78 @@ class MainAgent:
             suggestion_text = generate_topic_suggestions()
             expression = "微笑"  # 使用友好的表情
             return suggestion_text, expression
+        
+        # 处理引导模式下的无意义输入，继续主题相关提问
+        elif message == "SYSTEM_CONTINUE_GUIDANCE":
+            print("检测到引导模式下的无意义输入，生成主题相关的继续提问")
             
+            # 获取当前引导主题
+            chat_service = self.llm_service.chat_service if hasattr(self.llm_service, 'chat_service') else None
+            current_topic = chat_service.guidance_state.get("category", "") if chat_service else ""
+            
+            # 从上下文中提取最近的对话，找出当前讨论的具体内容
+            recent_context = self._extract_recent_context(context, 5)  # 提取最近5轮对话
+            
+            # 从引导用户信息中获取已收集的信息
+            guided_user_info_text = ""
+            if chat_service and chat_service.guided_user_info:
+                guided_user_info_text = str(chat_service.guided_user_info)
+            
+            # 构建一个特殊提示词，让模型生成相关的后续问题
+            prompt = f"""你是一位专业的心理咨询师，正在进行一场围绕"{current_topic}"主题的引导式对话。
+用户刚刚发送了无意义或过于简短的回复，请基于已有对话和已收集的信息，生成一个新的相关问题，以继续深入探讨当前主题。
+
+最近的对话内容:
+{recent_context}
+
+已收集的用户信息:
+{guided_user_info_text}
+
+请生成一个相关度高、不重复之前问题、且能够引导用户深入思考的问题。回复应该采用以下JSON格式:
+
+{{
+    "reply": "你的提问内容，要与当前主题相关，且与之前的问题不重复",
+    "expression": "咪咪眼",  // 表情请从以下选择一个: 微笑、咪咪眼、关切、好奇、思考
+    "is_question": true,
+    "question_type": "follow_up"  // 问题类型: follow_up(跟进问题)或refocus(重新聚焦)
+}}
+"""
+            
+            # 调用LLM生成新的提问
+            try:
+                reply = await self.llm_service.get_llm_response(prompt, 0.3)  # 使用较低的温度保持聚焦
+                print(f"生成的主题相关提问: {reply}")
+                
+                # 确保返回是合法的JSON
+                try:
+                    json_reply = json.loads(reply)
+                    if "reply" not in json_reply:
+                        # 如果缺少reply字段，手动添加
+                        json_reply["reply"] = "我注意到你的回复比较简短，能告诉我更多关于这个主题的想法吗？"
+                        json_reply["expression"] = "咪咪眼"
+                        json_reply["is_question"] = True
+                        json_reply["question_type"] = "follow_up"
+                        reply = json.dumps(json_reply)
+                except:
+                    # 如果不是有效的JSON，创建一个基本的回复
+                    reply = json.dumps({
+                        "reply": "看起来你的回答比较简短。没关系，我们可以继续探讨这个话题。能告诉我更多你的想法吗？",
+                        "expression": "微笑",
+                        "is_question": True,
+                        "question_type": "follow_up"
+                    })
+                    
+                return reply, "咪咪眼"
+            except Exception as e:
+                print(f"生成主题相关提问时出错: {e}")
+                # 发生错误时返回一个通用的继续提问
+                return json.dumps({
+                    "reply": "我理解你可能需要更多时间思考。关于这个话题，你还有什么想分享或者疑问吗？",
+                    "expression": "微笑",
+                    "is_question": True,
+                    "question_type": "follow_up"
+                }), "微笑"
+        
         # 如果提供了性格描述，添加到提示词中
         personality_prompt = ""
         if personality:
@@ -767,6 +754,38 @@ class MainAgent:
                     print(self.user_info)
         except Exception as e:
             print(f"同步用户信息时出错: {e}")
+
+    def _extract_recent_context(self, context: str, num_turns: int = 5) -> str:
+        """从完整对话上下文中提取最近的几轮对话
+        
+        Args:
+            context: 完整的对话上下文文本
+            num_turns: 要提取的对话轮数
+            
+        Returns:
+            str: 提取的最近几轮对话
+        """
+        lines = context.strip().split('\n')
+        
+        # 查找用户和助手的对话行
+        dialogue_lines = []
+        for line in lines:
+            if line.startswith('用户:') or line.startswith('助手:'):
+                dialogue_lines.append(line)
+        
+        # 提取最后num_turns轮对话（每轮包含用户和助手各一次发言）
+        recent_lines = []
+        if len(dialogue_lines) <= num_turns * 2:
+            # 如果总行数不足num_turns轮，直接返回全部
+            recent_lines = dialogue_lines
+        else:
+            # 否则提取最后num_turns轮
+            recent_lines = dialogue_lines[-num_turns*2:]
+        
+        # 重新组合成文本
+        recent_context = '\n'.join(recent_lines)
+        
+        return recent_context
 
     def _is_off_topic(self, message: str, context: str) -> bool:
         """检测用户回复是否偏离主题

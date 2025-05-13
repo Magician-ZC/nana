@@ -100,6 +100,9 @@ export const useChatStore = defineStore('chat', () => {
     AGENT_WELCOME_MESSAGES[currentModel.value] || AGENT_WELCOME_MESSAGES.nanaA
   )
   
+  // 添加一个内部状态变量追踪引导模式
+  const _inGuidanceMode = ref(false)
+  
   // 初始化聊天存储
   function initializeChat() {
     console.log('初始化聊天存储')
@@ -282,14 +285,19 @@ export const useChatStore = defineStore('chat', () => {
       "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"
     ]
     
-    // 检查最近的消息中是否有引导式会话结束的标志
+    // 检查最近的消息中是否有引导式会话结束的标志（只考虑明确的结束指令）
+    const directEndCommands = ["结束话题", "退出话题", "返回主菜单", "结束引导", "退出引导", 
+                              "不想聊了", "换个话题", "不想继续", "结束对话", "不想讨论这个", 
+                              "不讨论", "换话题", "不聊了", "结束"]
+    
     const hasEndGuidanceCommand = recentUserMessages.some(msg => 
-      ["结束话题", "退出话题", "返回主菜单", "结束引导", "退出引导"].includes(msg.content.trim())
+      directEndCommands.includes(msg.content.trim())
     )
     
-    // 如果有结束指令，则不再处于引导模式
+    // 如果有明确的结束指令，则不再处于引导模式
     if (hasEndGuidanceCommand) {
       console.log("检测到用户已发送结束引导指令，不再处于引导模式")
+      _inGuidanceMode.value = false
       return false
     }
     
@@ -314,20 +322,92 @@ export const useChatStore = defineStore('chat', () => {
       "希望我的建议", "希望对您有所帮助", "结束了引导"
     ]
     
+    // 仅当AI明确表示结束时才结束引导模式
     const assistantIndicatesEnd = recentAssistantMessages.some(msg => 
       endKeywords.some(keyword => msg.content.includes(keyword))
     )
     
     if (assistantIndicatesEnd) {
       console.log("检测到助手回复中已结束引导对话，不再处于引导模式")
+      _inGuidanceMode.value = false
       return false
     }
     
-    return hasGuidanceCategory && !hasEndGuidanceCommand && !assistantIndicatesEnd
+    // 检查是否已经开始了一个引导会话流程
+    // 1. 有明确的引导类别消息
+    if (hasGuidanceCategory) {
+      console.log("检测到引导类别消息，处于引导模式中")
+      _inGuidanceMode.value = true
+      return true
+    }
+    
+    // 2. 检测是否有最近的问答对，表明正在引导式对话中
+    const hasRecentAIQuestion = recentAssistantMessages.some(msg => 
+      msg.content && (msg.content.trim().endsWith("?") || msg.content.trim().endsWith("？"))
+    )
+    
+    // 如果最近有AI提问，且当前状态是引导模式，则保持引导模式
+    if (hasRecentAIQuestion && _inGuidanceMode.value) {
+      console.log("检测到最近AI提问且当前状态是引导模式，继续保持引导模式")
+      return true
+    }
+    
+    // 3. 查找近期用户发送引导类别后AI的首个回复以确定引导会话开始
+    for (let i = 0; i < messages.value.length - 1; i++) {
+      const msg = messages.value[i]
+      const nextMsg = messages.value[i + 1]
+      
+      // 找到用户发送的引导类别，且后面有AI回复
+      if (msg.type === 'user' && 
+          guidanceCategories.includes(msg.content) && 
+          nextMsg && 
+          nextMsg.type === 'assistant') {
+            
+        // 从那个时刻到现在没有明确的结束指令，则认为仍在引导模式中
+        console.log("检测到之前开始的引导会话，且未结束，仍处于引导模式中")
+        _inGuidanceMode.value = true
+        return true
+      }
+    }
+    
+    // 检查近期对话模式：如果有一问一答模式，且内部状态是引导模式，保持引导模式
+    // 这主要用于处理用户的短回复，如"没有"、"是的"等
+    if (_inGuidanceMode.value) {
+      // 尝试提取最近的助手-用户对话模式
+      let hasRecentQAPair = false;
+      for (let i = messages.value.length - 1; i > 0; i--) {
+        if (messages.value[i].type === 'user' && 
+            i > 0 && 
+            messages.value[i-1].type === 'assistant') {
+          // 检查用户回复是否是短回复
+          if (messages.value[i].content.trim().length < 10) {
+            console.log("检测到用户短回复且当前状态是引导模式，继续保持引导模式");
+            return true;
+          }
+          hasRecentQAPair = true;
+          break;
+        }
+      }
+      
+      if (hasRecentQAPair) {
+        console.log("检测到近期有问答对且当前状态是引导模式，继续保持引导模式");
+        return true;
+      }
+    }
+    
+    // 默认情况下，如果找不到足够的证据，返回当前内部状态
+    console.log(`无法通过规则确定是否处于引导模式，使用内部状态: ${_inGuidanceMode.value}`);
+    return _inGuidanceMode.value;
+  }
+
+  // 更新内部引导模式状态的函数
+  function setGuidanceMode(status) {
+    console.log(`手动设置引导模式状态: ${status}`);
+    _inGuidanceMode.value = status;
   }
 
   // 发送流式消息
-  async function sendStreamMessage(message) {
+  async function sendStreamMessage(message, forcedGuidanceMode = null) {
     if (!message.trim()) return
     
     console.log('发送流式消息:', message)
@@ -343,9 +423,11 @@ export const useChatStore = defineStore('chat', () => {
     // 检查当前是否在引导模式下
     const currentlyInGuidanceMode = isInGuidanceMode()
     
-    // 检查是否是直接结束引导的指令
-    const directEndCommands = ["结束话题", "退出话题", "返回主菜单", "结束引导", "退出引导"]
-    const isEndGuidanceCommand = directEndCommands.includes(message.toLowerCase().trim())
+    // 检查是否是明确的结束引导指令
+    const directEndCommands = ["结束话题", "退出话题", "返回主菜单", "结束引导", "退出引导",
+                               "不想聊了", "换个话题", "不想继续", "结束对话", "不想讨论这个", 
+                               "不讨论", "换话题", "算了", "不聊了", "结束"]
+    const isEndGuidanceCommand = directEndCommands.includes(message.trim())
     
     if (isEndGuidanceCommand) {
       console.log("检测到用户结束引导指令，将在消息发送后结束引导")
@@ -404,10 +486,43 @@ export const useChatStore = defineStore('chat', () => {
         "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"
       ].includes(message)
       
-      // 当前的引导模式状态：如果是快捷提问则开始新引导，如果是结束指令则强制结束，否则使用当前状态
-      const guidanceMode = isQuickQuestion ? true : (isEndGuidanceCommand ? false : currentlyInGuidanceMode)
+      // 更新内部引导模式状态逻辑
+      if (forcedGuidanceMode !== null) {
+        // 如果明确指定了状态，使用指定状态
+        setGuidanceMode(forcedGuidanceMode);
+        console.log(`使用明确指定的引导模式状态: ${forcedGuidanceMode}`);
+      } else if (isQuickQuestion) {
+        // 如果是快捷提问，开始新引导
+        setGuidanceMode(true);
+        console.log(`检测到快捷提问，设置引导模式状态为: true`);
+      } else if (isEndGuidanceCommand) {
+        // 如果是结束命令，结束引导
+        setGuidanceMode(false);
+        console.log(`检测到结束命令，设置引导模式状态为: false`);
+      }
+      // 否则不改变当前状态
       
-      console.log(`发送消息: ${message}, 是否是快捷提问: ${isQuickQuestion}, 当前引导模式: ${guidanceMode}`)
+      // 构建请求体
+      const requestBody = { 
+        message: message,
+        session_id: 'default',
+        agent_type: currentAgent.value,
+        personality: agentPersonality,
+        is_category: isQuickQuestion,
+        // 确保所有必要的字段都被传递
+        model: currentModel.value,
+        agent_id: currentAgent.value
+      };
+      
+      // 只有在明确指定引导模式状态时才添加in_guidance_mode字段
+      if (forcedGuidanceMode !== null) {
+        requestBody.in_guidance_mode = forcedGuidanceMode;
+        console.log(`明确传递引导模式状态到后端: ${forcedGuidanceMode}`);
+      } else {
+        console.log(`未指定引导模式状态，让后端维持当前状态`);
+      }
+      
+      console.log(`发送消息: ${message}, 是否是快捷提问: ${isQuickQuestion}, 是否结束指令: ${isEndGuidanceCommand}`);
       
       // 创建流式请求
       const controller = new AbortController()
@@ -418,17 +533,7 @@ export const useChatStore = defineStore('chat', () => {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ 
-          message: message,
-          session_id: 'default',
-          agent_type: currentAgent.value,
-          personality: agentPersonality,
-          is_category: isQuickQuestion,
-          in_guidance_mode: guidanceMode, // 添加当前是否在引导模式下的标记
-          // 确保所有必要的字段都被传递
-          model: currentModel.value,
-          agent_id: currentAgent.value
-        }),
+        body: JSON.stringify(requestBody),
         signal: controller.signal
       })
       
@@ -885,226 +990,6 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
   
-  async function sendMessage(message) {
-    // 如果启用了流式回复，则使用流式API
-    if (useStreamResponse.value) {
-      return sendStreamMessage(message)
-    }
-    
-    // 原始非流式处理逻辑
-    if (!message.trim()) return
-    
-    console.log('发送消息:', message)
-    
-    // 检查是否已经有正在流式传输的消息
-    const hasActiveStreamingMessage = messages.value.some(msg => msg.isStreaming === true)
-    
-    if (hasActiveStreamingMessage) {
-      console.warn('已有正在流式传输的消息，等待完成后再发送新消息')
-      return false
-    }
-    
-    // 如果已经在加载中，不允许发送新消息
-    if (loading.value) {
-      console.warn('已有消息正在处理中，请等待完成')
-      return false
-    }
-    
-    // 检查当前是否在引导模式下
-    const currentlyInGuidanceMode = isInGuidanceMode()
-    
-    // 检查是否是直接结束引导的指令
-    const directEndCommands = ["结束话题", "退出话题", "返回主菜单", "结束引导", "退出引导"]
-    const isEndGuidanceCommand = directEndCommands.includes(message.toLowerCase().trim())
-    
-    if (isEndGuidanceCommand) {
-      console.log("检测到用户结束引导指令，将在消息发送后结束引导")
-      // 发送结束引导的事件
-      setTimeout(() => {
-        forceEndGuidance()
-      }, 100)
-    }
-    
-    // 添加带时间戳的用户消息到聊天记录
-    messages.value.push({ 
-      type: 'user', 
-      content: message,
-      timestamp: formatTime(),
-      agentId: currentAgent.value 
-    })
-    
-    loading.value = true
-    try {
-      // 获取当前角色的性格特点，用于指导AI回复风格
-      const agentPersonality = AGENT_WELCOME_MESSAGES[currentModel.value]?.personality || ''
-      
-      // 检查是否是快捷提问类别
-      const isQuickQuestion = [
-        "情感咨询师", "人际关系", "学业问题", "就业与职业规划压力", 
-        "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"
-      ].includes(message)
-      
-      // 当前的引导模式状态：如果是快捷提问则开始新引导，如果是结束指令则强制结束，否则使用当前状态
-      const guidanceMode = isQuickQuestion ? true : (isEndGuidanceCommand ? false : currentlyInGuidanceMode)
-      
-      console.log(`发送普通消息: ${message}, 是否是快捷提问: ${isQuickQuestion}, 当前引导模式: ${guidanceMode}`)
-      
-      const response = await fetch(getApiUrl('chat'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ 
-          message: message,
-          session_id: 'default',
-          agent_type: currentAgent.value,  // 使用agent ID而不是model ID
-          personality: agentPersonality,
-          is_category: isQuickQuestion,
-          in_guidance_mode: guidanceMode // 添加当前是否在引导模式下的标记
-        }),
-      })
-      
-      const data = await response.json()
-      console.log('收到回复:', data)
-      
-      // Process possible JSON response
-      if (typeof data.message === 'string') {
-        const result = parseJsonResponse(data.message);
-        
-        // If we successfully parsed JSON with a reply field, update the message
-        if (result.success && result.reply) {
-          data.message = result.reply;
-          console.log('Updated message from JSON:', result.reply);
-          
-          // Update expression if available
-          if (result.expression) {
-            data.expression = result.expression;
-            console.log('Updated expression from JSON:', result.expression);
-          }
-        }
-      }
-      
-      // 添加带时间戳的助手回复到聊天记录
-      // 对于心理医生的引导式对话，使用打字机效果
-      const isGuidanceMode = isQuickQuestion || messages.value.some(msg => 
-        msg.type === 'user' && [
-          "情感咨询师", "人际关系", "学业问题", "就业与职业规划压力", 
-          "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"
-        ].includes(msg.content)
-      )
-      
-      if (isGuidanceMode) {
-        // 先添加一个空消息
-        const messageIndex = messages.value.length
-        messages.value.push({
-          type: 'assistant',
-          content: '',
-          timestamp: formatTime(),
-          agentId: currentAgent.value,
-          isStreaming: true
-        })
-        
-        // 逐字显示文本
-        const content = data.message
-        const charDelay = 30  // 每个字符的延迟时间(毫秒)
-        
-        for (let i = 0; i < content.length; i++) {
-          await new Promise(resolve => setTimeout(resolve, charDelay))
-          messages.value[messageIndex].content = content.substring(0, i + 1)
-        }
-        
-        // 完成流式显示
-        messages.value[messageIndex].isStreaming = false
-      } else {
-        // 常规响应模式，直接显示完整回复
-        messages.value.push({ 
-          type: 'assistant', 
-          content: data.message,
-          timestamp: formatTime(),
-          agentId: currentAgent.value,
-          // 如果是快捷提问类别，添加标记
-          isQuickQuestion: isQuickQuestion 
-        })
-      }
-      
-      // 处理语音输出
-      if (data.use_f5_tts) {
-        // 如果使用了F5TTS，音频已在服务器端播放，前端不需要做任何处理
-        console.log('使用F5TTS播放语音，无需前端处理');
-      } else if (data.audio) {
-        // 常规TTS，前端播放音频
-        playAudio(data.audio)
-      }
-      
-      // 如果有引导决策消息，添加为单独的一条助手消息
-      if (data.guidance_message) {
-        setTimeout(() => {
-          if (isGuidanceMode) {
-            // 对引导消息也使用打字机效果
-            const guidanceIndex = messages.value.length
-            messages.value.push({
-              type: 'assistant',
-              content: '',
-              timestamp: formatTime(),
-              agentId: currentAgent.value,
-              isStreaming: true
-            })
-            
-            // 逐字显示文本
-            const content = data.guidance_message
-            const charDelay = 30
-            
-            // 使用异步IIFE处理引导消息的打字机效果
-            (async () => {
-              for (let i = 0; i < content.length; i++) {
-                await new Promise(resolve => setTimeout(resolve, charDelay))
-                messages.value[guidanceIndex].content = content.substring(0, i + 1)
-              }
-              
-              // 完成流式显示
-              messages.value[guidanceIndex].isStreaming = false
-              
-              // 如果收到引导决策的音频数据，等消息显示完成后播放(使用高优先级)
-              if (data.guidance_audio) {
-                playAudio(data.guidance_audio, true)
-              }
-            })()
-          } else {
-            messages.value.push({ 
-              type: 'assistant', 
-              content: data.guidance_message,
-              timestamp: formatTime(),
-              agentId: currentAgent.value 
-            })
-            
-            // 如果收到引导决策的音频数据，等消息添加后播放(使用高优先级)
-            if (data.guidance_audio) {
-              setTimeout(() => {
-                playAudio(data.guidance_audio, true)
-              }, 50) // 使用更短的延迟，确保消息已添加但尽快播放
-            }
-          }
-        }, 500); // 添加500ms延迟，使其看起来像是分开发送的
-      }
-      
-      return data
-    } catch (error) {
-      console.error('Error:', error)
-      
-      // 添加错误消息
-      messages.value.push({ 
-        type: 'assistant', 
-        content: "抱歉，我遇到了一些问题，请稍后再试。",
-        timestamp: formatTime(),
-        agentId: currentAgent.value 
-      })
-      
-      return null
-    } finally {
-      loading.value = false
-    }
-  }
-  
   // 显示欢迎消息
   function showWelcomeMessage() {
     const agentId = currentAgent.value
@@ -1194,8 +1079,10 @@ export const useChatStore = defineStore('chat', () => {
   function forceEndGuidance() {
     console.log('强制结束引导式会话')
     
+    // 更新内部引导模式状态
+    setGuidanceMode(false)
+    
     // 主动发送一个结束指令到后端
-    // 这个请求可以是一个简单的通知，不需要等待响应
     try {
       fetch(getApiUrl('end_guidance'), {
         method: 'POST',
@@ -1206,7 +1093,13 @@ export const useChatStore = defineStore('chat', () => {
           session_id: 'default',
           agent_type: currentAgent.value
         }),
-      }).catch(err => console.error('发送结束引导请求失败:', err))
+      })
+      .then(response => response.json())
+      .then(data => {
+        console.log('结束引导请求成功:', data)
+        // 不再直接展示原始的JSON响应
+      })
+      .catch(err => console.error('发送结束引导请求失败:', err))
     } catch (e) {
       console.error('发送结束引导请求出错:', e)
     }
@@ -1309,18 +1202,16 @@ export const useChatStore = defineStore('chat', () => {
   function saveToLocalStorage(username, messagesData) {
     try {
       const key = `chat_history_${username}`
-      localStorage.setItem(key, JSON.stringify({
-        messages: messagesData,
-        timestamp: Date.now()
-      }))
-      console.log('聊天历史已保存到localStorage备份')
-    } catch (e) {
-      console.error('保存到localStorage失败:', e)
+      localStorage.setItem(key, JSON.stringify(messagesData));
+    } catch (error) {
+      console.error('保存聊天历史到localStorage时出错:', error);
     }
   }
   
-  // 加载消息，首先尝试从后端加载，如果失败则从localStorage加载
+  // 加载消息历史
   async function loadMessages() {
+    console.log('加载聊天历史')
+    
     // 使用用户名作为唯一标识符
     const username = userStore.userProfile?.username || userStore.userProfile?.name || 'guest'
     if (username === 'guest') {
@@ -1328,10 +1219,6 @@ export const useChatStore = defineStore('chat', () => {
       return false
     }
     
-    // 记录加载开始时间，用于调试
-    const startTime = Date.now()
-    
-    // 1. 尝试从后端数据库加载
     try {
       // 导入API模块
       const apiModule = await import('../utils/api')
@@ -1344,125 +1231,38 @@ export const useChatStore = defineStore('chat', () => {
       if (result.success && Array.isArray(result.messages) && result.messages.length > 0) {
         // 使用从后端加载的消息替换当前消息
         messages.value = result.messages
-        console.log(`从后端数据库加载了${result.messages.length}条消息历史，耗时${Date.now() - startTime}ms`)
+        console.log(`从后端数据库加载了${result.messages.length}条消息历史`)
         return true
-      } else {
-        console.log('后端未找到聊天历史或历史为空，尝试从localStorage加载')
-        // 从后端加载失败，尝试从localStorage加载
-        return loadMessagesFromLocalStorage(username)
-      }
-    } catch (error) {
-      console.error('从后端加载聊天历史失败，尝试从localStorage加载:', error)
-      // 出错时尝试从localStorage加载
-      return loadMessagesFromLocalStorage(username)
-    }
-  }
-  
-  // 从localStorage加载消息的辅助函数
-  function loadMessagesFromLocalStorage(username) {
-    try {
-      const key = `chat_history_${username}`
-      const savedData = localStorage.getItem(key)
-      
-      if (savedData) {
-        const data = JSON.parse(savedData)
-        if (Array.isArray(data.messages) && data.messages.length > 0) {
-          // 使用从localStorage加载的消息替换当前消息
-          messages.value = data.messages
-          console.log(`从localStorage加载了${data.messages.length}条消息历史`)
-          return true
-        }
       }
       
-      console.log('localStorage中没有找到聊天历史')
+      console.log('后端未找到聊天历史或历史为空')
       return false
-    } catch (e) {
-      console.error('从localStorage加载聊天历史失败:', e)
-      return false
-    }
-  }
-  
-  // 与后端同步消息
-  async function syncMessages(username, messagesData) {
-    if (!username || username === 'guest' || !Array.isArray(messagesData)) {
-      console.log('无效的同步参数，跳过同步操作')
-      return false
-    }
-    
-    try {
-      // 导入API模块
-      const apiModule = await import('../utils/api')
-      
-      // 发送同步请求
-      const response = await fetch(apiModule.getApiUrl('save_chat_history'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          username: username,
-          messages: messagesData
-        })
-      })
-      
-      const result = await response.json()
-      console.log('消息同步结果:', result.success ? '成功' : '失败')
-      return result.success
     } catch (error) {
-      console.error('同步消息失败:', error)
+      console.error('从后端加载聊天历史失败:', error)
       return false
     }
   }
-  
-  // 监听消息变化，保存到localStorage
-  watch(messages, debounce(() => {
-    // 检查是否有流式消息正在处理中
-    const hasStreamingMessage = messages.value.some(msg => msg.isStreaming)
-    if (hasStreamingMessage) {
-      console.log('有消息正在流式处理中，延迟保存')
-      return
-    }
-    
-    // 检查是否有消息
-    if (messages.value.length === 0) {
-      console.log('没有消息需要保存')
-      return
-    }
-    
-    // 所有消息都完成后再保存
-    console.log('所有消息流式处理已完成，保存消息')
-    saveMessages()
-  }, 2000), { deep: true }) // 延迟2秒，确保流式消息完全加载完毕
-  
-  // 监听用户变化，加载对应用户的消息
-  watch(() => userStore.userProfile, () => {
-    loadMessages()
-  }, { deep: true })
   
   // 清空聊天记录
   async function clearMessages() {
     console.log('清空聊天记录')
-    // 使用用户名作为唯一标识符
-    const username = userStore.userProfile?.username || userStore.userProfile?.name || 'guest'
-    if (username !== 'guest') {
-      // 清除localStorage中的记录
-      const key = `chat_history_${username}`
-      localStorage.removeItem(key)
-      console.log(`已清除用户 ${username} 的localStorage聊天记录`)
-      
-      // 注意：我们不再清除后端数据库中的记录，只清空前端显示
-      console.log('保留后端数据库中的聊天记录，仅清空前端显示')
-    }
     
     // 清空内存中的消息
     messages.value = []
     
-    // 清空后只有在需要时才显示欢迎语
+    // 清空后显示欢迎语
     showWelcomeMessage()
     
     return true
   }
   
+  // 普通消息发送函数（重定向到流式接口）
+  async function sendMessage(message, forcedGuidanceMode = null) {
+    console.log(`sendMessage 重定向到 sendStreamMessage, 消息: ${message}, 引导模式: ${forcedGuidanceMode}`);
+    // 直接使用流式接口，保持相同的参数传递
+    return sendStreamMessage(message, forcedGuidanceMode);
+  }
+
   return {
     // 状态
     messages,
@@ -1486,6 +1286,7 @@ export const useChatStore = defineStore('chat', () => {
     forceEndGuidance,
     saveMessages,
     loadMessages,
-    clearMessages
+    clearMessages,
+    isInGuidanceMode
   }
-}) 
+})
