@@ -63,6 +63,10 @@ const showPermissionTest = ref(false)
 
 // 退出登录
 const logout = async () => {
+  // 先保存聊天记录到数据库
+  await chatStore.saveMessages()
+  
+  // 然后执行登出
   await userStore.logout()
   router.push('/login')
 }
