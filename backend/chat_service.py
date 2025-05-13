@@ -13,6 +13,7 @@ from datetime import datetime
 import re
 import traceback
 import time
+import db_manager
 
 class ChatService:
     def __init__(self):
@@ -39,7 +40,9 @@ class ChatService:
         os.makedirs(self.custom_agents_dir, exist_ok=True)
 
         self.current_agent = "nanaA"
+        self.current_user_id = "default_user"
         self.current_response = ""  # 初始化当前响应变量
+        
         self.guidance_state = {
             "is_guiding": False,
             "category": None,
@@ -50,7 +53,7 @@ class ChatService:
         }
 
         # 初始化主智能体
-        self.main_agent = MainAgent(self.llm_service, self.conversation_history)
+        self.main_agent = MainAgent(self.llm_service, self.conversation_history, self.current_user_id)
 
     def _refresh_tts_services(self):
         """刷新TTS服务配置"""
@@ -93,6 +96,75 @@ class ChatService:
                 delattr(turn, 'is_guidance')
                 
         print("引导式会话状态已完全重置")
+
+    async def switch_user(self, username: str, session_id: str):
+        """切换当前用户
+        
+        Args:
+            username: 用户名
+            session_id: 会话ID
+            
+        Returns:
+            bool: 是否成功切换
+        """
+        if not username:
+            return False
+            
+        print(f"切换用户: {username}")
+        
+        # 更新当前用户ID
+        self.current_user_id = username
+        
+        # 重置引导状态
+        self._reset_guidance_state()
+        
+        # 初始化新的对话历史记录
+        self.conversation_history = ConversationHistory(max_turns=Config.MAX_TURNS)
+        
+        # 重新初始化主智能体，使用新的用户ID和对话历史
+        self.main_agent = MainAgent(self.llm_service, self.conversation_history, username)
+        
+        # 加载用户聊天历史
+        await self._load_user_chat_history(username)
+        
+        return True
+
+    async def _load_user_chat_history(self, username: str):
+        """加载用户聊天历史
+        
+        Args:
+            username: 用户名
+            
+        Returns:
+            bool: 是否成功加载
+        """
+        try:
+            # 使用db_manager加载用户聊天历史
+            chat_history = await db_manager.load_user_chat_history(username)
+            
+            if chat_history:
+                # 为防止历史记录过长，只加载最近的20条（或配置的最大轮数）
+                max_turns = min(len(chat_history), Config.MAX_TURNS)
+                recent_history = chat_history[-max_turns:]
+                
+                print(f"为用户 {username} 加载了 {len(recent_history)} 条聊天历史")
+                
+                # 添加到对话历史
+                for msg in recent_history:
+                    if "user_message" in msg and "assistant_message" in msg:
+                        await self.conversation_history.add_dialog(
+                            msg["user_message"], 
+                            msg["assistant_message"]
+                        )
+                
+                return True
+            else:
+                print(f"用户 {username} 没有聊天历史")
+                return False
+                
+        except Exception as e:
+            print(f"加载用户聊天历史时出错: {e}")
+            return False
 
     def change_agent(self, agent_name: str, session_id: str) -> bool:
         """
@@ -199,114 +271,66 @@ class ChatService:
                         print(f"为结束引导回复生成超拟人语音时出错: {e}")
                 
                 return reply_text, audio_data
-            
-            # 处理引导式提问状态
-            if is_category and not self.guidance_state["is_guiding"]:
-                print(f"开始引导式提问：{message}")
-                # 设置引导状态
-                self.guidance_state["is_guiding"] = True
-                self.guidance_state["current_category"] = message
-                self.guidance_state["question_count"] = 0
-                self.guidance_state["conversation_summary"] = []
-                self.guidance_state["off_topic_count"] = 0
-                self.guidance_state["last_strategies"] = []
-                self.guidance_state["awaiting_exit_confirmation"] = False
-                self.guidance_state["confirmed_exit"] = False
                 
-                # 初始化引导模式的局部用户信息，只保留基本信息
-                if self.main_agent.user_info:
-                    # 提取用户的基本信息（姓名、年龄、性别、学校、专业等）
-                    basic_info_lines = []
-                    user_info_lines = self.main_agent.user_info.split('\n')
-                    for line in user_info_lines:
-                        if any(key in line.lower() for key in ["姓名:", "年龄:", "性别:", "学校:", "专业:", "年级:"]):
-                            basic_info_lines.append(line)
+            # 是否快速提问模式
+            is_quick_question = is_category
+            
+            # 如果之前处于引导模式且尚未明确退出，则继续处于引导模式
+            if self.guidance_state["is_guiding"] and not getattr(self.guidance_state, "confirmed_exit", False):
+                print("检测到处于引导模式中，继续进行引导式对话")
+                is_quick_question = True
+                
+                # 在上次更新时间超过5分钟后，自动退出引导模式
+                if time.time() - self.guidance_state["last_update_time"] > 300:  # 5分钟 = 300秒
+                    print("引导会话已超过5分钟未活动，自动退出引导模式")
+                    is_quick_question = False
+                    self._reset_guidance_state()
                     
-                    # 创建引导模式的局部用户信息
-                    self.guided_user_info = '\n'.join(basic_info_lines)
-                    if self.guided_user_info:
-                        self.guided_user_info += "\n\n当前引导主题：" + message
-                else:
-                    self.guided_user_info = "当前引导主题：" + message
+                    # 添加一个提示信息表明引导已经超时结束
+                    reply_text = "由于对话中断较长时间，我们的引导对话已经结束。您有什么新的问题吗？"
+                    audio_data = None
+                    if Config.is_tts_enabled() and self.tts_service:
+                        try:
+                            audio_data = self.tts_service.generate_audio(reply_text)
+                        except Exception as e:
+                            print(f"为引导超时结束生成语音时出错: {e}")
+                    return reply_text, audio_data
                 
-                # 保存当前的对话历史并切换到引导模式的对话历史
-                self.main_agent.conversation_history = self.guided_conversation_history
-                print(f"已切换到引导模式对话历史，当前引导模式对话历史长度: {len(self.guided_conversation_history.turns)}")
-            
-            # 获取当前对话上下文
-            context = self.main_agent.conversation_history.get_context()
-            print(f"使用对话上下文：\n{context}")
-            
-            # 将当前用户消息临时添加到上下文，但不添加到对话历史
-            current_context = context
-            if context:
-                current_context += f"\n用户: {message}"
-            else:
-                current_context = f"用户: {message}"
-            
-            # 使用 MainAgent 生成回复和表情，但传入增强的上下文
-            current_is_category = is_category or self.guidance_state["is_guiding"] 
-            current_personality = None if self.guidance_state["is_guiding"] else personality
-            
-            # 使用增强的上下文调用_generate_reply方法
-            memory_text = "无补充信息"
-            if not current_is_category:
-                memory_text = self.main_agent._get_relevant_memories(message)
-                print("相关记忆:", memory_text)
-            else:
-                print("引导模式中，不使用用户记忆信息")
-            
-            # 如果是流式模式，使用流式API生成回复
+                # 更新最后活动时间
+                self.guidance_state["last_update_time"] = time.time()
+
+            # 使用流式模式还是常规模式
             if stream:
-                # 构建完整提示词
-                prompt_template = self.main_agent.prompt_template
-                if current_personality:
-                    prompt_template += f"\n请以以下性格特点回复: {current_personality}"
-                    
-                # 构建提示词
-                prompt = f"{prompt_template}\n\n用户信息：\n{self.main_agent.user_info}\n\n当前对话记录：\n{current_context}\n\n当前所有对话相关的历史记忆：\n{memory_text}\n\n助手:"
-                print("发送流式请求...")
+                reply_stream = self.response_stream(message, session_id, agent_type, personality, is_quick_question)
+                return reply_stream, None
+            else:
+                # 非流式模式：生成完整回复后返回
+                reply, audio_data = await self._generate_complete_reply(message, session_id, agent_type, personality, is_quick_question)
                 
-                # 添加对话到历史（先添加用户消息）
-                # 添加一个空回复，后续通过历史检索获取完整内容
-                await self.main_agent.conversation_history.add_dialog(message, "", self.main_agent.user_info_processor)
+                # 确保reply是文本内容，而不是JSON
+                if isinstance(reply, str) and (reply.startswith('{') and reply.endswith('}')):
+                    try:
+                        # 尝试解析JSON
+                        reply_json = json.loads(reply)
+                        if 'reply' in reply_json:
+                            # 只取reply字段的内容
+                            reply = reply_json['reply']
+                            print("从JSON响应中提取reply字段")
+                    except json.JSONDecodeError:
+                        # 解析失败，保持原样
+                        pass
                 
-                # 返回流式生成器和None作为语音
-                return self.llm_service.generate_streaming(prompt), None
+                # 保存当前回复内容
+                self.current_response = reply
                 
-            # 直接调用_generate_reply，传入当前上下文
-            reply, expression = await self.main_agent._generate_reply_with_context(
-                message, 
-                current_context,
-                memory_text, 
-                current_personality, 
-                current_is_category
-            )
-            
-            # 确保回复不为空
-            if not reply:
-                return "抱歉，我现在无法回答您的问题，请稍后再试。", None
-            
-            # 添加对话到历史
-            await self.main_agent.conversation_history.add_dialog(message, reply, self.main_agent.user_info_processor)
-            print(f"对话已添加到历史记录，当前对话历史长度: {len(self.main_agent.conversation_history.turns)}")
-            
-            # 检查是否需要压缩对话历史（对话超过8轮时）
-            if len(self.main_agent.conversation_history.turns) > 8:
-                self._compress_guided_conversation_history(max_recent_turns=4)
-            
-            # 记录会话总结（如果不是总结类型）
-            try:
-                # 如果reply_data已经定义并且是一个字典
-                if 'reply_data' in locals() and isinstance(reply_data, dict):
-                    if message and not reply_data.get("is_summary") and not reply_data.get("is_confirmation", False):
-                        self.guidance_state["conversation_summary"].append({
-                            "question": reply_data.get("reply", ""),
-                            "answer": message,
-                            "type": reply_data.get("question_type", "")
-                        })
-            except Exception as e:
-                print(f"记录对话摘要时出错: {e}")
+                # 返回文本回复和音频数据
+                return reply, audio_data
+                
+        except Exception as e:
+            error_msg = f"生成回复时出错: {str(e)}"
+            traceback.print_exc()
+            print(error_msg)
+            return f"抱歉，我遇到了一些问题: {str(e)}", None
             
             # 处理引导式提问的回复
             if self.guidance_state["is_guiding"]:
@@ -552,95 +576,6 @@ class ChatService:
             print(f"生成回复时出错: {e}")
             return "抱歉，发生了错误，请稍后再试。", None
 
-    async def generate_response(self, history, model_name="gpt-3.5-turbo", stream=False, agent_id=None, is_category=False, message=None):
-        """生成流式响应
-        
-        Args:
-            history: 对话历史
-            model_name: 模型名称
-            stream: 是否流式响应
-            agent_id: 角色ID
-            is_category: 是否是快捷提问类别
-            message: 当前消息
-            
-        Returns:
-            tuple: (回复内容, 音频数据)
-        """
-        try:
-            # 确保TTS服务使用最新的配置
-            self._refresh_tts_services()
-            
-            # 如果收到agent_id，先切换智能体
-            if agent_id:
-                self.change_agent(agent_id, "default_session")
-            
-            # 使用传入的message覆盖，或从对话历史中获取
-            user_msg = message if message else (history[-1]["content"] if history else "")
-            print(f"generate_response: 用户消息: {user_msg}, 是否是快捷提问: {is_category}")
-            
-            # 生成回复
-            raw_response, audio_data = await self.generate_reply(
-                message=user_msg,
-                session_id="default", 
-                agent_type=model_name,
-                is_category=is_category
-            )
-            
-            # 处理JSON格式回复
-            response = raw_response
-            expression = None
-            
-            # 处理双花括号格式 {{...}}
-            if raw_response.strip().startswith('{{') and raw_response.strip().endswith('}}'):
-                try:
-                    # 去除双花括号
-                    json_content = raw_response.strip()[2:-2].strip()
-                    print("检测到双花括号格式，已修正为标准JSON")
-                    
-                    # 解析JSON
-                    data = json.loads(json_content)
-                    if 'reply' in data:
-                        print(f"从双花括号JSON中提取reply内容")
-                        response = data['reply']
-                        if 'expression' in data:
-                            expression = data['expression']
-                            self.main_agent.expression = expression
-                except json.JSONDecodeError:
-                    print("双花括号内容不是有效的JSON格式，使用原始回复")
-                except Exception as e:
-                    print(f"处理双花括号JSON回复时出错: {e}")
-            
-            # 处理单花括号格式 {...}
-            elif raw_response.strip().startswith('{') and raw_response.strip().endswith('}'):
-                try:
-                    data = json.loads(raw_response)
-                    if 'reply' in data:
-                        print("从JSON响应中提取reply字段")
-                        response = data['reply']
-                        if 'expression' in data:
-                            expression = data['expression']
-                            self.main_agent.expression = expression
-                except json.JSONDecodeError:
-                    print("回复不是有效的JSON格式，使用原始回复")
-                except Exception as e:
-                    print(f"处理JSON响应失败: {e}")
-            
-            # 如果不在引导模式中但已存在引导模式数据，清理引导模式的用户信息和对话历史
-            if not is_category and not self.guidance_state["is_guiding"] and self.guided_user_info:
-                # 重置引导模式数据
-                self.guided_user_info = None
-                self.guided_conversation_history = ConversationHistory(max_turns=Config.MAX_TURNS)
-                print("清理了旧的引导模式数据")
-                
-            # 记录用户消息和回复到对话历史
-            await self.conversation_history.add_dialog(message=user_msg, reply=response)
-            print(f"对话历史: 当前共有{len(self.conversation_history.turns)}轮对话")
-            
-            return response, audio_data
-        except Exception as e:
-            print(f"生成回复时出错: {e}")
-            return "抱歉，我遇到了一些问题，请稍后再试。", None
-
     async def response_stream(self, message: str, session_id: str, agent_type: Optional[str] = None, personality: Optional[str] = None, is_category: bool = False):
         """流式生成回复，以generator形式返回
         
@@ -709,231 +644,93 @@ class ChatService:
             }
             yield json.dumps(error_response, ensure_ascii=False)
 
-    async def _get_conversation_summary(self, turns_to_summarize):
-        """生成会话总结，适用于结束话题时
+    async def _generate_complete_reply(self, message: str, session_id: str, agent_type: Optional[str] = None, personality: Optional[str] = None, is_category: bool = False) -> Tuple[str, Optional[bytes]]:
+        """生成完整回复（内部方法）
         
         Args:
-            turns_to_summarize: 要总结的对话轮次
+            message: 用户消息
+            session_id: 会话ID
+            agent_type: 智能体类型
+            personality: 智能体性格描述
+            is_category: 是否是快捷提问类别
             
         Returns:
-            str: 会话总结文本
+            Tuple[str, Optional[bytes]]: (回复文本, 语音数据)
         """
         try:
-            # 获取当前角色是否是心理咨询师
-            is_xinli_mode = self.guidance_state.get("current_category") in [
-                "情感咨询师", "人际关系", "学业问题", "就业与职业规划压力", 
-                "精神健康障碍", "自我认同与价值观冲突", "突发事件与危机情景"
-            ]
+            # 使用main_agent生成回复
+            reply_text, expression = await self.main_agent.reply(
+                message=message,
+                personality=personality,
+                is_category=is_category
+            )
             
-            # 准备对话内容
-            all_text = "\n".join([f"用户: {turn.ask}\n助手: {turn.answer}" for turn in turns_to_summarize])
+            # 生成语音
+            audio_data = None
+            if Config.is_tts_enabled() and self.tts_service:
+                try:
+                    # 如果reply_text可能是JSON格式，提取reply字段
+                    text_for_tts = reply_text
+                    if isinstance(reply_text, str) and reply_text.strip().startswith('{') and reply_text.strip().endswith('}'):
+                        try:
+                            reply_json = json.loads(reply_text)
+                            if 'reply' in reply_json:
+                                text_for_tts = reply_json['reply']
+                        except json.JSONDecodeError:
+                            # 解析失败，使用原始文本
+                            pass
+                    
+                    print("为回复生成普通TTS...")
+                    audio_data = self.tts_service.generate_audio(text_for_tts)
+                except Exception as e:
+                    print(f"生成普通TTS时出错: {e}")
             
-            # 根据角色选择不同的总结提示
-            if is_xinli_mode:
-                summary_prompt = f"""作为专业心理医生，请对以下对话进行简短总结。
-                
-                总结要点：
-                1. 用户提出的主要问题或困扰
-                2. 用户表现出的情感状态和核心需求
-                3. 你提供的关键建议和支持
-                4. 鼓励性的结束语，体现专业心理医生的关怀和支持
-                
-                总结控制在150字以内，语气专业、温和，避免过度亲昵或使用非专业性语言。
-                不要使用"我们"，而是使用"您"来指代用户，保持适当的专业距离。
-                
-                对话内容：
-                {all_text}
-                """
-            else:
-                # 普通角色的总结风格
-                summary_prompt = f"""请对以下对话进行简短总结。
-                
-                请总结：
-                1. 对话的主要内容
-                2. 讨论的关键点
-                3. 友好的结束语
-                
-                总结控制在100字以内。
-                
-                对话内容：
-                {all_text}
-                """
+            # 如果普通TTS失败，尝试使用超拟人TTS
+            if (not audio_data or len(audio_data) < 100) and Config.is_super_tts_enabled() and self.super_tts_service:
+                try:
+                    print("为回复生成超拟人TTS...")
+                    text_for_tts = reply_text
+                    if isinstance(reply_text, str) and reply_text.strip().startswith('{') and reply_text.strip().endswith('}'):
+                        try:
+                            reply_json = json.loads(reply_text)
+                            if 'reply' in reply_json:
+                                text_for_tts = reply_json['reply']
+                        except json.JSONDecodeError:
+                            # 解析失败，使用原始文本
+                            pass
+                    
+                    audio_data = self.super_tts_service.generate_audio(text_for_tts)
+                except Exception as e:
+                    print(f"生成超拟人TTS时出错: {e}")
             
-            # 使用LLM生成总结
-            summary_response = await self.llm_service.generate_response(summary_prompt)
-            return summary_response
+            return reply_text, audio_data
         except Exception as e:
-            print(f"生成对话总结时出错: {e}")
-            return "已结束当前话题。您有什么其他想要讨论的问题吗？"
-
-    @staticmethod
-    def _format_guided_conversation_context(context, current_message=None):
-        """格式化引导模式对话历史记录，增强记忆能力
+            print(f"生成完整回复时出错: {e}")
+            traceback.print_exc()
+            return f"抱歉，生成回复时遇到了问题: {str(e)}", None
+    
+    async def get_response(self, message: str, personality: Optional[str] = None, session_id: str = "default", user_id: str = "default_user") -> Tuple[str, Optional[bytes]]:
+        """处理WebSocket聊天请求
         
         Args:
-            context: 原始对话历史上下文
-            current_message: 当前用户消息（可选）
+            message: 用户消息
+            personality: 可选的性格描述
+            session_id: 会话ID
+            user_id: 用户ID
             
         Returns:
-            str: 格式化后的上下文
+            Tuple[str, Optional[bytes]]: (回复文本, 语音数据)
         """
-        if not context:
-            # 如果没有上下文但有当前消息
-            if current_message:
-                return f"对话历史：\n用户: {current_message}"
-            return "对话历史：\n尚无对话历史"
-            
-        # 确保context是字符串
-        if not isinstance(context, str):
-            try:
-                context = str(context)
-            except:
-                return "对话历史格式化错误"
-                
-        # 按行拆分对话历史
-        lines = context.strip().split('\n')
-        formatted_lines = []
+        # 如果用户ID与当前用户不同，切换用户
+        if user_id != self.current_user_id:
+            print(f"WebSocket请求中检测到不同用户，从 {self.current_user_id} 切换到 {user_id}")
+            await self.switch_user(user_id, session_id)
         
-        # 对话历史摘要标记
-        summary_found = False
+        # 生成回复
+        reply, audio_data = await self.generate_reply(
+            message, 
+            session_id,
+            personality=personality
+        )
         
-        # 将对话历史格式化为更明确的"用户-助手"交替格式
-        for i, line in enumerate(lines):
-            line = line.strip()
-            if not line:
-                continue
-            
-            # 检测系统摘要行
-            if "SYSTEM_SUMMARY" in line or "之前的对话摘要" in line:
-                summary_found = True
-                # 提取摘要内容并格式化为专门的摘要行
-                if ": " in line:
-                    summary_content = line.split(": ", 1)[1].strip()
-                    formatted_lines.append(f"【对话摘要】: {summary_content}")
-                else:
-                    # 如果下一行是摘要内容
-                    if i+1 < len(lines) and "之前的对话摘要" in lines[i+1]:
-                        formatted_lines.append(f"【对话摘要】: {lines[i+1].strip()}")
-                continue
-            
-            # 如果前一行已处理过摘要，则跳过摘要内容行
-            if summary_found and i > 0 and ("SYSTEM_SUMMARY" in lines[i-1] or "之前的对话摘要" in lines[i-1]):
-                summary_found = False
-                continue
-                
-            # 检测并格式化对话行
-            if line.startswith("用户:") or line.startswith("用户："):
-                formatted_lines.append(f"用户: {line.split(':', 1)[1].strip()}")
-            elif line.startswith("助手:") or line.startswith("助手："):
-                # 对于助手回复，检查是否是JSON格式
-                response_text = line.split(':', 1)[1].strip()
-                try:
-                    # 尝试解析JSON，如果成功则提取回复内容
-                    response_json = json.loads(response_text)
-                    if isinstance(response_json, dict) and "reply" in response_json:
-                        formatted_lines.append(f"助手: {response_json['reply']}")
-                    else:
-                        formatted_lines.append(f"助手: {response_text}")
-                except:
-                    # 非JSON格式，直接使用原始文本
-                    formatted_lines.append(f"助手: {response_text}")
-            else:
-                # 其他内容，如果看起来像对话，尝试推断角色
-                if ": " in line or "： " in line:
-                    parts = line.split(":", 1) if ": " in line else line.split("：", 1)
-                    if len(parts) == 2:
-                        role, content = parts
-                        if "用户" in role.lower() or "user" in role.lower():
-                            formatted_lines.append(f"用户: {content.strip()}")
-                        elif "助手" in role.lower() or "assistant" in role.lower():
-                            formatted_lines.append(f"助手: {content.strip()}")
-                        else:
-                            formatted_lines.append(line)
-                    else:
-                        formatted_lines.append(line)
-        
-        # 添加当前用户消息（如果有）
-        if current_message:
-            formatted_lines.append(f"用户: {current_message}")
-            
-        # 组合成格式化的上下文，并添加清晰的标题
-        formatted_context = "对话历史：\n" + "\n".join(formatted_lines)
-        
-        return formatted_context
-
-    def update_guided_user_info(self, key: str, value: str):
-        """更新引导模式的局部用户信息
-        
-        Args:
-            key: 信息键名，如"数学困难"、"喜欢的活动"等
-            value: 信息值
-        """
-        if not self.guidance_state["is_guiding"]:
-            return
-        
-        if not self.guided_user_info:
-            self.guided_user_info = ""
-        
-        # 按行拆分当前用户信息
-        info_lines = self.guided_user_info.split('\n')
-        
-        # 检查是否已存在相同的键
-        key_exists = False
-        for i, line in enumerate(info_lines):
-            if line.startswith(f"{key}:") or line.startswith(f"{key}："):
-                # 更新现有键的值
-                info_lines[i] = f"{key}: {value}"
-                key_exists = True
-                break
-        
-        # 如果键不存在，添加新行
-        if not key_exists:
-            info_lines.append(f"{key}: {value}")
-        
-        # 重新组合用户信息
-        self.guided_user_info = '\n'.join(info_lines)
-        print(f"已更新引导模式局部用户信息: {key} = {value}")
-        print(f"当前引导模式用户信息:\n{self.guided_user_info}")
-
-    def _compress_guided_conversation_history(self, max_recent_turns=4):
-        """压缩引导模式的对话历史，保留最重要的信息和最近几轮对话
-        
-        Args:
-            max_recent_turns: 保留的最近对话轮数
-        """
-        if not self.guidance_state["is_guiding"] or len(self.guided_conversation_history.turns) <= max_recent_turns * 2:
-            return
-        
-        print(f"开始压缩引导模式对话历史，当前对话历史长度: {len(self.guided_conversation_history.turns)}")
-        
-        # 提取所有对话轮次
-        turns = self.guided_conversation_history.turns
-        
-        # 保留最近的几轮对话
-        recent_turns = turns[-max_recent_turns*2:]
-        
-        # 为早期对话创建摘要
-        early_turns = turns[:-max_recent_turns*2]
-        if early_turns:
-            # 创建一个摘要的轮次
-            summary_text = f"之前的对话摘要：用户提到{self.guided_user_info}"
-            
-            # 使用摘要和最近的对话创建新的对话历史
-            new_turns = []
-            
-            # 添加系统轮次来保存摘要
-            new_turns.append({
-                "ask": "SYSTEM_SUMMARY",
-                "answer": summary_text,
-                "time": early_turns[-1]["time"] if early_turns else turns[0]["time"]
-            })
-            
-            # 添加最近的轮次
-            new_turns.extend(recent_turns)
-            
-            # 更新对话历史
-            self.guided_conversation_history.turns = new_turns
-            
-            print(f"对话历史压缩完成，压缩前: {len(turns)}轮，压缩后: {len(new_turns)}轮")
-        else:
-            print("没有早期对话需要压缩")
+        return reply, audio_data

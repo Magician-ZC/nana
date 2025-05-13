@@ -9,23 +9,59 @@ import asyncio
 import json
 
 class MainAgent:
-    def __init__(self, llm_service: LLMService, conversation_history: ConversationHistory):
+    def __init__(self, llm_service: LLMService, conversation_history: ConversationHistory, user_id="default_user"):
         self.conversation_history = conversation_history
         self.llm_service = llm_service
         self.current_agent = "nanaA"  # 默认使用娜娜A
         self.prompt_template = ""  # 用于存储自定义提示词
         self._load_prompt_template()
+        self.user_id = user_id
             
         # 确保日志和个人信息目录存在
         self.log_dir = 'save/log'
         os.makedirs(self.log_dir, exist_ok=True)
         
+        # 为当前用户创建专属目录
+        self.user_dir = os.path.join('save', user_id)
+        os.makedirs(self.user_dir, exist_ok=True)
+        
         # 初始化用户信息处理器和意图提取器
-        self.user_info_processor = UserInfoProcessor('save/me.txt')
+        self.user_info_file = os.path.join(self.user_dir, 'me.txt')
+        self.user_info_processor = UserInfoProcessor(self.user_info_file)
         self.intent_extractor = IntentExtractor()
         
         # 获取用户信息
         self.user_info = self.user_info_processor.user_info
+    
+    def change_user(self, user_id):
+        """切换当前用户
+        
+        Args:
+            user_id: 用户ID
+            
+        Returns:
+            bool: 是否成功切换
+        """
+        if not user_id:
+            return False
+            
+        # 更新用户ID
+        self.user_id = user_id
+        
+        # 为新用户创建专属目录
+        self.user_dir = os.path.join('save', user_id)
+        os.makedirs(self.user_dir, exist_ok=True)
+        
+        # 更新用户信息文件路径
+        self.user_info_file = os.path.join(self.user_dir, 'me.txt')
+        
+        # 重新初始化用户信息处理器
+        self.user_info_processor = UserInfoProcessor(self.user_info_file)
+        
+        # 更新用户信息
+        self.user_info = self.user_info_processor.user_info
+        
+        return True
     
     def _load_prompt_template(self):
         """根据当前选择的智能体加载对应的提示词模板"""
@@ -411,9 +447,13 @@ class MainAgent:
                 xinli_prompt = f.read()
             
             # 增强上下文格式，提高记忆能力
-            from chat_service import ChatService
-            enhanced_context = ChatService._format_guided_conversation_context(context, message)
-            print(f"使用增强的引导式对话上下文:\n{enhanced_context}")
+            try:
+                enhanced_context = self._format_guided_conversation_context(context, message)
+                print(f"使用增强的引导式对话上下文:\n{enhanced_context}")
+            except Exception as e:
+                print(f"格式化引导式对话上下文时出错: {e}")
+                # 出错时使用原始上下文
+                enhanced_context = context
             
             # 检查是否是用户回复了无关内容
             is_off_topic = self._is_meaningless_input(message) or self._is_off_topic(message, context)
@@ -459,10 +499,11 @@ class MainAgent:
             
             # 获取引导模式的局部用户信息
             try:
-                from chat_service import ChatService
+                # 直接使用LLM服务的chat_service属性
                 chat_service = self.llm_service.chat_service if hasattr(self.llm_service, 'chat_service') else None
                 guided_user_info = chat_service.guided_user_info if chat_service else None
-            except:
+            except Exception as e:
+                print(f"获取引导用户信息时出错: {e}")
                 # 如果出错，使用全局用户信息
                 guided_user_info = self.user_info
             
@@ -844,3 +885,58 @@ class MainAgent:
         
         # 默认表情
         return "咪咪眼"
+
+    def _format_guided_conversation_context(self, context: str, current_message: str) -> str:
+        """格式化引导式对话的上下文，增强引导效果
+        
+        Args:
+            context: 原始对话上下文
+            current_message: 当前用户消息
+            
+        Returns:
+            str: 格式化后的对话上下文
+        """
+        if not context:
+            return f"用户: {current_message}"
+            
+        # 分离对话轮次
+        turns = []
+        lines = context.strip().split('\n')
+        current_turn = {"role": None, "content": []}
+        
+        for line in lines:
+            if line.startswith("用户："):
+                if current_turn["role"] == "assistant" and current_turn["content"]:
+                    turns.append(current_turn)
+                    current_turn = {"role": "user", "content": [line[3:].strip()]}
+                elif current_turn["role"] is None:
+                    current_turn = {"role": "user", "content": [line[3:].strip()]}
+                else:
+                    current_turn["content"].append(line[3:].strip())
+            elif line.startswith("助手："):
+                if current_turn["role"] == "user" and current_turn["content"]:
+                    turns.append(current_turn)
+                    current_turn = {"role": "assistant", "content": [line[3:].strip()]}
+                elif current_turn["role"] is None:
+                    current_turn = {"role": "assistant", "content": [line[3:].strip()]}
+                else:
+                    current_turn["content"].append(line[3:].strip())
+            elif line.strip():
+                if current_turn["role"]:
+                    current_turn["content"].append(line.strip())
+                    
+        # 添加最后一轮对话（如果有）
+        if current_turn["role"] and current_turn["content"]:
+            turns.append(current_turn)
+            
+        # 格式化对话历史，增强引导效果
+        formatted_context = "对话历史：\n"
+        for i, turn in enumerate(turns):
+            role_prefix = "用户" if turn["role"] == "user" else "助手"
+            content = " ".join(turn["content"])
+            formatted_context += f"{role_prefix} {i+1}: {content}\n"
+            
+        # 添加当前用户消息
+        formatted_context += f"\n当前用户输入: {current_message}"
+        
+        return formatted_context

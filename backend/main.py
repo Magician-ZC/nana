@@ -1170,13 +1170,12 @@ async def stream_chat(request: ChatRequest):
             current_is_category = request.is_category or chat_service.guidance_state["is_guiding"]
         
         # 使用对话历史生成回复
-        full_response, audio_data = await chat_service.generate_response(
-            request.history or [{"role": "user", "content": request.message}], 
-            request.model or "gpt-3.5-turbo",
-            stream=False,  # 首先获取完整回复
-            agent_id=request.agent_id,
-            is_category=current_is_category,  # 传递是否快捷提问的标志
-            message=message_for_processing  # 使用处理后的消息
+        full_response, audio_data = await chat_service.generate_reply(
+            message=message_for_processing,
+            session_id=request.session_id,
+            agent_type=request.agent_type,
+            personality=request.personality,
+            is_category=current_is_category
         )
         
         # 打印原始回复进行调试
@@ -1185,6 +1184,19 @@ async def stream_chat(request: ChatRequest):
         # 统一处理JSON格式的回复，不区分引导模式和非引导模式
         response_text, extracted_expression, is_summary = process_json_response(full_response)
         print(f"处理后的纯文本回复: {response_text}")
+        
+        # 确保response_text只是reply字段的值，而不是完整JSON
+        if response_text.strip().startswith("{") and response_text.strip().endswith("}"):
+            try:
+                # 尝试解析JSON
+                parsed_json = json.loads(response_text)
+                # 如果reply字段存在，使用它作为回复
+                if "reply" in parsed_json:
+                    response_text = parsed_json["reply"]
+                    print(f"从JSON中提取reply字段: {response_text}")
+            except json.JSONDecodeError:
+                # 如果无法解析为JSON，保持原样
+                print("无法将回复解析为JSON，保持原样")
         
         # 更新表情（如果有）
         if extracted_expression:
@@ -1353,14 +1365,51 @@ async def chat_endpoint(websocket: WebSocket):
             
             if data["type"] == "message":
                 # 处理文本消息
-                response = await chat_service.get_response(
+                response_text, audio_data = await chat_service.get_response(
                     data["content"],
-                    data.get("personality")
+                    data.get("personality"),
+                    session_id=data.get("session_id", "default"),
+                    user_id=data.get("user_id", "default_user")
                 )
+                
+                # 处理JSON格式回复
+                if isinstance(response_text, str) and response_text.strip().startswith('{') and response_text.strip().endswith('}'):
+                    try:
+                        # 尝试解析JSON
+                        response_json = json.loads(response_text)
+                        if 'reply' in response_json:
+                            # 只取reply字段的内容
+                            response_text = response_json['reply']
+                            print("WebSocket: 从JSON响应中提取reply字段")
+                    except json.JSONDecodeError:
+                        # 解析失败，保持原样
+                        print("WebSocket: JSON解析失败，保持原始回复内容")
+                
+                # 构建响应
+                response = {
+                    "text": response_text,
+                    "audio": base64.b64encode(audio_data).decode('ascii') if audio_data and len(audio_data) > 100 else "",
+                    "expression": "咪咪眼"  # 默认表情
+                }
+                
                 await websocket.send_json(response)
+                
+            elif data["type"] == "switch_user":
+                # 处理用户切换
+                username = data.get("username", "")
+                session_id = data.get("session_id", "")
+                
+                if username and session_id:
+                    success = await chat_service.switch_user(username, session_id)
+                    await websocket.send_json({
+                        "type": "switch_user_result",
+                        "success": success,
+                        "message": f"已切换到用户: {username}" if success else "切换用户失败"
+                    })
                 
     except Exception as e:
         print(f"WebSocket错误: {e}")
+        traceback.print_exc()
     finally:
         await websocket.close()
 
@@ -1404,9 +1453,9 @@ async def normal_chat_flow(request: ChatRequest):
     assessment_api.increment_dialog_counter(request.message)
     
     # 对话流程处理
-    reply, audio_data, expression, guidance_message = await chat_service.generate_reply(
-        request.message, 
-        request.session_id,
+    reply, audio_data = await chat_service.generate_reply(
+        message=request.message,
+        session_id=request.session_id,
         agent_type=request.agent_type,
         personality=request.personality,
         is_category=request.is_category
@@ -1418,21 +1467,32 @@ async def normal_chat_flow(request: ChatRequest):
     print("personality:", request.personality)
     print("is_category:", request.is_category)
     print("原始回复:", reply)
-    print("原始表情:", expression)
-    if guidance_message:
-        print("guidance_message:", guidance_message)
     
     # 处理JSON格式回复，提取reply字段
-    processed_reply, processed_expression, is_summary = process_json_response(reply)
+    processed_reply, expression, is_summary = process_json_response(reply)
     
     # 优先使用处理后的内容
     if processed_reply:
         print(f"处理后的纯文本回复: {processed_reply}")
         reply = processed_reply
-    
-    if processed_expression:
-        print(f"处理后的表情: {processed_expression}")
-        expression = processed_expression
+    else:
+        # 即使process_json_response未识别出JSON，也再次检查是否为JSON格式
+        if isinstance(reply, str) and reply.strip().startswith('{') and reply.strip().endswith('}'):
+            try:
+                # 尝试解析JSON
+                reply_json = json.loads(reply)
+                if 'reply' in reply_json:
+                    # 只取reply字段的内容
+                    reply = reply_json['reply']
+                    print("额外检查：从JSON响应中提取reply字段")
+                    
+                    # 如果JSON中有表情信息，保存
+                    if 'expression' in reply_json:
+                        expression = reply_json['expression']
+                        print(f"额外检查：从JSON中提取表情: {expression}")
+            except json.JSONDecodeError:
+                # 解析失败，保持原样
+                print("额外JSON检查失败，保持原始回复内容")
     
     # 如果检测到引导结束标记，重置引导状态
     if is_summary and chat_service.guidance_state["is_guiding"]:
@@ -1451,15 +1511,16 @@ async def normal_chat_flow(request: ChatRequest):
     response_data = {
         "message": reply,  # 处理后的纯文本回复
         "audio": audio_base64,
-        "expression": expression,
+        "expression": expression or "咪咪眼", # 提供默认表情
         "use_f5_tts": use_f5_tts  # 保留字段但设为False
     }
     
     # 如果有引导决策消息，添加到响应中
-    if guidance_message:
+    if hasattr(chat_service.main_agent.conversation_history, 'last_guidance_message'):
+        guidance_message = chat_service.main_agent.conversation_history.last_guidance_message
         # 处理引导消息中可能包含的JSON
         guidance_text, guidance_expression, _ = process_json_response(guidance_message)
-        response_data["guidance_message"] = guidance_text
+        response_data["guidance_message"] = guidance_text or guidance_message
         
         # 检查是否有引导决策的音频数据
         guidance_audio = None
@@ -2815,6 +2876,10 @@ async def login_user(request: Request):
                 content=result
             )
         
+        # 用户登录成功，切换到对应的用户状态
+        session_id = result.get("session_id", "")
+        await chat_service.switch_user(username, session_id)
+        
         return JSONResponse(content=result)
     except Exception as e:
         logger.error(f"用户登录API错误: {str(e)}")
@@ -2882,8 +2947,18 @@ async def logout_user(request: Request):
                 content={"success": False, "message": "会话ID不能为空"}
             )
         
+        # 获取当前用户信息用于日志
+        user_info = await db_manager.get_user_by_session(session_id)
+        current_username = user_info.get("username", "unknown") if user_info else "unknown"
+        
         # 调用db_manager删除会话
         result = await db_manager.logout_user(session_id)
+        
+        # 登出成功后，切换回默认用户
+        if result["success"]:
+            print(f"用户 {current_username} 登出成功，切换回默认用户")
+            # 切换到默认用户状态
+            await chat_service.switch_user("default_user", "default_session")
         
         return JSONResponse(content=result)
     except Exception as e:

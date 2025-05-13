@@ -12,12 +12,23 @@ class UserInfoManager:
         # 确保保存目录存在
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
+            
+        # 创建用户专属的保存目录
+        self.user_save_dir = os.path.join(save_dir, user_id)
+        if not os.path.exists(self.user_save_dir):
+            os.makedirs(self.user_save_dir)
         
         # 用户信息文件路径
         self.user_info_file = os.path.join(save_dir, f"{user_id}_info.json")
         
+        # 用户me.txt文件路径
+        self.user_me_file = os.path.join(self.user_save_dir, "me.txt")
+        
         # 初始化用户信息
         self.user_info = self._load_user_info()
+        
+        # 确保me.txt文件存在
+        self._ensure_me_file_exists()
     
     def _load_user_info(self):
         """加载用户信息，如果文件不存在则创建初始信息"""
@@ -62,6 +73,12 @@ class UserInfoManager:
             },
             "history": []
         }
+    
+    def _ensure_me_file_exists(self):
+        """确保用户的me.txt文件存在，如果不存在则创建空文件"""
+        if not os.path.exists(self.user_me_file):
+            with open(self.user_me_file, 'w', encoding='utf-8') as f:
+                f.write(f"# {self.user_id}的个人信息记录\n\n")
     
     def _save_user_info(self):
         """保存用户信息到文件"""
@@ -131,6 +148,26 @@ class UserInfoManager:
         
         # 保存更新后的信息
         return self._save_user_info()
+    
+    def update_me_file(self, content):
+        """更新用户的me.txt文件内容"""
+        try:
+            with open(self.user_me_file, 'w', encoding='utf-8') as f:
+                f.write(content)
+            return True
+        except Exception as e:
+            print(f"更新用户me.txt文件时出错: {e}")
+            return False
+    
+    def read_me_file(self):
+        """读取用户的me.txt文件内容"""
+        if os.path.exists(self.user_me_file):
+            try:
+                with open(self.user_me_file, 'r', encoding='utf-8') as f:
+                    return f.read()
+            except Exception as e:
+                print(f"读取用户me.txt文件时出错: {e}")
+        return f"# {self.user_id}的个人信息记录\n\n"
     
     def get_user_info(self):
         """获取用户完整信息"""

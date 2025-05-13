@@ -648,4 +648,50 @@ async def clear_user_chat_history(username: str) -> bool:
             return True
     except Exception as e:
         logger.error(f"清除用户 {username} 的聊天历史失败: {str(e)}")
-        return False 
+        return False
+
+async def get_user_by_session(session_id: str) -> Optional[Dict[str, Any]]:
+    """根据会话ID获取用户信息
+    
+    Args:
+        session_id: 会话ID
+    
+    Returns:
+        Optional[Dict[str, Any]]: 用户信息，如果会话不存在则返回None
+    """
+    try:
+        # 确保数据库已初始化
+        await init_db()
+        
+        async with aiosqlite.connect(DB_FILE) as db:
+            db.row_factory = aiosqlite.Row
+            
+            # 查询会话对应的用户
+            async with db.execute(
+                """SELECT u.username, u.email, u.created_at, u.last_login, u.profile 
+                   FROM users u
+                   JOIN user_sessions s ON u.username = s.username
+                   WHERE s.session_id = ?""",
+                (session_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                
+                if row:
+                    try:
+                        profile = json.loads(row['profile']) if row['profile'] else {}
+                    except json.JSONDecodeError:
+                        profile = {}
+                    
+                    return {
+                        "username": row['username'],
+                        "email": row['email'],
+                        "created_at": row['created_at'],
+                        "last_login": row['last_login'],
+                        "profile": profile
+                    }
+                else:
+                    logger.warning(f"会话ID {session_id} 不存在或已过期")
+                    return None
+    except Exception as e:
+        logger.error(f"根据会话ID获取用户信息失败: {str(e)}")
+        return None 
