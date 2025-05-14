@@ -10,17 +10,20 @@
       </div>
       <span>快速提问</span>
       <!-- 添加切换话题按钮 - 仅在引导模式下显示 -->
-      <button 
-        v-if="isGuiding" 
-        @click="endCurrentTopic" 
-        class="end-topic-button" 
-        title="结束当前话题"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M18 6 6 18"></path>
-          <path d="m6 6 12 12"></path>
-        </svg>
-      </button>
+      <div class="topic-button-container" v-if="isGuiding">
+        <button 
+          @click="endCurrentTopic" 
+          class="end-topic-button"
+          @mouseenter="showTooltip = true"
+          @mouseleave="showTooltip = false"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 6 6 18"></path>
+            <path d="m6 6 12 12"></path>
+          </svg>
+        </button>
+        <div class="tooltip" v-show="showTooltip">点击按钮可以切换话题</div>
+      </div>
     </div>
     
     <div class="questions-list">
@@ -47,6 +50,9 @@ import { useChatStore } from '../stores/chat'
 import { ref, computed, onMounted, watch, onUnmounted } from 'vue'
 
 const chatStore = useChatStore()
+
+// 提示框显示状态
+const showTooltip = ref(false)
 
 // 定义提问选项
 const questions = [
@@ -264,9 +270,12 @@ watch(() => window.location.href, () => {
 }
 
 /* 结束话题按钮样式 */
-.end-topic-button {
+.topic-button-container {
   position: absolute;
   right: 0;
+}
+
+.end-topic-button {
   display: flex;
   justify-content: center;
   align-items: center;
@@ -283,6 +292,29 @@ watch(() => window.location.href, () => {
 .end-topic-button:hover {
   background: rgba(255, 100, 100, 0.4);
   transform: scale(1.1);
+}
+
+.tooltip {
+  position: absolute;
+  top: -35px;
+  right: 0;
+  background-color: rgba(0, 0, 0, 0.8);
+  color: white;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+  z-index: 20;
+}
+
+.tooltip:after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  right: 10px;
+  border-width: 5px;
+  border-style: solid;
+  border-color: rgba(0, 0, 0, 0.8) transparent transparent transparent;
 }
 
 .questions-list {

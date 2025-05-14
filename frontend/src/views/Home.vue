@@ -59,7 +59,7 @@ const userStore = useUserStore()
 const live2dRef = ref(null)
 const isDarkMode = ref(false)
 // 权限测试组件显示控制 - 通过URL参数控制
-const showPermissionTest = ref(false)
+const showPermissionTest = ref(import.meta.env.DEV)
 
 // 退出登录
 const logout = async () => {
@@ -266,8 +266,10 @@ watch(() => chatStore.messages, async (newMessages, oldMessages) => {
 }, { deep: true })
 
 // 处理agent变更
-const handleAgentChange = (modelId) => {
+const handleAgentChange = async (modelId) => {
   console.log('App收到形象变更:', modelId)
+  // 切换角色前保存当前聊天记录
+  await chatStore.saveMessages()
   if (live2dRef.value) {
     live2dRef.value.changeModel(modelId)
   }
@@ -285,14 +287,15 @@ const handleKeyPress = (e) => {
   }
 }
 
+// 页面加载时初始化
 onMounted(async () => {
   // 检查URL参数，决定是否显示权限测试
   const urlParams = new URLSearchParams(window.location.search);
   showPermissionTest.value = urlParams.has('test-permissions');
-  
+    
   // 初始化音频上下文
   initAudioContext()
-  
+    
   // 确保聊天历史已加载
   if (userStore.isLoggedIn) {
     console.log('Home组件挂载: 用户已登录，尝试加载聊天历史')
@@ -335,18 +338,39 @@ onMounted(async () => {
   // 加载自定义角色列表
   chatStore.loadCustomAgents()
   
-  // 监听系统主题变化
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
-    // 只有当用户没有手动设置过主题时，才跟随系统变化
-    if (localStorage.getItem('darkMode') === null) {
-      isDarkMode.value = e.matches
-      updateTheme()
-    }
-  })
+  // 添加页面刷新和关闭事件监听
+  window.addEventListener('beforeunload', handleBeforeUnload)
 })
 
+// 组件卸载时清理资源
 onUnmounted(() => {
+  // 移除页面关闭事件监听
+  window.removeEventListener('beforeunload', handleBeforeUnload)
   window.removeEventListener('keydown', handleKeyPress)
+})
+
+// 处理页面刷新和关闭事件
+const handleBeforeUnload = async (event) => {
+  // 提示用户等待保存聊天记录
+  event.preventDefault()
+  event.returnValue = '正在保存聊天历史，确定要离开吗？'
+  
+  // 尝试保存聊天记录
+  try {
+    console.log('页面关闭/刷新，保存聊天历史...')
+    await chatStore.saveMessages()
+  } catch (error) {
+    console.error('保存聊天历史出错:', error)
+  }
+}
+
+// 监听系统主题变化
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+  // 只有当用户没有手动设置过主题时，才跟随系统变化
+  if (localStorage.getItem('darkMode') === null) {
+    isDarkMode.value = e.matches
+    updateTheme()
+  }
 })
 </script>
 

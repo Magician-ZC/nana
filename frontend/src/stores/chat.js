@@ -1136,10 +1136,17 @@ export const useChatStore = defineStore('chat', () => {
     }
     
     // 检查是否有正在流式传输的消息，如果有则不保存
+    // 如果是页面关闭事件，强制保存即使有流式消息
     const hasStreamingMessage = messages.value.some(msg => msg.isStreaming === true)
     if (hasStreamingMessage) {
-      console.log('有消息正在流式传输中，延迟保存')
-      return
+      console.log('有消息正在流式传输中，处理中...')
+      // 标记流式消息为已完成，以便能够保存它们
+      messages.value = messages.value.map(msg => {
+        if (msg.isStreaming) {
+          return { ...msg, isStreaming: false }
+        }
+        return msg
+      })
     }
     
     // 设置保存标志
@@ -1161,7 +1168,7 @@ export const useChatStore = defineStore('chat', () => {
         }
       })
       
-      // 1. 首先存储到后端数据库
+      // 1. 首先尝试保存到后端数据库
       try {
         // 导入API模块
         const apiModule = await import('../utils/api')
@@ -1192,6 +1199,9 @@ export const useChatStore = defineStore('chat', () => {
         // 出错时回退到localStorage
         saveToLocalStorage(username, messagesWithMetadata)
       }
+      
+      // 无论后端保存是否成功，都同时保存到本地，作为双重保险
+      saveToLocalStorage(username, messagesWithMetadata)
     } finally {
       // 无论成功失败，清除保存标志
       saveMessages.isSaving = false
@@ -1203,6 +1213,7 @@ export const useChatStore = defineStore('chat', () => {
     try {
       const key = `chat_history_${username}`
       localStorage.setItem(key, JSON.stringify(messagesData));
+      console.log(`聊天历史已保存到本地存储，键名: ${key}, 消息数: ${messagesData.length}`)
     } catch (error) {
       console.error('保存聊天历史到localStorage时出错:', error);
     }
