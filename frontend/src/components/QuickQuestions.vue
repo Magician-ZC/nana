@@ -9,6 +9,18 @@
         </svg>
       </div>
       <span>快速提问</span>
+      <!-- 添加切换话题按钮 - 仅在引导模式下显示 -->
+      <button 
+        v-if="isGuiding" 
+        @click="endCurrentTopic" 
+        class="end-topic-button" 
+        title="结束当前话题"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 6 6 18"></path>
+          <path d="m6 6 12 12"></path>
+        </svg>
+      </button>
     </div>
     
     <div class="questions-list">
@@ -64,6 +76,19 @@ const updateGuidanceState = (message) => {
 const handleQuestionClick = (questionText) => {
   chatStore.sendMessage(questionText)
   updateGuidanceState(questionText)
+}
+
+// 结束当前话题
+const endCurrentTopic = () => {
+  console.log("用户点击切换话题图标，强制结束引导")
+  isGuiding.value = false
+  currentCategory.value = null
+  
+  // 调用聊天存储的强制结束函数
+  chatStore.forceEndGuidance()
+  
+  // 向用户发送提示消息
+  chatStore.sendMessage("结束话题")
 }
 
 // 检查消息是否包含结束引导的关键词
@@ -225,6 +250,7 @@ watch(() => window.location.href, () => {
   font-weight: 500;
   font-size: 1.1rem;
   gap: 8px;
+  position: relative;
 }
 
 .circle-icon {
@@ -235,6 +261,28 @@ watch(() => window.location.href, () => {
   height: 28px;
   border-radius: 50%;
   background: rgba(70, 130, 180, 0.3);
+}
+
+/* 结束话题按钮样式 */
+.end-topic-button {
+  position: absolute;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(255, 100, 100, 0.2);
+  border: none;
+  color: white;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.end-topic-button:hover {
+  background: rgba(255, 100, 100, 0.4);
+  transform: scale(1.1);
 }
 
 .questions-list {
