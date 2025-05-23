@@ -1,5 +1,6 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, defineEmits } from 'vue';
+import { API_BASE_URL, getApiUrl } from '../utils/api.js';
 
 const props = defineProps({
   // Enable/disable voice input mode
@@ -57,6 +58,17 @@ onBeforeUnmount(() => {
   cleanupTimers();
   cleanupAudioResources();
 });
+// 将 https:// 替换为 wss://，将端口从 8666 替换为 8000
+function getWebSocketUrl() {
+  // 获取基础API URL
+  const baseApiUrl = API_BASE_URL;
+  
+  // 替换协议和端口
+  const wsBaseUrl = baseApiUrl.replace('https://', 'wss://').replace(':8666', ':8000');
+  
+  // 拼接WebSocket端点
+  return `${wsBaseUrl}/api/realtime/ws`;
+}
 
 // Clean up timers
 function cleanupTimers() {
@@ -192,7 +204,8 @@ function startRecording() {
   emit('transcript-result', '');
 
   // 只使用WSS连接
-  const wsUrl = 'wss://192.168.3.60:8000/api/realtime/ws';
+  const wsUrl = getWebSocketUrl();
+  connectToWebSocket(wsUrl);
   
   // 连接到WebSocket
   connectToWebSocket(wsUrl);
@@ -619,8 +632,8 @@ function attemptReconnect() {
   reconnectAttempts++;
   console.log(`尝试重新连接 (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
   
-  // 只使用WSS连接
-  const wsUrl = 'wss://192.168.3.60:8000/api/realtime/ws';
+  // 在 attemptReconnect 函数中
+  const wsUrl = getWebSocketUrl();
   connectToWebSocket(wsUrl);
 }
 

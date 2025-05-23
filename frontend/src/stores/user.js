@@ -4,7 +4,7 @@ import { getApiUrl } from '../utils/api'
 
 export const useUserStore = defineStore('user', () => {
   // 状态
-  const authToken = ref(localStorage.getItem('auth_token') || '')
+  const authToken = ref(localStorage.getItem('auth_token') || '1f5046804d2c4e44b430adbf923c22a8')
   const sessionId = ref(localStorage.getItem('session_id') || '')
   const isAuthenticated = ref(!!sessionId.value)
   const userProfile = ref(JSON.parse(localStorage.getItem('user_profile')) || null)
