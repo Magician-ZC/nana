@@ -27,13 +27,17 @@
       </div>
     </div>
     
-    <div class="agents-list" v-if="!loading">
+    <div class="agents-list" v-if="!initialLoading">
       <button 
         v-for="agent in agents" 
         :key="agent.id" 
         class="agent-button"
         @click="handleAgentClick(agent)"
-        :class="{ 'active': currentAgentId === agent.id }"
+        :class="{ 
+          'active': currentAgentId === agent.id,
+          'loading': loading && currentAgentId === agent.id 
+        }"
+        :disabled="loading"
       >
         <div class="agent-icon">
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -67,13 +71,14 @@ const showTooltip = ref(false)
 
 // 外部智能体列表
 const agents = ref([])
-const loading = ref(true)
+const initialLoading = ref(true) // 仅用于初始加载
+const loading = ref(false)  // 用于按钮操作加载状态
 const currentAgentId = ref(null)
 
 // 加载智能体列表
 const loadAgents = async () => {
   try {
-    loading.value = true
+    initialLoading.value = true
     const response = await fetch(getApiUrl('/api/external_agents'), {
       method: 'GET',
       headers: {
@@ -91,23 +96,30 @@ const loadAgents = async () => {
   } catch (error) {
     console.error('加载外部智能体时出错:', error)
   } finally {
-    loading.value = false
+    initialLoading.value = false
   }
 }
 
 // 处理智能体点击事件
 const handleAgentClick = async (agent) => {
   try {
-    loading.value = true
+    // 先设置当前选中的智能体，这样UI可以立即响应
+    if (agent.id === currentAgentId.value) {
+      console.log('已经选择了该智能体，不执行操作')
+      return
+    }
+
     console.log('切换到外部智能体:', agent.name)
     
     // 检查必要的字段是否存在
     if (!agent.id || !agent.name) {
       console.error('智能体数据不完整:', agent)
       chatStore.addSystemMessage(`切换智能体失败: 智能体数据不完整`)
-      loading.value = false
       return
     }
+
+    // 仅对该特定智能体按钮应用loading效果，不影响整个列表
+    loading.value = true
 
     // 构建请求数据，包含所有可能需要的字段
     const agentData = {
@@ -132,7 +144,9 @@ const handleAgentClick = async (agent) => {
     
     const data = await response.json()
     if (data.success) {
+      // 更新UI状态
       currentAgentId.value = agent.id
+      
       // 更新chatStore中的currentAgent，确保发送消息时使用正确的智能体
       const customAgentId = `custom_external_${agent.id}`
       chatStore.changeAgent(customAgentId)
@@ -162,16 +176,44 @@ const handleAgentClick = async (agent) => {
 // 处理关闭按钮事件
 const resetCurrentAgent = async () => {
   try {
+    if (!currentAgentId.value) {
+      console.log('当前没有选择智能体，不执行重置')
+      return
+    }
+    
     loading.value = true
     console.log('重置当前智能体')
     
-    // 重置为默认智能体
-    currentAgentId.value = null
-    chatStore.changeAgent('nanaA')
-    
-    // 发送系统消息告知用户已重置为默认智能体
-    chatStore.addSystemMessage('已重置为默认智能体')
-    console.log('成功重置为默认智能体')
+    // 发送请求重置为默认智能体
+    try {
+      // 发送请求重置为默认智能体
+      const response = await fetch(getApiUrl('/api/reset_default_agent'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          session_id: chatStore.sessionId || 'default'
+        })
+      })
+      
+      const data = await response.json()
+      if (data.success) {
+        // 重置为默认智能体
+        currentAgentId.value = null
+        chatStore.changeAgent('nanaA')
+        
+        // 发送系统消息告知用户已重置为默认智能体
+        chatStore.addSystemMessage('已重置为默认智能体')
+        console.log('成功重置为默认智能体')
+      } else {
+        console.error('重置智能体失败:', data.message || '未知错误')
+        chatStore.addSystemMessage(`重置智能体失败: ${data.message || '未知错误'}`)
+      }
+    } catch (error) {
+      console.error('重置智能体请求失败:', error)
+      chatStore.addSystemMessage('重置智能体时出错，请稍后再试')
+    }
   } catch (error) {
     console.error('重置智能体时出错:', error)
     chatStore.addSystemMessage('重置智能体时出错，请稍后再试')
@@ -274,6 +316,7 @@ onMounted(() => {
   border-radius: 5px;
   font-size: 12px;
   white-space: nowrap;
+  transition: opacity 0.2s ease;
 }
 
 .agents-list {
@@ -282,9 +325,11 @@ onMounted(() => {
   gap: 10px;
   max-height: 400px;
   overflow-y: auto;
+  transition: opacity 0.2s ease;
 }
 
 .agent-button {
+  position: relative;
   display: flex;
   align-items: center;
   background-color: rgba(255, 255, 255, 0.1);
@@ -294,7 +339,8 @@ onMounted(() => {
   color: white;
   cursor: pointer;
   text-align: left;
-  transition: all 0.2s;
+  transition: all 0.2s ease;
+  overflow: hidden;
 }
 
 .agent-button:hover {
@@ -307,6 +353,28 @@ onMounted(() => {
   border: 1px solid rgba(100, 160, 255, 0.5);
 }
 
+/* 添加按钮激活时的加载中效果 */
+.agent-button.active::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+  animation: loading-shine 1.5s infinite;
+  pointer-events: none;
+}
+
+@keyframes loading-shine {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
 .agent-icon {
   width: 24px;
   height: 24px;
@@ -316,6 +384,7 @@ onMounted(() => {
   justify-content: center;
   align-items: center;
   margin-right: 10px;
+  transition: all 0.3s ease;
 }
 
 .loading-container {
@@ -324,6 +393,7 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
   padding: 20px;
+  transition: opacity 0.3s ease;
 }
 
 .loading-spinner {
