@@ -9,12 +9,11 @@
         </svg>
       </div>
       <span>智能体广场</span>
-      <!-- 添加关闭按钮 - 在选择了智能体时显示 -->
+      <!-- 只在选择了智能体时显示退出按钮 -->
       <div class="close-button-container">
-        <!-- 返回默认智能体按钮 -->
         <button 
           v-if="currentAgentId"
-          @click="resetDefaultAgent" 
+          @click="resetCurrentAgent" 
           class="close-button"
           @mouseenter="showTooltip = true"
           @mouseleave="showTooltip = false"
@@ -24,19 +23,7 @@
             <path d="m6 6 12 12"></path>
           </svg>
         </button>
-        <div class="tooltip" v-show="showTooltip">切换回系统智能体</div>
-        
-        <!-- 关闭面板按钮 -->
-        <button 
-          @click="closePanel" 
-          class="close-button"
-          style="margin-left: 8px;"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10"></circle>
-            <line x1="8" y1="12" x2="16" y2="12"></line>
-          </svg>
-        </button>
+        <div class="tooltip" v-show="showTooltip && currentAgentId">退出当前智能体</div>
       </div>
     </div>
     
@@ -114,19 +101,33 @@ const handleAgentClick = async (agent) => {
     loading.value = true
     console.log('切换到外部智能体:', agent.name)
     
+    // 检查必要的字段是否存在
+    if (!agent.id || !agent.name) {
+      console.error('智能体数据不完整:', agent)
+      chatStore.addSystemMessage(`切换智能体失败: 智能体数据不完整`)
+      loading.value = false
+      return
+    }
+
+    // 构建请求数据，包含所有可能需要的字段
+    const agentData = {
+      agent_id: agent.id,
+      name: agent.name,
+      description: agent.description || '',
+      prompt: agent.pre_prompt || '', // 原始字段
+      pre_prompt: agent.pre_prompt || '', // 添加pre_prompt作为备用
+      session_id: chatStore.sessionId || 'default'
+    }
+    
+    console.log('发送智能体数据:', agentData)
+    
     // 发送请求切换外部智能体
     const response = await fetch(getApiUrl('/api/switch_external_agent'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        agent_id: agent.id,
-        name: agent.name,
-        description: agent.description,
-        prompt: agent.pre_prompt,
-        session_id: chatStore.sessionId || 'default'
-      })
+      body: JSON.stringify(agentData)
     })
     
     const data = await response.json()
@@ -158,33 +159,19 @@ const handleAgentClick = async (agent) => {
   }
 }
 
-// 重置为默认智能体
-const resetDefaultAgent = async () => {
+// 处理关闭按钮事件
+const resetCurrentAgent = async () => {
   try {
     loading.value = true
-    console.log('重置为默认智能体')
+    console.log('重置当前智能体')
     
-    // 发送请求重置为默认智能体
-    const response = await fetch(getApiUrl('/api/reset_default_agent'), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        session_id: chatStore.sessionId || 'default'
-      })
-    })
+    // 重置为默认智能体
+    currentAgentId.value = null
+    chatStore.changeAgent('nanaA')
     
-    const data = await response.json()
-    if (data.success) {
-      currentAgentId.value = null
-      // 发送系统消息告知用户已重置为默认智能体
-      chatStore.addSystemMessage('已重置为默认智能体')
-      console.log('成功重置为默认智能体')
-    } else {
-      console.error('重置智能体失败:', data.message)
-      chatStore.addSystemMessage(`重置智能体失败: ${data.message}`)
-    }
+    // 发送系统消息告知用户已重置为默认智能体
+    chatStore.addSystemMessage('已重置为默认智能体')
+    console.log('成功重置为默认智能体')
   } catch (error) {
     console.error('重置智能体时出错:', error)
     chatStore.addSystemMessage('重置智能体时出错，请稍后再试')
@@ -193,26 +180,10 @@ const resetDefaultAgent = async () => {
   }
 }
 
-// 处理关闭按钮事件
-const closePanel = async () => {
-  try {
-    loading.value = true
-    console.log('返回系统默认智能体')
-    
-    // 重置回默认智能体 nanaA
-    chatStore.changeAgent('nanaA')
-    
-    // 发送系统消息告知用户
-    chatStore.addSystemMessage(`已切换回系统默认智能体`)
-    
-    // 关闭面板
-    emit('close')
-  } catch (error) {
-    console.error('重置智能体时出错:', error)
-    chatStore.addSystemMessage('切换回默认智能体时出错')
-  } finally {
-    loading.value = false
-  }
+// 关闭面板函数 - 当需要关闭整个智能体广场时使用
+const closePanel = () => {
+  console.log('关闭智能体广场面板')
+  emit('close')
 }
 
 // 组件挂载时加载智能体列表

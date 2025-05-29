@@ -135,15 +135,32 @@
           <h4 class="text-lg font-medium text-neutral-800 dark:text-neutral-200 border-b border-neutral-200 dark:border-neutral-700 pb-2">语音设置</h4>
           
           <div class="space-y-4">
-            <!-- 普通语音设置 -->
+            <!-- 全局TTS开关 -->
             <div class="flex items-start">
+              <div class="flex h-5 items-center">
+                <input 
+                  id="enable-tts-global"
+                  type="checkbox" 
+                  v-model="enableTtsGlobal" 
+                  @change="handleGlobalTTSChange" 
+                  class="h-4 w-4 rounded border-neutral-300 text-primary-600 focus:ring-primary-500 dark:border-neutral-600 dark:bg-neutral-700"
+                />
+              </div>
+              <div class="ml-3 text-sm">
+                <label for="enable-tts-global" class="font-medium text-neutral-700 dark:text-neutral-300">启用语音回复功能</label>
+                <p class="text-neutral-500 dark:text-neutral-400">关闭后将不会生成任何语音回复</p>
+              </div>
+            </div>
+
+            <!-- 普通语音设置 -->
+            <div class="flex items-start" v-if="enableTtsGlobal">
               <div class="flex h-5 items-center">
                 <input 
                   id="normal-tts"
                   type="checkbox" 
                   v-model="enableTTS" 
                   @change="handleTTSChange" 
-                  :disabled="enableSuperTTS"
+                  :disabled="enableSuperTTS || !enableTtsGlobal"
                   class="h-4 w-4 rounded border-neutral-300 text-primary-600 focus:ring-primary-500 dark:border-neutral-600 dark:bg-neutral-700"
                 />
               </div>
@@ -153,7 +170,7 @@
             </div>
 
             <!-- 普通语音音色选择 -->
-            <div v-if="enableTTS" class="pl-7 space-y-2">
+            <div v-if="enableTTS && enableTtsGlobal" class="pl-7 space-y-2">
               <label for="tts-voice" class="block text-sm font-medium text-neutral-700 dark:text-neutral-300">音色选择</label>
               <!-- 自定义下拉选择框 -->
               <div class="relative dropdown-container">
@@ -188,14 +205,14 @@
             </div>
 
             <!-- 超拟人语音设置 -->
-            <div class="flex items-start">
+            <div class="flex items-start" v-if="enableTtsGlobal">
               <div class="flex h-5 items-center">
                 <input 
                   id="super-tts"
                   type="checkbox" 
                   v-model="enableSuperTTS" 
                   @change="handleSuperTTSChange" 
-                  :disabled="enableTTS"
+                  :disabled="enableTTS || !enableTtsGlobal"
                   class="h-4 w-4 rounded border-neutral-300 text-primary-600 focus:ring-primary-500 dark:border-neutral-600 dark:bg-neutral-700"
                 />
               </div>
@@ -206,7 +223,7 @@
             </div>
 
             <!-- 超拟人语音音色选择 -->
-            <div v-if="enableSuperTTS" class="pl-7 space-y-2">
+            <div v-if="enableSuperTTS && enableTtsGlobal" class="pl-7 space-y-2">
               <label for="super-tts-voice" class="block text-sm font-medium text-neutral-700 dark:text-neutral-300">音色选择</label>
               <!-- 自定义下拉选择框 -->
               <div class="relative dropdown-container">
@@ -241,7 +258,7 @@
             </div>
 
             <!-- 语速控制 -->
-            <div v-if="enableTTS || enableSuperTTS" class="pl-7 space-y-2">
+            <div v-if="(enableTTS || enableSuperTTS) && enableTtsGlobal" class="pl-7 space-y-2">
               <div class="flex justify-between items-center">
                 <label for="tts-speed" class="text-sm font-medium text-neutral-700 dark:text-neutral-300">语速</label>
                 <span class="text-sm text-neutral-500 dark:text-neutral-400">{{ ttsSpeed }}</span>
@@ -323,6 +340,7 @@ const isDarkMode = ref(false)
 const openDropdown = ref(null)
 const voiceInputMode = ref(true)
 const voiceTimeout = ref(5)
+const enableTtsGlobal = ref(true)
 
 // 检测当前模式是否为暗色模式
 const checkDarkMode = () => {
@@ -378,6 +396,7 @@ async function loadSettings() {
     typingSpeed.value = data.typing_speed || 38
     voiceInputMode.value = data.voice_input_mode !== undefined ? data.voice_input_mode : true
     voiceTimeout.value = data.voice_timeout || 5
+    enableTtsGlobal.value = data.enable_tts_global !== undefined ? data.enable_tts_global : true
     
   } catch (error) {
     console.error('加载设置失败:', error)
@@ -403,6 +422,14 @@ function handleTypewriterChange() {
   chatStore.useStreamResponse = useTypewriterEffect.value
 }
 
+// 处理全局TTS切换
+function handleGlobalTTSChange() {
+  if (!enableTtsGlobal.value) {
+    enableTTS.value = false
+    enableSuperTTS.value = false
+  }
+}
+
 // 保存设置
 async function saveSettings() {
   isSaving.value = true
@@ -423,7 +450,8 @@ async function saveSettings() {
         tts_speed: ttsSpeed.value,
         typing_speed: typingSpeed.value,
         voice_input_mode: voiceInputMode.value,
-        voice_timeout: voiceTimeout.value
+        voice_timeout: voiceTimeout.value,
+        enable_tts_global: enableTtsGlobal.value
       })
     })
     
@@ -442,7 +470,8 @@ async function saveSettings() {
         typingSpeed: typingSpeed.value,
         useTypewriterEffect: useTypewriterEffect.value,
         voiceInputMode: voiceInputMode.value,
-        voiceTimeout: voiceTimeout.value
+        voiceTimeout: voiceTimeout.value,
+        enableTtsGlobal: enableTtsGlobal.value
       };
       
       // 通知父组件设置已更改

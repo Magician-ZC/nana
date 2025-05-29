@@ -11,16 +11,24 @@
     
     <div class="live2d-main">
       <!-- 权限测试组件 - 仅在开发环境中显示 -->
-      <PermissionTest v-if="showPermissionTest" class="permission-test-container" />
+      <!-- <PermissionTest v-if="showPermissionTest" class="permission-test-container" /> -->
     
       <!-- 添加情绪评估和心理评估按钮 -->
-      <AssessmentButtons />
+      <!-- <AssessmentButtons /> -->
     
       <TimeWeather />
-      <AgentMarket />
+      <AgentMarket v-if="showAgentMarket" @close="showAgentMarket = false" />
       <Live2DModel ref="live2dRef" :modelId="chatStore.currentModel" />
       <div class="controls-container">
         <AgentSelector @agent-change="handleAgentChange" :currentModel="chatStore.currentAgent" />
+        <button 
+          v-if="showAgentMarketButton"
+          @click="showAgentMarket = !showAgentMarket" 
+          class="agent-market-button"
+          title="智能体广场"
+        >
+          <i class="fa-solid fa-robot"></i>
+        </button>
         <SettingsButton class="settings-button" />
         <!-- 添加退出按钮 -->
         <button 
@@ -37,7 +45,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useAssessmentStore } from '../stores/assessment'
 import { useUserStore } from '../stores/user'
@@ -60,6 +68,24 @@ const live2dRef = ref(null)
 const isDarkMode = ref(false)
 // 权限测试组件显示控制 - 通过URL参数控制
 const showPermissionTest = ref(import.meta.env.DEV)
+// 从localStorage中恢复智能体广场显示状态，默认为true
+const showAgentMarket = ref(localStorage.getItem('showAgentMarket') !== 'false')
+
+// 监听智能体广场显示状态变化，保存到localStorage
+watch(showAgentMarket, (newValue) => {
+  localStorage.setItem('showAgentMarket', newValue)
+})
+
+// 判断是否有外部智能体被选中
+const hasExternalAgentSelected = computed(() => {
+  return chatStore.currentAgent && chatStore.currentAgent.startsWith('custom_external_')
+})
+
+// 使用计算属性控制智能体广场按钮显示/隐藏
+const showAgentMarketButton = computed(() => {
+  // 当选中外部智能体时，不显示按钮
+  return !hasExternalAgentSelected.value
+})
 
 // 退出登录
 const logout = async () => {
@@ -413,5 +439,34 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e =
 
 .dark .logout-button:hover {
   background-color: #f05252;
+}
+
+.agent-market-button {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background-color: rgba(0, 0, 0, 0.7);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+  transition: all 0.3s ease;
+  margin: 0 8px;
+}
+
+.agent-market-button:hover {
+  transform: scale(1.1);
+  background-color: #4299e1;
+}
+
+.dark .agent-market-button {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+.dark .agent-market-button:hover {
+  background-color: #4299e1;
 }
 </style> 

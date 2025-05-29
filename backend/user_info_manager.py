@@ -170,6 +170,7 @@ class UserInfoManager:
         return {
             "enable_tts": Config.ENABLE_TTS,
             "enable_super_tts": Config.ENABLE_SUPER_TTS,
+            "enable_tts_global": Config.ENABLE_TTS_GLOBAL,
             "tts_voice": Config.TTS_VCN,
             "super_tts_voice": Config.SUPER_TTS_VCN,
             "tts_speed": Config.TTS_SPEED,
@@ -293,6 +294,7 @@ class UserInfoManager:
                 self.user_config = {
                     "enable_tts": Config.ENABLE_TTS,
                     "enable_super_tts": Config.ENABLE_SUPER_TTS,
+                    "enable_tts_global": Config.ENABLE_TTS_GLOBAL,
                     "tts_voice": Config.TTS_VCN,
                     "super_tts_voice": Config.SUPER_TTS_VCN,
                     "tts_speed": Config.TTS_SPEED,

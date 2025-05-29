@@ -97,6 +97,7 @@ class CustomAgentRequest(BaseModel):
 class TTSSettingsRequest(BaseModel):
     enable_tts: bool
     enable_super_tts: bool
+    enable_tts_global: Optional[bool] = True
     tts_voice: Optional[str] = None
     super_tts_voice: Optional[str] = None
     tts_speed: Optional[int] = None
@@ -107,6 +108,7 @@ class TTSSettingsRequest(BaseModel):
 class TTSSettings(BaseModel):
     enable_tts: bool
     enable_super_tts: bool
+    enable_tts_global: Optional[bool] = True
     tts_voice: Optional[str] = None
     super_tts_voice: Optional[str] = None
     tts_voice_list: List[dict] = []
@@ -1753,6 +1755,7 @@ async def get_tts_settings(request: Request):
     settings = {
         "enable_tts": Config.ENABLE_TTS,
         "enable_super_tts": Config.ENABLE_SUPER_TTS,
+        "enable_tts_global": Config.ENABLE_TTS_GLOBAL,
         "tts_voice": Config.TTS_VCN,
         "super_tts_voice": Config.SUPER_TTS_VCN,
         "tts_voice_list": Config.TTS_VOICE_LIST,
@@ -1831,6 +1834,8 @@ async def update_tts_settings(request: Request):
                         Config.ENABLE_TTS = data["enable_tts"]
                     if "enable_super_tts" in data:
                         Config.ENABLE_SUPER_TTS = data["enable_super_tts"]
+                    if "enable_tts_global" in data:
+                        Config.ENABLE_TTS_GLOBAL = data["enable_tts_global"]
                     if "tts_voice" in data:
                         Config.TTS_VCN = data["tts_voice"]
                     if "super_tts_voice" in data:
@@ -1873,6 +1878,8 @@ async def update_tts_settings(request: Request):
             Config.ENABLE_TTS = data["enable_tts"]
         if "enable_super_tts" in data:
             Config.ENABLE_SUPER_TTS = data["enable_super_tts"]
+        if "enable_tts_global" in data:
+            Config.ENABLE_TTS_GLOBAL = data["enable_tts_global"]
         if "tts_voice" in data:
             Config.TTS_VCN = data["tts_voice"]
         if "super_tts_voice" in data:
@@ -3656,7 +3663,8 @@ async def switch_external_agent(request: dict = Body(...)):
     try:
         agent_id = request.get("agent_id")
         agent_name = request.get("name", "外部智能体")
-        agent_prompt = request.get("prompt")
+        # 同时检查prompt和pre_prompt两个字段
+        agent_prompt = request.get("prompt") or request.get("pre_prompt")
         session_id = request.get("session_id", "default")
         
         # 记录请求信息用于调试
@@ -3667,6 +3675,7 @@ async def switch_external_agent(request: dict = Body(...)):
             return {"success": False, "message": "缺少agent_id参数"}
         
         if not agent_prompt:
+            logging.info("前端未提供prompt或pre_prompt，尝试从外部API获取")
             # 获取智能体提示词
             token = await get_external_platform_token()
             if not token:
@@ -3690,19 +3699,37 @@ async def switch_external_agent(request: dict = Body(...)):
                 
                 if response.status_code == 200:
                     data = response.json()
+                    logging.info(f"获取到智能体响应: {data.keys()}")
+                    
+                    # 处理不同的响应结构
                     if "data" in data and "model_config" in data["data"]:
                         agent_prompt = data["data"]["model_config"].get("pre_prompt", "")
-                        logging.info("成功获取智能体提示词")
-                    else:
-                        logging.error(f"智能体详情响应格式不正确: {data}")
+                        logging.info("从model_config.pre_prompt获取智能体提示词")
+                    elif "model_config" in data:
+                        agent_prompt = data["model_config"].get("pre_prompt", "")
+                        logging.info("直接从model_config.pre_prompt获取智能体提示词")
+                    
+                    # 如果还是找不到，尝试其他可能的字段
+                    if not agent_prompt and "data" in data:
+                        if "prompt" in data["data"]:
+                            agent_prompt = data["data"]["prompt"]
+                            logging.info("从data.prompt获取智能体提示词")
+                        elif "pre_prompt" in data["data"]:
+                            agent_prompt = data["data"]["pre_prompt"]
+                            logging.info("从data.pre_prompt获取智能体提示词")
+                    
+                    # 如果仍然没有找到提示词
+                    if not agent_prompt:
+                        logging.error(f"智能体详情中未找到提示词，响应数据: {data}")
                 else:
                     logging.error(f"获取智能体详情失败: HTTP {response.status_code}, {response.text}")
             except Exception as e:
                 logging.error(f"获取智能体详情时出错: {str(e)}")
             
             if not agent_prompt:
-                logging.error("切换外部智能体失败: 无法获取智能体提示词")
-                return {"success": False, "message": "无法获取智能体提示词"}
+                # 如果仍然无法获取提示词，使用默认提示词
+                agent_prompt = f"你是{agent_name}，一个有用的AI助手。请用友善、专业的态度回答用户问题。"
+                logging.warning(f"无法获取智能体提示词，使用默认提示词: {agent_prompt}")
         
         # 确保保存目录存在
         custom_agents_dir = os.path.join("save", "custom_agents")

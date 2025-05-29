@@ -21,6 +21,7 @@ class Config:
         TTS服务配置（科大讯飞）
     '''
     # TTS功能配置
+    ENABLE_TTS_GLOBAL = True  # 是否启用全局TTS功能
     ENABLE_TTS = False  # 是否启用普通TTS
     ENABLE_SUPER_TTS = True  # 是否启用超拟人TTS
     
@@ -81,9 +82,9 @@ class Config:
     @classmethod
     def is_tts_enabled(cls) -> bool:
         """判断是否启用普通TTS功能"""
-        return cls.ENABLE_TTS and cls.XFYUN_APP_ID and cls.XFYUN_API_KEY and cls.XFYUN_API_SECRET
+        return cls.ENABLE_TTS_GLOBAL and cls.ENABLE_TTS and cls.XFYUN_APP_ID and cls.XFYUN_API_KEY and cls.XFYUN_API_SECRET
         
     @classmethod
     def is_super_tts_enabled(cls) -> bool:
         """判断是否启用超拟人TTS功能"""
-        return cls.ENABLE_SUPER_TTS and cls.XFYUN_APP_ID and cls.XFYUN_API_KEY and cls.XFYUN_API_SECRET
+        return cls.ENABLE_TTS_GLOBAL and cls.ENABLE_SUPER_TTS and cls.XFYUN_APP_ID and cls.XFYUN_API_KEY and cls.XFYUN_API_SECRET

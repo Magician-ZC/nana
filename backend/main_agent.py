@@ -16,6 +16,7 @@ class MainAgent:
         self.current_agent = "nanaA"  # 默认使用娜娜A
         self.prompt_template = ""  # 用于存储自定义提示词
         self._load_prompt_template()
+        self.prompt = self.prompt_template  # 确保prompt属性被设置
         self.user_id = user_id
             
         # 确保日志和个人信息目录存在
@@ -72,6 +73,8 @@ class MainAgent:
             
         with open(prompt_file, 'r', encoding='utf-8') as file:
             self.prompt_template = file.read()
+            # 同时设置prompt属性，用于_generate_reply_with_context方法
+            self.prompt = self.prompt_template
     
     def set_agent(self, agent_name: str) -> bool:
         """设置当前使用的智能体
@@ -87,6 +90,10 @@ class MainAgent:
             
         self.current_agent = agent_name
         self._load_prompt_template()
+        
+        # 设置prompt属性，防止_generate_reply_with_context方法中的错误
+        self.prompt = self.prompt_template
+        
         return True
 
     def set_custom_agent(self, prompt: str, config: dict) -> bool:

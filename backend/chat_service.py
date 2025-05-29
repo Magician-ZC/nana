@@ -58,10 +58,28 @@ class ChatService:
     def _refresh_tts_services(self):
         """刷新TTS服务配置"""
         try:
-            self.tts_service = TTSService()
-            self.super_tts_service = SuperTTSService()  # 添加超拟人TTS服务的初始化
+            # 检查配置是否启用TTS
+            if Config.is_tts_enabled():
+                print("初始化普通TTS服务...")
+                self.tts_service = TTSService()
+            else:
+                print("普通TTS服务已禁用")
+                self.tts_service = None
+                
+            # 检查配置是否启用超拟人TTS
+            if Config.is_super_tts_enabled():
+                print("初始化超拟人TTS服务...")
+                self.super_tts_service = SuperTTSService()
+            else:
+                print("超拟人TTS服务已禁用")
+                self.super_tts_service = None
+                
+            print(f"TTS服务刷新完成: 普通TTS={self.tts_service is not None}, 超拟人TTS={self.super_tts_service is not None}")
+            
         except Exception as e:
             print(f"刷新TTS服务失败: {e}")
+            import traceback
+            traceback.print_exc()
             self.tts_service = None
             self.super_tts_service = None  # 确保在失败时也设置属性
 
@@ -189,6 +207,10 @@ class ChatService:
             if ui_settings:
                 # 应用UI设置到全局配置
                 from config import Config
+                
+                # 更新全局TTS开关
+                if "enable_tts_global" in ui_settings:
+                    Config.ENABLE_TTS_GLOBAL = ui_settings["enable_tts_global"]
                 
                 # 更新TTS启用状态
                 if "enable_tts" in ui_settings:
@@ -338,17 +360,40 @@ class ChatService:
                 
                 # 生成语音
                 audio_data = None
-                if Config.is_tts_enabled() and self.tts_service:
+                
+                # 获取TTS设置
+                user_tts_enabled = Config.ENABLE_TTS
+                user_super_tts_enabled = Config.ENABLE_SUPER_TTS
+                
+                try:
+                    # 尝试从用户信息管理器获取设置
+                    from user_info_manager import UserInfoManager
+                    user_info_manager = UserInfoManager(self.current_user_id)
+                    ui_settings = await user_info_manager.get_ui_settings()
+                    
+                    if ui_settings:
+                        # 优先使用用户自定义设置
+                        user_tts_enabled = ui_settings.get('enable_tts', Config.ENABLE_TTS)
+                        user_super_tts_enabled = ui_settings.get('enable_super_tts', Config.ENABLE_SUPER_TTS)
+                except Exception as e:
+                    print(f"结束引导时获取用户TTS设置出错，使用全局设置: {e}")
+                
+                # 尝试生成语音
+                if user_tts_enabled and Config.is_tts_enabled() and self.tts_service:
                     try:
                         print("为结束引导回复生成普通TTS...")
                         audio_data = self.tts_service.generate_audio(reply_text)
+                        if audio_data and len(audio_data) > 100:
+                            print(f"结束引导普通TTS生成成功，音频大小: {len(audio_data)} 字节")
                     except Exception as e:
                         print(f"为结束引导回复生成普通语音时出错: {e}")
                 
-                if (not audio_data or len(audio_data) < 100) and Config.is_super_tts_enabled() and self.super_tts_service:
+                if (not audio_data or len(audio_data) < 100) and user_super_tts_enabled and Config.is_super_tts_enabled() and self.super_tts_service:
                     try:
                         print("为结束引导回复生成超拟人TTS...")
                         audio_data = self.super_tts_service.generate_audio(reply_text)
+                        if audio_data and len(audio_data) > 100:
+                            print(f"结束引导超拟人TTS生成成功，音频大小: {len(audio_data)} 字节")
                     except Exception as e:
                         print(f"为结束引导回复生成超拟人语音时出错: {e}")
                 
@@ -370,12 +415,46 @@ class ChatService:
                     
                     # 添加一个提示信息表明引导已经超时结束
                     reply_text = "由于对话中断较长时间，我们的引导对话已经结束。您有什么新的问题吗？"
+                    
+                    # 生成语音
                     audio_data = None
-                    if Config.is_tts_enabled() and self.tts_service:
+                    
+                    # 获取TTS设置
+                    user_tts_enabled = Config.ENABLE_TTS
+                    user_super_tts_enabled = Config.ENABLE_SUPER_TTS
+                    
+                    try:
+                        # 尝试从用户信息管理器获取设置
+                        from user_info_manager import UserInfoManager
+                        user_info_manager = UserInfoManager(self.current_user_id)
+                        ui_settings = await user_info_manager.get_ui_settings()
+                        
+                        if ui_settings:
+                            # 优先使用用户自定义设置
+                            user_tts_enabled = ui_settings.get('enable_tts', Config.ENABLE_TTS)
+                            user_super_tts_enabled = ui_settings.get('enable_super_tts', Config.ENABLE_SUPER_TTS)
+                    except Exception as e:
+                        print(f"引导超时时获取用户TTS设置出错，使用全局设置: {e}")
+                    
+                    # 尝试生成语音
+                    if user_tts_enabled and Config.is_tts_enabled() and self.tts_service:
                         try:
+                            print("为引导超时回复生成普通TTS...")
                             audio_data = self.tts_service.generate_audio(reply_text)
+                            if audio_data and len(audio_data) > 100:
+                                print(f"引导超时普通TTS生成成功，音频大小: {len(audio_data)} 字节")
                         except Exception as e:
                             print(f"为引导超时结束生成语音时出错: {e}")
+                    
+                    if (not audio_data or len(audio_data) < 100) and user_super_tts_enabled and Config.is_super_tts_enabled() and self.super_tts_service:
+                        try:
+                            print("为引导超时回复生成超拟人TTS...")
+                            audio_data = self.super_tts_service.generate_audio(reply_text)
+                            if audio_data and len(audio_data) > 100:
+                                print(f"引导超时超拟人TTS生成成功，音频大小: {len(audio_data)} 字节")
+                        except Exception as e:
+                            print(f"为引导超时结束生成超拟人语音时出错: {e}")
+                    
                     return reply_text, audio_data
                 
                 # 更新最后活动时间
@@ -542,40 +621,52 @@ class ChatService:
             audio_data = None
             
             # 获取当前用户的TTS设置
-            user_settings = None
+            user_tts_enabled = Config.ENABLE_TTS
+            user_super_tts_enabled = Config.ENABLE_SUPER_TTS
+            user_tts_global_enabled = Config.ENABLE_TTS_GLOBAL
+            
             try:
-                user_settings = self.user_settings
-                print(f"加载到用户 {self.current_user_id} 的设置: {user_settings}")
-            except Exception as e:
-                print(f"获取用户TTS设置时出错: {e}")
+                # 尝试从用户信息管理器获取设置
+                from user_info_manager import UserInfoManager
+                user_info_manager = UserInfoManager(self.current_user_id)
+                ui_settings = await user_info_manager.get_ui_settings()
                 
-            # 检查用户设置中的TTS启用状态
-            user_tts_enabled = False
-            user_super_tts_enabled = False
-            
-            if user_settings:
-                user_tts_enabled = user_settings.get('enable_tts', False)
-                user_super_tts_enabled = user_settings.get('enable_super_tts', False)
-            
-            # 只有当用户设置启用了普通TTS时才尝试生成
-            if user_tts_enabled and Config.is_tts_enabled() and self.tts_service:
+                if ui_settings:
+                    # 优先使用用户自定义设置
+                    user_tts_global_enabled = ui_settings.get('enable_tts_global', Config.ENABLE_TTS_GLOBAL)
+                    user_tts_enabled = ui_settings.get('enable_tts', Config.ENABLE_TTS)
+                    user_super_tts_enabled = ui_settings.get('enable_super_tts', Config.ENABLE_SUPER_TTS)
+                    print(f"从用户信息管理器获取TTS设置: 全局TTS开关={user_tts_global_enabled}, 普通TTS={user_tts_enabled}, 超拟人TTS={user_super_tts_enabled}")
+            except Exception as e:
+                print(f"获取用户TTS设置时出错，使用全局设置: {e}")
+                
+            # 只有当启用了全局TTS开关和普通TTS时才尝试生成
+            if user_tts_global_enabled and user_tts_enabled and Config.is_tts_enabled() and self.tts_service:
                 try:
-                    print("用户已启用普通TTS，生成普通TTS...")
+                    print("尝试生成普通TTS...")
                     audio_data = self.tts_service.generate_audio(reply_text)
+                    if audio_data and len(audio_data) > 100:
+                        print(f"普通TTS生成成功，音频大小: {len(audio_data)} 字节")
+                    else:
+                        print("普通TTS生成失败: 生成的音频数据无效或过小")
                 except Exception as e:
                     print(f"生成普通TTS时出错: {e}")
             else:
-                print("用户未启用普通TTS或系统TTS未配置，跳过普通TTS生成")
+                print(f"跳过普通TTS生成: 用户设置={user_tts_enabled}, 全局设置={Config.ENABLE_TTS}, 服务可用={self.tts_service is not None}")
             
-            # 只有当用户设置启用了超拟人TTS且普通TTS失败时才尝试生成
-            if (not audio_data or len(audio_data) < 100) and user_super_tts_enabled and Config.is_super_tts_enabled() and self.super_tts_service:
+            # 只有当启用了全局TTS开关和超拟人TTS且普通TTS失败时才尝试生成
+            if (not audio_data or len(audio_data) < 100) and user_tts_global_enabled and user_super_tts_enabled and Config.is_super_tts_enabled() and self.super_tts_service:
                 try:
-                    print("用户已启用超拟人TTS，生成超拟人TTS...")
+                    print("尝试生成超拟人TTS...")
                     audio_data = self.super_tts_service.generate_audio(reply_text)
+                    if audio_data and len(audio_data) > 100:
+                        print(f"超拟人TTS生成成功，音频大小: {len(audio_data)} 字节")
+                    else:
+                        print("超拟人TTS生成失败: 生成的音频数据无效或过小")
                 except Exception as e:
                     print(f"生成超拟人TTS时出错: {e}")
-            elif not user_super_tts_enabled:
-                print("用户未启用超拟人TTS，跳过超拟人TTS生成")
+            elif not audio_data or len(audio_data) < 100:
+                print(f"跳过或无法生成超拟人TTS: 全局TTS开关={user_tts_global_enabled}, 用户设置={user_super_tts_enabled}, 全局设置={Config.ENABLE_SUPER_TTS}, 服务可用={self.super_tts_service is not None}")
             
             return reply_text, audio_data
         except Exception as e:
