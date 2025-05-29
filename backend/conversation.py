@@ -10,6 +10,7 @@ from chromadb.config import Settings
 from chromadb.utils.embedding_functions import EmbeddingFunction
 from embedding import EmbeddingService
 import httpx
+import logging
 
 class APIEmbeddingFunction(EmbeddingFunction):
     def __init__(self):
@@ -257,22 +258,34 @@ class ConversationHistory:
         
     def get_context(self) -> str:
         """获取格式化后的对话上下文"""
-        return "\n".join(str(turn) for turn in self.turns)
+        try:
+            return "\n".join(str(turn) for turn in self.turns)
+        except Exception as e:
+            logging.error(f"获取对话上下文时出错: {str(e)}")
+            return "对话历史暂不可用"
         
     def retrieve(self, user_message: str, n_results: int = 3) -> List[str]:
         """获取与用户消息最相关的历史记忆"""
-        results = self.collection.query(
-            query_texts=[user_message],
-            n_results=n_results,
-            include=['documents', 'metadatas'],
-            where={"type": "user_profile"}  # 只查询用户画像类型的记忆
-        )
-        
-        # 只返回用户画像类型的记忆
-        if results['documents'] and results['metadatas']:
-            return [doc for doc, meta in zip(results['documents'][0], results['metadatas'][0]) 
-                   if meta.get('type') == 'user_profile']
-        return []
+        if not hasattr(self, 'collection') or self.collection is None:
+            logging.warning("向量数据库集合不存在，无法进行检索")
+            return []
+            
+        try:
+            results = self.collection.query(
+                query_texts=[user_message],
+                n_results=n_results,
+                include=['documents', 'metadatas'],
+                where={"type": "user_profile"}  # 只查询用户画像类型的记忆
+            )
+            
+            # 只返回用户画像类型的记忆
+            if results['documents'] and results['metadatas']:
+                return [doc for doc, meta in zip(results['documents'][0], results['metadatas'][0]) 
+                       if meta.get('type') == 'user_profile']
+            return []
+        except Exception as e:
+            logging.error(f"向量数据库检索失败: {str(e)}")
+            return []
     
     async def sync_profile_to_user_info(self, user_info_processor, force_update=False):
         """将用户画像同步到用户信息

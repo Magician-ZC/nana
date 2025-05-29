@@ -234,32 +234,53 @@ class ChatService:
         :param session_id: 会话ID
         :return: 是否成功切换
         """
-        if agent_name in ["nanaA", "nanaB", "nanaC"]:
-            return self.main_agent.set_agent(agent_name)
-        elif agent_name.startswith("custom_"):
-            # 加载自定义角色
-            config_path = os.path.join(self.custom_agents_dir, f"{agent_name}.json")
-            prompt_path = os.path.join(self.custom_agents_dir, f"{agent_name}.txt")
-            
-            if os.path.exists(config_path) and os.path.exists(prompt_path):
-                try:
-                    # 读取配置文件
-                    with open(config_path, "r", encoding="utf-8") as f:
-                        config = json.load(f)
-                    
-                    # 读取提示词文件
-                    with open(prompt_path, "r", encoding="utf-8") as f:
-                        prompt = f.read()
-                    
-                    # 设置自定义角色
-                    return self.main_agent.set_custom_agent(prompt, config)
-                except Exception as e:
-                    print(f"加载自定义角色失败: {e}")
+        print(f"尝试切换智能体: {agent_name}")
+        try:
+            if agent_name in ["nanaA", "nanaB", "nanaC"]:
+                success = self.main_agent.set_agent(agent_name)
+                print(f"切换到内置智能体: {agent_name}, 结果: {'成功' if success else '失败'}")
+                return success
+            elif agent_name.startswith("custom_"):
+                # 确保custom_agents_dir目录存在
+                os.makedirs(self.custom_agents_dir, exist_ok=True)
+                
+                # 加载自定义角色
+                config_path = os.path.join(self.custom_agents_dir, f"{agent_name}.json")
+                prompt_path = os.path.join(self.custom_agents_dir, f"{agent_name}.txt")
+                
+                print(f"加载自定义智能体文件: config={config_path}, prompt={prompt_path}")
+                
+                if os.path.exists(config_path) and os.path.exists(prompt_path):
+                    try:
+                        # 读取配置文件
+                        with open(config_path, "r", encoding="utf-8") as f:
+                            config = json.load(f)
+                        
+                        # 读取提示词文件
+                        with open(prompt_path, "r", encoding="utf-8") as f:
+                            prompt = f.read()
+                        
+                        # 设置自定义角色
+                        success = self.main_agent.set_custom_agent(prompt, config)
+                        print(f"加载自定义智能体: {agent_name}, 结果: {'成功' if success else '失败'}")
+                        return success
+                    except Exception as e:
+                        print(f"加载自定义角色失败: {e}")
+                        return False
+                else:
+                    missing_files = []
+                    if not os.path.exists(config_path):
+                        missing_files.append(config_path)
+                    if not os.path.exists(prompt_path):
+                        missing_files.append(prompt_path)
+                    print(f"自定义角色文件不存在: {agent_name}, 缺少文件: {', '.join(missing_files)}")
                     return False
-            else:
-                print(f"自定义角色文件不存在: {agent_name}")
-                return False
-        return False
+            
+            print(f"不支持的智能体类型: {agent_name}")
+            return False
+        except Exception as e:
+            print(f"切换智能体时发生异常: {e}")
+            return False
 
     async def generate_reply(self, message: str, session_id: str, agent_type: Optional[str] = None, personality: Optional[str] = None, is_category: bool = False, stream: bool = False) -> Tuple[str, Optional[bytes]]:
         """生成回复
@@ -369,17 +390,27 @@ class ChatService:
                 reply, audio_data = await self._generate_complete_reply(message, session_id, agent_type, personality, is_quick_question)
                 
                 # 确保reply是文本内容，而不是JSON
-                if isinstance(reply, str) and (reply.startswith('{') and reply.endswith('}')):
-                    try:
-                        # 尝试解析JSON
-                        reply_json = json.loads(reply)
-                        if 'reply' in reply_json:
-                            # 只取reply字段的内容
-                            reply = reply_json['reply']
-                            print("从JSON响应中提取reply字段")
-                    except json.JSONDecodeError:
-                        # 解析失败，保持原样
-                        pass
+                if isinstance(reply, str):
+                    reply = reply.strip()
+                    if (reply.startswith('{') and reply.endswith('}')):
+                        try:
+                            # 尝试解析JSON
+                            reply_json = json.loads(reply)
+                            if 'reply' in reply_json:
+                                # 只取reply字段的内容
+                                reply = reply_json['reply']
+                                print("在generate_reply中从JSON提取纯文本回复:", reply)
+                        except json.JSONDecodeError:
+                            # 尝试修复双花括号格式
+                            if reply.startswith('{{') and reply.endswith('}}'):
+                                try:
+                                    fixed_json = reply.replace('{{', '{').replace('}}', '}')
+                                    reply_json = json.loads(fixed_json)
+                                    if 'reply' in reply_json:
+                                        reply = reply_json['reply']
+                                        print("在generate_reply中从双花括号JSON提取reply字段")
+                                except:
+                                    print("在generate_reply中修复双花括号格式失败")
                 
                 # 保存当前回复内容
                 self.current_response = reply
@@ -392,250 +423,6 @@ class ChatService:
             traceback.print_exc()
             print(error_msg)
             return f"抱歉，我遇到了一些问题: {str(e)}", None
-            
-            # 处理引导式提问的回复
-            if self.guidance_state["is_guiding"]:
-                try:
-                    reply_data = json.loads(reply)
-                    
-                    # 更新引导状态
-                    question_type = reply_data.get("question_type", "")
-                    self.guidance_state["last_question_type"] = question_type
-                    self.guidance_state["question_count"] += 1
-                    
-                    # 检查是否包含用户信息更新（user_info字段）
-                    if "user_info" in reply_data and isinstance(reply_data["user_info"], dict):
-                        # 更新引导模式的局部用户信息
-                        for key, value in reply_data["user_info"].items():
-                            self.update_guided_user_info(key, value)
-                    
-                    # 检查回复文本是否包含明确的用户信息
-                    if reply_data.get("reply", "") and reply_data.get("question_type", "") != "summary":
-                        # 识别基于冒号的模式 "主题: 内容"
-                        info_matches = re.findall(r'([^:：]+)[：:]\s*([^\n]+)', reply_data["reply"])
-                        for key, value in info_matches:
-                            key = key.strip()
-                            value = value.strip()
-                            if key and value and key.lower() not in ["ai", "助手", "我", "你", "我们", "您"]:
-                                self.update_guided_user_info(key, value)
-                    
-                    # 更新偏离主题计数
-                    if question_type == "refocus":
-                        self.guidance_state["off_topic_count"] += 1
-                    else:
-                        # 如果不是refocus，重置计数
-                        self.guidance_state["off_topic_count"] = 0
-                    
-                    # 记录对话内容
-                    if reply_data.get("reply", "") and not reply_data.get("is_summary") and not reply_data.get("is_confirmation", False):
-                        self.guidance_state["conversation_summary"].append({
-                            "question": reply_data.get("reply", ""),
-                            "answer": message,
-                            "type": question_type
-                        })
-                    
-                    # 如果是总结或者用户已确认退出，重置引导状态
-                    if reply_data.get("is_summary") or self.guidance_state.get("confirmed_exit", False):
-                        print("引导结束，重置状态")
-                        self._reset_guidance_state()
-                    
-                    print(f"引导状态: 问题类型={question_type}, 偏离主题次数={self.guidance_state['off_topic_count']}")
-                    
-                    # 为xinli_agent生成语音
-                    reply_text = reply_data.get("reply", "")
-                    audio_data = None
-                    
-                    # 根据配置决定使用哪个TTS服务为心理咨询回复生成语音
-                    if Config.is_tts_enabled() and self.tts_service:
-                        try:
-                            print("为心理咨询回复生成普通TTS...")
-                            audio_data = self.tts_service.generate_audio(reply_text)
-                            if audio_data and len(audio_data) > 100:
-                                print(f"心理咨询回复普通TTS生成成功，音频大小: {len(audio_data)} 字节")
-                            else:
-                                print("心理咨询回复普通TTS生成失败: 生成的音频数据无效或过小")
-                        except Exception as e:
-                            print(f"为心理咨询回复生成普通语音时出错: {e}")
-                    
-                    # 如果普通TTS失败或未启用，且配置了使用超拟人TTS，则尝试使用超拟人TTS
-                    if (not audio_data or len(audio_data) < 100) and Config.is_super_tts_enabled() and self.super_tts_service:
-                        try:
-                            print("为心理咨询回复生成超拟人TTS...")
-                            audio_data = self.super_tts_service.generate_audio(reply_text)
-                            if audio_data and len(audio_data) > 100:
-                                print(f"心理咨询回复超拟人TTS生成成功，音频大小: {len(audio_data)} 字节")
-                            else:
-                                print("心理咨询回复超拟人TTS生成失败: 生成的音频数据无效或过小")
-                        except Exception as e:
-                            print(f"为心理咨询回复生成超拟人语音时出错: {e}")
-                    
-                    return reply_text, audio_data
-                except json.JSONDecodeError:
-                    print(f"解析引导式提问回复失败: {reply}")
-                    # 如果是退出指令，强制重置状态
-                    if self.guidance_state.get("confirmed_exit", False):
-                        self._reset_guidance_state()
-                    
-                    # 尝试为解析失败的回复也生成语音
-                    audio_data = None
-                    
-                    # 处理可能是JSON格式的回复
-                    reply_text = reply
-                    try:
-                        if reply.strip().startswith('{') and reply.strip().endswith('}'):
-                            # 尝试解析JSON
-                            reply_json = json.loads(reply)
-                            if "reply" in reply_json:
-                                reply_text = reply_json["reply"]
-                                print(f"解析失败，但从JSON中提取到纯文本: {reply_text}")
-                    except:
-                        # 如果解析失败，使用原始回复
-                        pass
-                    
-                    if Config.is_tts_enabled() and self.tts_service:
-                        try:
-                            print("为解析失败的回复生成普通TTS...")
-                            audio_data = self.tts_service.generate_audio(reply_text)  # 使用处理过的纯文本
-                            if audio_data and len(audio_data) > 100:
-                                print(f"解析失败回复普通TTS生成成功，音频大小: {len(audio_data)} 字节")
-                            else:
-                                print("解析失败回复普通TTS生成失败: 生成的音频数据无效或过小")
-                        except Exception as e:
-                            print(f"为解析失败的回复生成普通语音时出错: {e}")
-                    
-                    # 如果普通TTS失败，尝试超拟人TTS
-                    if (not audio_data or len(audio_data) < 100) and Config.is_super_tts_enabled() and self.super_tts_service:
-                        try:
-                            print("为解析失败的回复生成超拟人TTS...")
-                            audio_data = self.super_tts_service.generate_audio(reply_text)  # 使用处理过的纯文本
-                            if audio_data and len(audio_data) > 100:
-                                print(f"解析失败回复超拟人TTS生成成功，音频大小: {len(audio_data)} 字节")
-                            else:
-                                print("解析失败回复超拟人TTS生成失败: 生成的音频数据无效或过小")
-                        except Exception as e:
-                            print(f"为解析失败的回复生成超拟人语音时出错: {e}")
-                    
-                    # 尝试手动构建一个有效的回复
-                    return reply, audio_data
-            
-            # 检查是否有引导决策消息
-            guidance_message = None
-            if is_category:
-                # 查看最近一次对话是否是系统引导
-                if (len(self.main_agent.conversation_history.turns) >= 2 and 
-                    self.main_agent.conversation_history.turns[-1].ask == "SYSTEM_GUIDANCE"):
-                    guidance_message = self.main_agent.conversation_history.turns[-1].answer
-            elif hasattr(self.main_agent.conversation_history, 'last_guidance_message'):
-                guidance_message = self.main_agent.conversation_history.last_guidance_message
-            
-            # 生成语音 (如果语音服务已启用)
-            audio_data = None
-            super_tts_error = None
-            tts_error = None
-            
-            # 处理可能是JSON格式的回复
-            reply_text = reply
-            try:
-                if reply.strip().startswith('{') and reply.strip().endswith('}'):
-                    # 尝试解析JSON
-                    reply_json = json.loads(reply)
-                    if "reply" in reply_json:
-                        reply_text = reply_json["reply"]
-                        print(f"从JSON格式的回复中提取纯文本: {reply_text}")
-            except:
-                # 如果解析失败，使用原始回复
-                pass
-            
-            # 根据配置决定使用哪个TTS服务
-            if Config.is_tts_enabled() and self.tts_service:
-                try:
-                    print("尝试使用普通TTS生成语音...")
-                    audio_data = self.tts_service.generate_audio(reply_text)  # 使用处理过的纯文本
-                    if audio_data and len(audio_data) > 100:  # 确保生成的音频数据有效
-                        print(f"普通TTS生成成功，音频大小: {len(audio_data)} 字节")
-                    else:
-                        tts_error = "生成的音频数据无效或过小"
-                        print(f"普通TTS生成失败: {tts_error}")
-                except Exception as e:
-                    tts_error = str(e)
-                    print(f"生成普通语音时出错: {e}")
-            
-            # 如果普通TTS失败或未启用，且配置了使用超拟人TTS，则尝试使用超拟人TTS
-            if (not audio_data or len(audio_data) < 100) and Config.is_super_tts_enabled() and self.super_tts_service:
-                try:
-                    print("尝试使用超拟人TTS生成语音...")
-                    audio_data = self.super_tts_service.generate_audio(reply_text)  # 使用处理过的纯文本
-                    if audio_data and len(audio_data) > 100:
-                        print(f"超拟人TTS生成成功，音频大小: {len(audio_data)} 字节")
-                    else:
-                        super_tts_error = "生成的音频数据无效或过小"
-                        print(f"超拟人TTS生成失败: {super_tts_error}")
-                except Exception as e:
-                    super_tts_error = str(e)
-                    print(f"生成超拟人语音时出错: {e}")
-            
-            # 如果有引导决策消息，同样为其生成语音并保存到临时属性中
-            if guidance_message:
-                try:
-                    # 使用异步方式生成语音，避免阻塞
-                    loop = asyncio.get_running_loop()
-                    
-                    # 根据配置决定使用哪个TTS服务
-                    if Config.is_tts_enabled() and self.tts_service:
-                        print("尝试为引导决策消息生成普通TTS...")
-                        
-                        # 使用超时控制，防止阻塞
-                        try:
-                            guidance_audio = await asyncio.wait_for(
-                                loop.run_in_executor(
-                                    None, 
-                                    self.tts_service.generate_audio, 
-                                    guidance_message
-                                ),
-                                timeout=10.0
-                            )
-                            
-                            if guidance_audio and len(guidance_audio) > 100:
-                                # 将引导决策音频保存到临时属性中，供API响应获取
-                                self.main_agent.conversation_history.guidance_audio = guidance_audio
-                                print(f"引导决策普通TTS生成成功，音频大小: {len(guidance_audio)} 字节")
-                        except asyncio.TimeoutError:
-                            print("引导决策普通TTS生成超时")
-                        except Exception as e:
-                            print(f"引导决策普通TTS生成出错: {e}")
-                    
-                    # 如果普通TTS失败或未启用，且配置了使用超拟人TTS，则尝试使用超拟人TTS
-                    if not hasattr(self.main_agent.conversation_history, 'guidance_audio') and Config.is_super_tts_enabled() and self.super_tts_service:
-                        print("尝试为引导决策消息生成超拟人TTS...")
-                        
-                        # 使用超时控制，防止阻塞
-                        try:
-                            guidance_audio = await asyncio.wait_for(
-                                loop.run_in_executor(
-                                    None, 
-                                    self.super_tts_service.generate_audio, 
-                                    guidance_message
-                                ),
-                                timeout=10.0
-                            )
-                            
-                            if guidance_audio and len(guidance_audio) > 100:
-                                # 将引导决策音频保存到临时属性中，供API响应获取
-                                self.main_agent.conversation_history.guidance_audio = guidance_audio
-                                print(f"引导决策超拟人TTS生成成功，音频大小: {len(guidance_audio)} 字节")
-                        except asyncio.TimeoutError:
-                            print("引导决策超拟人TTS生成超时")
-                        except Exception as e:
-                            print(f"引导决策超拟人TTS生成出错: {e}")
-                
-                except Exception as e:
-                    print(f"生成引导决策语音时出错: {e}")
-            
-            return reply, audio_data
-            
-        except Exception as e:
-            print(f"生成回复时出错: {e}")
-            return "抱歉，发生了错误，请稍后再试。", None
 
     async def response_stream(self, message: str, session_id: str, agent_type: Optional[str] = None, personality: Optional[str] = None, is_category: bool = False):
         """流式生成回复，以generator形式返回
@@ -726,43 +513,69 @@ class ChatService:
                 is_category=is_category
             )
             
-            # 生成语音
+            # 确保纯文本回复格式，移除JSON
+            if isinstance(reply_text, str):
+                # 检查是否是JSON格式
+                reply_text = reply_text.strip()
+                if (reply_text.startswith('{') and reply_text.endswith('}')):
+                    try:
+                        # 尝试解析JSON
+                        reply_json = json.loads(reply_text)
+                        if 'reply' in reply_json:
+                            # 只取reply字段的内容
+                            reply_text = reply_json['reply']
+                            print("从JSON中提取纯文本回复:", reply_text)
+                    except json.JSONDecodeError:
+                        # 不是标准JSON，检查是否是双花括号格式
+                        if reply_text.startswith('{{') and reply_text.endswith('}}'):
+                            print("检测到双花括号格式，尝试修正")
+                            fixed_json = reply_text.replace('{{', '{').replace('}}', '}')
+                            try:
+                                reply_json = json.loads(fixed_json)
+                                if 'reply' in reply_json:
+                                    reply_text = reply_json['reply']
+                                    print("从双花括号JSON中提取reply字段")
+                            except json.JSONDecodeError:
+                                print("双花括号内容不是有效的JSON格式，继续处理")
+            
+            # 生成语音 - 根据用户设置决定是否生成
             audio_data = None
-            if Config.is_tts_enabled() and self.tts_service:
+            
+            # 获取当前用户的TTS设置
+            user_settings = None
+            try:
+                user_settings = self.user_settings
+                print(f"加载到用户 {self.current_user_id} 的设置: {user_settings}")
+            except Exception as e:
+                print(f"获取用户TTS设置时出错: {e}")
+                
+            # 检查用户设置中的TTS启用状态
+            user_tts_enabled = False
+            user_super_tts_enabled = False
+            
+            if user_settings:
+                user_tts_enabled = user_settings.get('enable_tts', False)
+                user_super_tts_enabled = user_settings.get('enable_super_tts', False)
+            
+            # 只有当用户设置启用了普通TTS时才尝试生成
+            if user_tts_enabled and Config.is_tts_enabled() and self.tts_service:
                 try:
-                    # 如果reply_text可能是JSON格式，提取reply字段
-                    text_for_tts = reply_text
-                    if isinstance(reply_text, str) and reply_text.strip().startswith('{') and reply_text.strip().endswith('}'):
-                        try:
-                            reply_json = json.loads(reply_text)
-                            if 'reply' in reply_json:
-                                text_for_tts = reply_json['reply']
-                        except json.JSONDecodeError:
-                            # 解析失败，使用原始文本
-                            pass
-                    
-                    print("为回复生成普通TTS...")
-                    audio_data = self.tts_service.generate_audio(text_for_tts)
+                    print("用户已启用普通TTS，生成普通TTS...")
+                    audio_data = self.tts_service.generate_audio(reply_text)
                 except Exception as e:
                     print(f"生成普通TTS时出错: {e}")
+            else:
+                print("用户未启用普通TTS或系统TTS未配置，跳过普通TTS生成")
             
-            # 如果普通TTS失败，尝试使用超拟人TTS
-            if (not audio_data or len(audio_data) < 100) and Config.is_super_tts_enabled() and self.super_tts_service:
+            # 只有当用户设置启用了超拟人TTS且普通TTS失败时才尝试生成
+            if (not audio_data or len(audio_data) < 100) and user_super_tts_enabled and Config.is_super_tts_enabled() and self.super_tts_service:
                 try:
-                    print("为回复生成超拟人TTS...")
-                    text_for_tts = reply_text
-                    if isinstance(reply_text, str) and reply_text.strip().startswith('{') and reply_text.strip().endswith('}'):
-                        try:
-                            reply_json = json.loads(reply_text)
-                            if 'reply' in reply_json:
-                                text_for_tts = reply_json['reply']
-                        except json.JSONDecodeError:
-                            # 解析失败，使用原始文本
-                            pass
-                    
-                    audio_data = self.super_tts_service.generate_audio(text_for_tts)
+                    print("用户已启用超拟人TTS，生成超拟人TTS...")
+                    audio_data = self.super_tts_service.generate_audio(reply_text)
                 except Exception as e:
                     print(f"生成超拟人TTS时出错: {e}")
+            elif not user_super_tts_enabled:
+                print("用户未启用超拟人TTS，跳过超拟人TTS生成")
             
             return reply_text, audio_data
         except Exception as e:

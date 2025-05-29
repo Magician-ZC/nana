@@ -10,15 +10,20 @@ import re
 import math
 import io
 from collections import Counter
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, AsyncGenerator, Tuple
 import asyncio
 import logging
 import random
 import db_manager  # 导入新的数据库模块
+import requests
+import urllib3
+
+# 忽略SSL证书验证警告
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Form, File, UploadFile, Body, Header, Depends, HTTPException, Response
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -620,6 +625,44 @@ def generate_topic_suggestions():
 assessment_api.init_router(chat_service, extract_text_from_file, is_meaningless_input)
 app.include_router(assessment_api.assessment_router, prefix="/api")
 
+
+# 在应用启动事件中检查并创建必要的目录
+@app.on_event("startup")
+async def startup_event():
+    # 确保数据库已初始化
+    await db_manager.init_db()
+    
+    # 确保所有必要的目录都存在
+    ensure_directories_exist()
+    
+    # 打印启动信息
+    print("应用已启动，API服务已就绪")
+
+# 添加确保目录存在的函数
+def ensure_directories_exist():
+    """确保应用需要的所有目录都存在"""
+    # 创建保存目录
+    os.makedirs("save", exist_ok=True)
+    
+    # 创建自定义智能体目录
+    os.makedirs("save/custom_agents", exist_ok=True)
+    
+    # 创建临时上传目录
+    os.makedirs("temp_uploads", exist_ok=True)
+    
+    # 创建日志目录
+    os.makedirs("save/log", exist_ok=True)
+    
+    # 创建用户目录
+    os.makedirs("save/users", exist_ok=True)
+    
+    # 创建记忆存储目录
+    os.makedirs("save/memory", exist_ok=True)
+    
+    # 创建评估目录
+    os.makedirs("save/assessments", exist_ok=True)
+    
+    print("所有必要的目录已创建")
 
 # 确保保存自定义角色的目录存在
 CUSTOM_AGENTS_DIR = "save/custom_agents"
@@ -3449,6 +3492,394 @@ async def list_users():
             status_code=500,
             content={"success": False, "message": f"服务器错误: {str(e)}"}
         )
+
+# 添加外部智能体平台的配置
+EXTERNAL_AGENT_PLATFORM_URL = "https://192.168.3.95:1443/console/api"
+EXTERNAL_AGENT_PLATFORM_EMAIL = "zc710932004@gmail.com"
+EXTERNAL_AGENT_PLATFORM_PASSWORD = "admin123"
+
+# 存储外部平台的访问令牌
+external_platform_token = None
+
+# 添加获取外部平台令牌的函数
+async def get_external_platform_token():
+    global external_platform_token
+    
+    # 如果已有令牌，则直接返回
+    if external_platform_token:
+        return external_platform_token
+    
+    try:
+        # 忽略SSL证书验证（仅用于开发环境）
+        login_url = f"{EXTERNAL_AGENT_PLATFORM_URL}/login"
+        login_data = {
+            "email": EXTERNAL_AGENT_PLATFORM_EMAIL,
+            "password": EXTERNAL_AGENT_PLATFORM_PASSWORD,
+            "language": "zh-Hans",
+            "remember_me": True
+        }
+        
+        # 设置超时时间，避免长时间等待
+        response = requests.post(
+            login_url, 
+            json=login_data, 
+            verify=False,
+            timeout=5  # 减少超时时间，避免长时间等待
+        )
+        
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                if isinstance(data, dict) and "data" in data:
+                    data_obj = data.get("data")
+                    if isinstance(data_obj, dict) and "access_token" in data_obj:
+                        external_platform_token = data_obj.get("access_token")
+                        logging.info("成功获取外部平台访问令牌")
+                        return external_platform_token
+            except json.JSONDecodeError:
+                logging.error(f"解析外部平台响应失败，响应内容: {response.text[:100]}...")
+        
+        # 如果响应不成功或解析失败，返回None
+        logging.error(f"获取外部平台访问令牌失败: HTTP {response.status_code}")
+        return None
+        
+    except requests.exceptions.Timeout:
+        logging.error("获取外部平台访问令牌超时")
+        return None
+    except requests.exceptions.ConnectionError:
+        logging.error("连接外部平台失败，请检查网络或服务器状态")
+        return None
+    except Exception as e:
+        logging.error(f"获取外部平台访问令牌时出错: {str(e)}")
+        return None
+
+# 添加外部智能体模型
+class ExternalAgentModel(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    icon: Optional[str] = None
+    icon_background: Optional[str] = None
+    pre_prompt: Optional[str] = None
+
+@app.get("/api/external_agents")
+async def get_external_agents():
+    """
+    获取外部智能体平台的智能体列表
+    """
+    try:
+        # 获取访问令牌
+        token = await get_external_platform_token()
+        if not token:
+            return {"success": False, "message": "无法获取访问令牌"}
+        
+        # 构建请求头
+        headers = {
+            "Authorization": f"Bearer {token}"
+        }
+        
+        # 请求智能体列表
+        agents_url = f"{EXTERNAL_AGENT_PLATFORM_URL}/apps?page=1&limit=30&name=&is_created_by_me=false"
+        response = requests.get(agents_url, headers=headers, verify=False)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # 提取所需的智能体信息
+            agents = []
+            if data and isinstance(data, dict):
+                # 安全地获取data列表
+                agent_list = data.get("data", [])
+                if agent_list and isinstance(agent_list, list):
+                    for agent in agent_list:
+                        if not agent or not isinstance(agent, dict):
+                            continue
+                            
+                        # 安全地获取model_config
+                        model_config = agent.get("model_config", {}) or {}
+                        pre_prompt = ""
+                        if model_config and isinstance(model_config, dict):
+                            pre_prompt = model_config.get("pre_prompt", "")
+                        
+                        # 添加智能体信息
+                        agents.append({
+                            "id": agent.get("id", ""),
+                            "name": agent.get("name", "默认智能体"),
+                            "description": agent.get("description", ""),
+                            "icon": agent.get("icon", ""),
+                            "icon_background": agent.get("icon_background", ""),
+                            "pre_prompt": pre_prompt
+                        })
+            
+            # 如果API没有返回数据，返回一些默认智能体作为示例
+            if not agents:
+                agents = [
+                    {
+                        "id": "demo1",
+                        "name": "心理助手",
+                        "description": "专业心理咨询智能体",
+                        "icon": "🧠",
+                        "icon_background": "#FFEAD5",
+                        "pre_prompt": "你是一个专业的心理咨询师，擅长解决心理问题。"
+                    },
+                    {
+                        "id": "demo2",
+                        "name": "学习辅导",
+                        "description": "学习辅导智能体",
+                        "icon": "📚",
+                        "icon_background": "#E6F7FF",
+                        "pre_prompt": "你是一个专业的学习辅导老师，擅长解答各学科问题和学习方法指导。"
+                    }
+                ]
+                logging.warning("API未返回任何智能体数据，使用默认示例")
+                
+            return {"success": True, "agents": agents}
+        else:
+            logging.error(f"获取智能体列表API返回错误: {response.status_code}, {response.text}")
+            return {
+                "success": False, 
+                "message": f"获取智能体列表失败: HTTP {response.status_code}"
+            }
+    
+    except Exception as e:
+        logging.error(f"获取外部智能体列表时出错: {str(e)}")
+        return {
+            "success": False, 
+            "message": f"获取智能体列表时出错，请稍后再试"
+        }
+
+@app.post("/api/switch_external_agent")
+async def switch_external_agent(request: dict = Body(...)):
+    """
+    切换到外部智能体
+    """
+    try:
+        agent_id = request.get("agent_id")
+        agent_name = request.get("name", "外部智能体")
+        agent_prompt = request.get("prompt")
+        session_id = request.get("session_id", "default")
+        
+        # 记录请求信息用于调试
+        logging.info(f"切换外部智能体请求: agent_id={agent_id}, name={agent_name}, session_id={session_id}")
+        
+        if not agent_id:
+            logging.error("切换外部智能体失败: 缺少agent_id")
+            return {"success": False, "message": "缺少agent_id参数"}
+        
+        if not agent_prompt:
+            # 获取智能体提示词
+            token = await get_external_platform_token()
+            if not token:
+                logging.error("切换外部智能体失败: 无法获取访问令牌")
+                return {"success": False, "message": "无法获取访问令牌"}
+            
+            # 构建请求头
+            headers = {
+                "Authorization": f"Bearer {token}"
+            }
+            
+            # 请求智能体详情
+            try:
+                agent_url = f"{EXTERNAL_AGENT_PLATFORM_URL}/apps/{agent_id}"
+                response = requests.get(
+                    agent_url, 
+                    headers=headers, 
+                    verify=False,
+                    timeout=5
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    if "data" in data and "model_config" in data["data"]:
+                        agent_prompt = data["data"]["model_config"].get("pre_prompt", "")
+                        logging.info("成功获取智能体提示词")
+                    else:
+                        logging.error(f"智能体详情响应格式不正确: {data}")
+                else:
+                    logging.error(f"获取智能体详情失败: HTTP {response.status_code}, {response.text}")
+            except Exception as e:
+                logging.error(f"获取智能体详情时出错: {str(e)}")
+            
+            if not agent_prompt:
+                logging.error("切换外部智能体失败: 无法获取智能体提示词")
+                return {"success": False, "message": "无法获取智能体提示词"}
+        
+        # 确保保存目录存在
+        custom_agents_dir = os.path.join("save", "custom_agents")
+        os.makedirs(custom_agents_dir, exist_ok=True)
+        
+        # 创建临时自定义角色，使用external_前缀
+        custom_agent_id = f"custom_external_{agent_id}"
+        custom_agent_path = os.path.join(custom_agents_dir, f"{custom_agent_id}.txt")
+        custom_config_path = os.path.join(custom_agents_dir, f"{custom_agent_id}.json")
+        
+        logging.info(f"保存文件路径: prompt={custom_agent_path}, config={custom_config_path}")
+        
+        try:
+            # 保存提示词文件
+            with open(custom_agent_path, "w", encoding="utf-8") as f:
+                f.write(agent_prompt)
+                
+            # 保存配置文件
+            config = {
+                "id": custom_agent_id,
+                "name": agent_name,
+                "description": request.get("description", ""),
+                "personality": "helpful",
+                "interests": [],
+                "lifestyle": "",
+                "values": ""
+            }
+            with open(custom_config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+                
+            logging.info(f"成功保存智能体文件: {custom_agent_id}")
+        except Exception as e:
+            logging.error(f"保存智能体文件时出错: {str(e)}")
+            return {"success": False, "message": f"保存智能体文件时出错: {str(e)}"}
+        
+        # 切换智能体
+        try:
+            success = chat_service.change_agent(custom_agent_id, session_id)
+            if success:
+                logging.info(f"成功切换到智能体: {custom_agent_id}")
+                return {"success": True, "message": f"已切换到智能体: {agent_name}"}
+            else:
+                logging.error(f"chat_service.change_agent 方法返回 False")
+                return {"success": False, "message": "切换智能体失败，请检查智能体配置"}
+        except Exception as e:
+            logging.error(f"调用change_agent方法时出错: {str(e)}")
+            return {"success": False, "message": f"切换智能体时出错: {str(e)}"}
+    
+    except Exception as e:
+        logging.error(f"切换外部智能体时出错: {str(e)}")
+        return {"success": False, "message": f"切换智能体时出错: {str(e)}"}
+
+@app.post("/api/reset_default_agent")
+async def reset_default_agent(request: dict = Body(...)):
+    """
+    重置为默认智能体
+    """
+    try:
+        session_id = request.get("session_id", "default")
+        
+        # 切换回默认智能体
+        # chat_service = get_chat_service()  # 错误的调用
+        # 直接使用全局chat_service变量
+        success = chat_service.change_agent("nanaA", session_id)
+        
+        return {"success": success, "message": "已重置为默认智能体" if success else "重置智能体失败"}
+    
+    except Exception as e:
+        logging.error(f"重置默认智能体时出错: {str(e)}")
+        return {"success": False, "message": f"重置智能体时出错: {str(e)}"}
+
+# 修改现有的登录处理函数，支持自动登录
+@app.get("/")
+async def root():
+    # 自动重定向到主界面
+    return RedirectResponse(url="/index.html")
+
+# 更新登录API，支持自动登录
+@app.post("/api/login")
+async def login_user(request: Request):
+    try:
+        # 检查是否是外部请求或自动登录
+        body = await request.json()
+        username = body.get("username", "admin")
+        password = body.get("password", "123456")
+        
+        # 如果是admin账号，直接通过验证
+        if username == "admin":
+            # 创建会话ID
+            session_id = str(uuid.uuid4())
+            
+            # 返回成功响应
+            return {
+                "success": True,
+                "data": {
+                    "user": {
+                        "id": "admin",
+                        "username": "admin",
+                        "display_name": "管理员",
+                        "email": "admin@example.com",
+                        "is_admin": True,
+                        "created_at": datetime.now().isoformat()
+                    },
+                    "session_id": session_id
+                }
+            }
+        else:
+            # 其他账号走正常验证逻辑
+            result = await authenticate_user(username, password)
+            
+            if result["success"]:
+                # 认证成功，创建会话
+                session_id = str(uuid.uuid4())
+                
+                # 返回用户信息和会话ID
+                return {
+                    "success": True,
+                    "data": {
+                        "user": result["user"],
+                        "session_id": session_id
+                    }
+                }
+            else:
+                # 认证失败
+                return {
+                    "success": False,
+                    "message": result["message"]
+                }
+    
+    except Exception as e:
+        logging.error(f"登录时出错: {str(e)}")
+        return {"success": False, "message": f"登录时出错: {str(e)}"}
+
+@app.get("/api/external_agent/{agent_id}")
+async def get_external_agent(agent_id: str):
+    """
+    获取外部智能体平台的特定智能体详情
+    """
+    try:
+        # 获取访问令牌
+        token = await get_external_platform_token()
+        if not token:
+            return {"success": False, "message": "无法获取访问令牌"}
+        
+        # 构建请求头
+        headers = {
+            "Authorization": f"Bearer {token}"
+        }
+        
+        # 请求智能体详情
+        agent_url = f"{EXTERNAL_AGENT_PLATFORM_URL}/apps/{agent_id}"
+        response = requests.get(agent_url, headers=headers, verify=False)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if "data" in data:
+                agent_data = data["data"]
+                pre_prompt = agent_data.get("model_config", {}).get("pre_prompt", "")
+                
+                agent = {
+                    "id": agent_data.get("id", ""),
+                    "name": agent_data.get("name", ""),
+                    "description": agent_data.get("description", ""),
+                    "icon": agent_data.get("icon", ""),
+                    "icon_background": agent_data.get("icon_background", ""),
+                    "pre_prompt": pre_prompt
+                }
+                
+                return {"success": True, "agent": agent}
+            else:
+                return {"success": False, "message": "无法解析智能体详情数据"}
+        else:
+            return {"success": False, "message": f"获取智能体详情失败: {response.text}"}
+    
+    except Exception as e:
+        logging.error(f"获取外部智能体详情时出错: {str(e)}")
+        return {"success": False, "message": f"获取智能体详情时出错: {str(e)}"}
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8666, reload=True, ssl_keyfile=None, ssl_certfile=None)

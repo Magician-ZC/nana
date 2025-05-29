@@ -88,6 +88,7 @@ export const useChatStore = defineStore('chat', () => {
     { id: 'nanaB', name: '娜娜B', description: '知性大姐姐' },
     { id: 'nanaC', name: '娜娜C', description: '元气少女' }
   ])
+  const sessionId = ref(null) // 添加会话ID
   
   // 音频播放器
   let audioPlayer = null
@@ -107,6 +108,10 @@ export const useChatStore = defineStore('chat', () => {
   function initializeChat() {
     console.log('初始化聊天存储')
     // 不再重置欢迎语状态，保持一天只显示一次
+    
+    // 生成新的会话ID
+    sessionId.value = `session_${Date.now()}`
+    console.log('生成新的会话ID:', sessionId.value)
     
     // 检查用户是否已登录
     if (userStore.isLoggedIn && userStore.userProfile) {
@@ -505,7 +510,7 @@ export const useChatStore = defineStore('chat', () => {
       // 构建请求体
       const requestBody = { 
         message: message,
-        session_id: 'default',
+        session_id: sessionId.value,
         agent_type: currentAgent.value,
         personality: agentPersonality,
         is_category: isQuickQuestion,
@@ -522,7 +527,7 @@ export const useChatStore = defineStore('chat', () => {
         console.log(`未指定引导模式状态，让后端维持当前状态`);
       }
       
-      console.log(`发送消息: ${message}, 是否是快捷提问: ${isQuickQuestion}, 是否结束指令: ${isEndGuidanceCommand}`);
+      console.log(`发送消息: ${message}, 是否是快捷提问: ${isQuickQuestion}, 是否结束指令: ${isEndGuidanceCommand}, 当前智能体: ${currentAgent.value}`);
       
       // 创建流式请求
       const controller = new AbortController()
@@ -1090,7 +1095,7 @@ export const useChatStore = defineStore('chat', () => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ 
-          session_id: 'default',
+          session_id: sessionId.value,
           agent_type: currentAgent.value
         }),
       })
@@ -1274,6 +1279,19 @@ export const useChatStore = defineStore('chat', () => {
     return sendStreamMessage(message, forcedGuidanceMode);
   }
 
+  // 添加系统消息
+  function addSystemMessage(content) {
+    if (!content) return
+    
+    console.log('添加系统消息:', content)
+    messages.value.push({
+      id: Date.now(),
+      type: 'system',
+      content,
+      timestamp: new Date().toISOString()
+    })
+  }
+
   return {
     // 状态
     messages,
@@ -1285,6 +1303,8 @@ export const useChatStore = defineStore('chat', () => {
     currentAgentInfo,
     agents,
     useStreamResponse,
+    sessionId, // 导出会话ID
+    
     // 方法
     initializeChat,
     setTrackingStatus,
@@ -1298,6 +1318,8 @@ export const useChatStore = defineStore('chat', () => {
     saveMessages,
     loadMessages,
     clearMessages,
-    isInGuidanceMode
+    isInGuidanceMode,
+    setGuidanceMode,
+    addSystemMessage // 导出添加系统消息方法
   }
 })

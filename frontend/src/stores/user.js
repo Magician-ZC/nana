@@ -156,6 +156,44 @@ export const useUserStore = defineStore('user', () => {
     }
   }
   
+  // 使用凭据直接登录的方法（用于自动登录）
+  async function loginWithCredentials(username, password) {
+    console.log(`尝试以用户 ${username} 自动登录`)
+    
+    try {
+      const response = await fetch(getApiUrl('login'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ username, password }),
+      })
+      
+      const data = await response.json()
+      
+      if (data.success && data.data) {
+        // 保存会话ID和用户资料
+        sessionId.value = data.data.session_id
+        localStorage.setItem('session_id', data.data.session_id)
+        isAuthenticated.value = true
+        
+        if (data.data.user) {
+          userProfile.value = data.data.user
+          localStorage.setItem('user_profile', JSON.stringify(data.data.user))
+        }
+        
+        console.log('自动登录成功')
+        return true
+      } else {
+        console.error('自动登录失败:', data.message)
+        return false
+      }
+    } catch (error) {
+      console.error('自动登录过程出错:', error)
+      return false
+    }
+  }
+  
   // 用户注册函数
   async function register(userData) {
     try {
@@ -339,25 +377,26 @@ export const useUserStore = defineStore('user', () => {
   
   return {
     // 状态
-    sessionId,
     authToken,
-    userProfile,
+    sessionId,
     isAuthenticated,
+    userProfile,
     isLoggedIn,
     username,
     email,
     
     // 方法
+    checkAuth,
     login,
     register,
     logout,
-    checkAuth,
     verifySession,
     updateProfile,
     changePassword,
     forgotPassword,
     resetPassword,
     clearAuthState,
-    initializeSession
+    initializeSession,
+    loginWithCredentials
   }
 }) 

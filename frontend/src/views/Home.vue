@@ -17,7 +17,7 @@
       <AssessmentButtons />
     
       <TimeWeather />
-      <QuickQuestions />
+      <AgentMarket />
       <Live2DModel ref="live2dRef" :modelId="chatStore.currentModel" />
       <div class="controls-container">
         <AgentSelector @agent-change="handleAgentChange" :currentModel="chatStore.currentAgent" />
@@ -46,7 +46,7 @@ import Live2DModel from '../components/Live2DModel.vue'
 import AgentSelector from '../components/AgentSelector.vue'
 import ChatPanel from '../components/ChatPanel.vue'
 import TimeWeather from '../components/TimeWeather.vue'
-import QuickQuestions from '../components/QuickQuestions.vue'
+import AgentMarket from '../components/AgentMarket.vue'
 import SettingsButton from '../components/SettingsButton.vue'
 import AssessmentButtons from '../components/AssessmentButtons.vue'
 import PermissionTest from '../components/PermissionTest.vue'
