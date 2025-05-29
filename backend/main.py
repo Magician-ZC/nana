@@ -17,6 +17,7 @@ import random
 import db_manager  # 导入新的数据库模块
 import requests
 import urllib3
+from generate_cert import get_local_ip
 
 # 忽略SSL证书验证警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -3501,7 +3502,9 @@ async def list_users():
         )
 
 # 添加外部智能体平台的配置
-EXTERNAL_AGENT_PLATFORM_URL = "https://192.168.3.95:1443/console/api"
+# 获取本地IP
+LOCAL_IP = get_local_ip()
+EXTERNAL_AGENT_PLATFORM_URL = f"https://{LOCAL_IP}:1443/console/api"
 EXTERNAL_AGENT_PLATFORM_EMAIL = "zc710932004@gmail.com"
 EXTERNAL_AGENT_PLATFORM_PASSWORD = "admin123"
 

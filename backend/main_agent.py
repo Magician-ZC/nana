@@ -1,4 +1,4 @@
-from llm import LLMService
+from .llm import LLMService
 from typing import List, Dict, Tuple
 import os
 from datetime import datetime
