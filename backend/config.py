@@ -1,10 +1,12 @@
 import os
+from generate_cert import get_local_ip  # 导入获取本地IP的函数
 
 class Config:
     ''' LLM配置 '''
 
-    LLM_API_URL = os.environ.get("LLM_API_URL", "https://api.ppinfra.com/v3/openai")
-    LLM_API_KEY = os.environ.get("LLM_API_KEY", "sk_8wpzHpLKzD8JzBHfTblPzLNK54PmH2Tk7VRJmHFZ2g8")
+    LLM_API_URL = os.environ.get("LLM_API_URL", f"http://{get_local_ip()}:11434")
+    LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+    LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:32b")
     
     ''' 向量模型配置 '''
     EMBEDDING_API_KEY = "sk-eziehqfupwjhffcnixziqozcqxaqkgnzshgvueemosdijebj"
@@ -21,9 +23,9 @@ class Config:
         TTS服务配置（科大讯飞）
     '''
     # TTS功能配置
-    ENABLE_TTS_GLOBAL = True  # 是否启用全局TTS功能
+    ENABLE_TTS_GLOBAL = False  # 是否启用全局TTS功能
     ENABLE_TTS = False  # 是否启用普通TTS
-    ENABLE_SUPER_TTS = True  # 是否启用超拟人TTS
+    ENABLE_SUPER_TTS = False  # 是否启用超拟人TTS
     
     # 普通TTS可用音色列表
     TTS_VOICE_LIST = [

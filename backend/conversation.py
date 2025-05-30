@@ -131,7 +131,7 @@ class ConversationHistory:
         
         # 使用LLM生成用户画像
         from llm import LLMService
-        llm_service = LLMService(api_key=Config.LLM_API_KEY, api_url=Config.LLM_API_URL)
+        llm_service = LLMService(api_key=Config.LLM_API_KEY, api_url=Config.LLM_API_URL, model=Config.LLM_MODEL)
         
         prompt = f"""请你仔细分析以下对话内容，并对这段对话进行全面而详细的总结。
                 

@@ -8,22 +8,33 @@ import aiohttp
 import os
 import httpx
 from datetime import datetime
+from config import Config
 
 class LLMService:
-    def __init__(self, api_key: str = "", api_url: str = "", model: str = "claude-3-sonnet-20240229"):
+    def __init__(self, api_key: str = "", api_url: str = "", model: str = None):
         self.api_key = api_key
         self.api_url = api_url
-        self.model = model
+        self.model = model if model else Config.LLM_MODEL
         self.chat_service = None  # 添加对ChatService的引用
         
         # 创建日志目录
         self.log_dir = 'save/llm_log'
         os.makedirs(self.log_dir, exist_ok=True)
         
-        self.client = OpenAI(
-            base_url=api_url,
-            api_key=api_key
-        )
+        # 构造OpenAI客户端，处理空API密钥的情况
+        client_kwargs = {
+            "base_url": api_url
+        }
+        
+        # 仅当API密钥不为空时添加到客户端参数中
+        if api_key:
+            client_kwargs["api_key"] = api_key
+        else:
+            # 对于Ollama等不需要API密钥的服务，添加无意义但有效的API密钥
+            client_kwargs["api_key"] = "sk_no_key_required"
+        
+        self.client = OpenAI(**client_kwargs)
+        
         # 检查API是否支持视觉功能
         try:
             self.vision_model_available = "GPT" in api_url or "gpt" in api_url
@@ -47,12 +58,68 @@ class LLMService:
         Returns:
             str: 模型回复的文本
         """
-        return await self.generate_response(
-            message=message,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            is_json=False
-        )
+        # 检测URL是否是Ollama服务（没有/v1路径）
+        if "ollama" in self.api_url.lower() or "11434" in self.api_url:
+            return await self._ollama_generate(message, temperature, max_tokens)
+        else:
+            # 使用OpenAI兼容接口
+            return await self.generate_response(
+                message=message,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                is_json=False
+            )
+
+    async def _ollama_generate(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048) -> str:
+        """使用Ollama原生API接口生成回复
+        
+        Args:
+            prompt: 提示词
+            temperature: 温度参数
+            max_tokens: 最大token数
+            
+        Returns:
+            str: 生成的回复
+        """
+        try:
+            # 创建异步HTTP客户端
+            timeout = httpx.Timeout(90.0, connect=30.0)  # 增加超时时间到90秒
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                # 构建请求数据 - 使用Ollama原生API格式
+                request_data = {
+                    "model": self.model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": temperature,
+                        "num_predict": max_tokens
+                    }
+                }
+                
+                # 直接使用固定的api/generate端点
+                url = f"{self.api_url}/api/generate"
+                print(f"发送请求到: {url}")
+                
+                response = await client.post(
+                    url,
+                    json=request_data,
+                    headers={"Content-Type": "application/json"}
+                )
+                
+                # 检查响应状态
+                if response.status_code != 200:
+                    raise Exception(f"Ollama API错误: 状态码 {response.status_code}, 响应: {response.text}")
+                
+                # 解析响应
+                response_data = response.json()
+                if "response" in response_data:
+                    return response_data["response"].strip()
+                else:
+                    raise Exception(f"Ollama响应格式异常: {response_data}")
+                    
+        except Exception as e:
+            print(f"Ollama调用出错: {str(e)}")
+            raise
     
     async def analyze_image(self, img_base64: str, prompt: str = None) -> str:
         """分析图片内容并返回描述文本
@@ -135,20 +202,24 @@ class LLMService:
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     # 构建请求数据
                     request_data = {
-                        "model": "deepseek/deepseek-v3/community",
+                        "model": self.model,
                         "messages": messages,
                         "temperature": temperature,
                         "max_tokens": max_tokens
                     }
                     
+                    # 构建请求头，仅在API密钥不为空时添加Authorization头
+                    headers = {
+                        "Content-Type": "application/json"
+                    }
+                    if self.api_key:
+                        headers["Authorization"] = f"Bearer {self.api_key}"
+                    
                     # 发送请求到API
                     response = await client.post(
                         f"{self.api_url}/chat/completions",
                         json=request_data,
-                        headers={
-                            "Authorization": f"Bearer {self.api_key}",
-                            "Content-Type": "application/json"
-                        }
+                        headers=headers
                     )
                     
                     # 检查响应状态
@@ -264,43 +335,105 @@ class LLMService:
         Yields:
             str: 文本块
         """
+        # 检测URL是否是Ollama服务（没有/v1路径）
+        if "ollama" in self.api_url.lower() or "11434" in self.api_url:
+            async for text_chunk in self._ollama_generate_streaming(prompt, temperature, max_tokens):
+                yield text_chunk
+        else:
+            # 使用OpenAI兼容接口
+            try:
+                # 构建消息列表
+                messages = [
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+                
+                # 使用流式API
+                response = await asyncio.to_thread(
+                    self.client.chat.completions.create,
+                    model=self.model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=True
+                )
+                
+                # 流式输出文本块
+                for chunk in response:
+                    if chunk.choices and len(chunk.choices) > 0:
+                        if chunk.choices[0].delta.content:
+                            content = chunk.choices[0].delta.content
+                            # 尝试检查是否是JSON格式的数据，如果是，尝试解析JSON并只返回reply字段
+                            try:
+                                # 只对疑似JSON字符串进行检查（以{开头的内容）
+                                if '{' in content and ('"reply"' in content or '"is_question"' in content):
+                                    parsed_json = json.loads(content)
+                                    if isinstance(parsed_json, dict) and 'reply' in parsed_json:
+                                        yield parsed_json['reply']
+                                        continue
+                            except json.JSONDecodeError:
+                                # 如果解析失败，继续将原始内容传递
+                                pass
+                            
+                            yield content
+            except Exception as e:
+                print(f"流式生成回复时出错: {e}")
+                yield f"生成回复出错: {str(e)}"
+
+    async def _ollama_generate_streaming(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048):
+        """使用Ollama原生API接口进行流式生成
+        
+        Args:
+            prompt: 提示词
+            temperature: 温度参数
+            max_tokens: 最大token数
+            
+        Yields:
+            str: 文本块
+        """
         try:
-            # 构建消息列表
-            messages = [
-                {
-                    "role": "user",
-                    "content": prompt
+            # 创建异步HTTP客户端
+            timeout = httpx.Timeout(90.0, connect=30.0)  # 增加超时时间到90秒
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                # 构建请求数据 - 使用Ollama原生API格式
+                request_data = {
+                    "model": self.model,
+                    "prompt": prompt,
+                    "stream": True,  # 开启流式响应
+                    "options": {
+                        "temperature": temperature,
+                        "num_predict": max_tokens
+                    }
                 }
-            ]
-            
-            # 使用流式API
-            response = await asyncio.to_thread(
-                self.client.chat.completions.create,
-                model="deepseek/deepseek-v3/community",
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=True
-            )
-            
-            # 流式输出文本块
-            for chunk in response:
-                if chunk.choices and len(chunk.choices) > 0:
-                    if chunk.choices[0].delta.content:
-                        content = chunk.choices[0].delta.content
-                        # 尝试检查是否是JSON格式的数据，如果是，尝试解析JSON并只返回reply字段
-                        try:
-                            # 只对疑似JSON字符串进行检查（以{开头的内容）
-                            if '{' in content and ('"reply"' in content or '"is_question"' in content):
-                                parsed_json = json.loads(content)
-                                if isinstance(parsed_json, dict) and 'reply' in parsed_json:
-                                    yield parsed_json['reply']
-                                    continue
-                        except json.JSONDecodeError:
-                            # 如果解析失败，继续将原始内容传递
-                            pass
+                
+                # 直接使用固定的api/generate端点
+                url = f"{self.api_url}/api/generate"
+                print(f"发送流式请求到: {url}")
+                
+                # 发送请求到Ollama API
+                async with client.stream("POST", 
+                                        url, 
+                                        json=request_data,
+                                        headers={"Content-Type": "application/json"}) as response:
+                    if response.status_code != 200:
+                        raise Exception(f"Ollama API错误: 状态码 {response.status_code}")
+                    
+                    # 处理流式响应
+                    async for chunk in response.aiter_text():
+                        if not chunk or chunk.isspace():
+                            continue
                         
-                        yield content
+                        try:
+                            # Ollama流式响应格式是一系列JSON对象
+                            data = json.loads(chunk)
+                            if "response" in data:
+                                yield data["response"]
+                        except json.JSONDecodeError:
+                            # 如果不是有效的JSON，直接返回内容
+                            yield chunk
+                
         except Exception as e:
-            print(f"流式生成回复时出错: {e}")
+            print(f"Ollama流式生成出错: {str(e)}")
             yield f"生成回复出错: {str(e)}"

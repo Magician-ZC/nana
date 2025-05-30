@@ -18,7 +18,7 @@ import db_manager
 class ChatService:
     def __init__(self):
         # 初始化LLM服务
-        self.llm_service = LLMService(Config.LLM_API_KEY, Config.LLM_API_URL)
+        self.llm_service = LLMService(Config.LLM_API_KEY, Config.LLM_API_URL, Config.LLM_MODEL)
         
         # 设置LLM服务的chat_service引用为自身
         self.llm_service.chat_service = self
