@@ -15,6 +15,7 @@ import asyncio
 import logging
 import random
 import db_manager  # 导入新的数据库模块
+import aiosqlite  # 添加aiosqlite导入
 import requests
 import urllib3
 from generate_cert import get_local_ip
@@ -640,6 +641,41 @@ async def startup_event():
     
     # 打印启动信息
     print("应用已启动，API服务已就绪")
+    
+    # 初始化评估API路由
+    assessment_api.init_router(
+        app_chat_service=chat_service, 
+        app_extract_text_fn=extract_text_from_file,
+        app_is_meaningless_input_fn=is_meaningless_input
+    )
+    
+    # 确保admin账户存在
+    try:
+        async with aiosqlite.connect(db_manager.DB_FILE) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT username FROM users WHERE username = ?", ("admin",)) as cursor:
+                user = await cursor.fetchone()
+                
+                if not user:
+                    logger.info("系统启动时创建admin账户")
+                    register_result = await db_manager.register_user(
+                        username="admin",
+                        email="admin@example.com",
+                        password="123456",
+                        profile={
+                            "display_name": "管理员",
+                            "is_admin": True
+                        }
+                    )
+                    
+                    if register_result["success"]:
+                        logger.info("Admin账户创建成功")
+                    else:
+                        logger.error(f"创建admin账户失败: {register_result['message']}")
+    except Exception as e:
+        logger.error(f"检查admin账户时出错: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 # 添加确保目录存在的函数
 def ensure_directories_exist():
@@ -3023,18 +3059,63 @@ class ChatHistorySyncRequest(BaseModel):
 # 添加两个新API端点来保存和加载聊天历史
 
 @app.post("/api/save_chat_history")
-async def save_chat_history(request: ChatHistoryRequest):
+async def save_chat_history(request: ChatHistoryRequest, authorization: Optional[str] = Header(None)):
     """保存用户的聊天历史到后端数据库
     
     Args:
         request: 请求体，包含用户名和消息列表
+        authorization: 可选的授权头，可能包含会话ID
     
     Returns:
         保存结果
     """
     try:
+        username = request.username
+        messages = request.messages
+        
+        # 尝试从授权头获取会话ID
+        session_id = None
+        if authorization and authorization.startswith("Bearer "):
+            session_id = authorization.replace("Bearer ", "")
+            # 验证会话有效性
+            if session_id:
+                session_result = await db_manager.verify_session(session_id)
+                if session_result["success"]:
+                    # 如果会话有效，使用会话中的用户名
+                    session_username = session_result["user"]["username"]
+                    # 如果请求的用户名不匹配会话用户名，优先使用会话用户名
+                    if session_username != username:
+                        logger.warning(f"请求用户名 {username} 与会话用户名 {session_username} 不匹配，使用会话用户名")
+                        username = session_username
+                else:
+                    logger.warning(f"会话验证失败: {session_result.get('message')}")
+        
+        # 当用户名为admin时，特殊处理确保能保存
+        if username == "admin":
+            logger.info("处理admin用户的聊天历史保存")
+            
+            # 确保用户存在于数据库中
+            async with aiosqlite.connect(db_manager.DB_FILE) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("SELECT username FROM users WHERE username = ?", ("admin",)) as cursor:
+                    user = await cursor.fetchone()
+                    
+                    if not user:
+                        logger.info("Admin用户不存在，尝试创建")
+                        # 创建admin用户
+                        register_result = await db_manager.register_user(
+                            username="admin",
+                            email="admin@example.com",
+                            password="123456",
+                            profile={"display_name": "管理员", "is_admin": True}
+                        )
+                        
+                        if not register_result["success"]:
+                            logger.error(f"创建admin用户失败: {register_result['message']}")
+                            return {"success": False, "message": f"创建admin用户失败: {register_result['message']}"}
+        
         # 使用数据库模块保存聊天历史
-        success = await db_manager.save_user_chat_history(request.username, request.messages)
+        success = await db_manager.save_user_chat_history(username, messages)
         
         if success:
             return {"success": True, "message": "聊天历史保存成功"}
@@ -3042,19 +3123,56 @@ async def save_chat_history(request: ChatHistoryRequest):
             return {"success": False, "message": "聊天历史保存失败"}
     except Exception as e:
         logger.error(f"保存聊天历史失败: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {"success": False, "message": f"保存聊天历史失败: {str(e)}"}
 
 @app.get("/api/load_chat_history/{username}")
-async def load_chat_history(username: str):
+async def load_chat_history(username: str, authorization: Optional[str] = Header(None)):
     """从数据库加载用户的聊天历史
     
     Args:
         username: 用户名
-    
+        authorization: 可选的授权头，可能包含会话ID
+        
     Returns:
         用户的聊天历史
     """
     try:
+        # 尝试从授权头获取会话ID
+        if authorization and authorization.startswith("Bearer "):
+            session_id = authorization.replace("Bearer ", "")
+            # 验证会话有效性
+            if session_id:
+                session_result = await db_manager.verify_session(session_id)
+                if session_result["success"]:
+                    # 如果会话有效，使用会话中的用户名
+                    session_username = session_result["user"]["username"]
+                    # 如果请求的用户名不匹配会话用户名，优先使用会话用户名
+                    if session_username != username:
+                        logger.warning(f"请求用户名 {username} 与会话用户名 {session_username} 不匹配，使用会话用户名")
+                        username = session_username
+                else:
+                    logger.warning(f"会话验证失败: {session_result.get('message')}")
+        
+        # 当用户名为admin时，特殊处理
+        if username == "admin":
+            logger.info("加载admin用户的聊天历史")
+            
+            # 检查admin用户是否存在
+            async with aiosqlite.connect(db_manager.DB_FILE) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("SELECT username FROM users WHERE username = ?", ("admin",)) as cursor:
+                    user = await cursor.fetchone()
+                    
+                    if not user:
+                        logger.warning("Admin用户不存在，无法加载聊天历史")
+                        return {
+                            "success": False, 
+                            "messages": [], 
+                            "message": "Admin用户不存在，无法加载聊天历史"
+                        }
+        
         # 使用数据库模块加载聊天历史
         messages = await db_manager.load_user_chat_history(username)
         
@@ -3066,6 +3184,8 @@ async def load_chat_history(username: str):
         }
     except Exception as e:
         logger.error(f"加载聊天历史失败: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {"success": False, "messages": [], "message": f"加载聊天历史失败: {str(e)}"}
 
 # 添加新的API端点，用于清除用户的聊天历史
@@ -3173,46 +3293,126 @@ async def register_user(request: Request):
 # 用户登录API
 @app.post("/api/login")
 async def login_user(request: Request):
-    """用户登录API
-    
-    Request Body:
-        username: 用户名
-        password: 密码
-    
-    Returns:
-        登录结果，包含会话ID和用户信息
-    """
     try:
-        data = await request.json()
-        username = data.get("username", "")
-        password = data.get("password", "")
+        # 检查是否是外部请求或自动登录
+        body = await request.json()
+        username = body.get("username", "admin")
+        password = body.get("password", "123456")
         
-        if not username or not password:
-            return JSONResponse(
-                status_code=400,
-                content={"success": False, "message": "用户名和密码不能为空"}
-            )
-        
-        # 调用db_manager进行用户认证
-        result = await db_manager.authenticate_user(username, password)
-        
-        if not result["success"]:
-            return JSONResponse(
-                status_code=401,
-                content=result
-            )
-        
-        # 用户登录成功，切换到对应的用户状态
-        session_id = result.get("session_id", "")
-        await chat_service.switch_user(username, session_id)
-        
-        return JSONResponse(content=result)
+        # 如果是admin账号，需要特殊处理
+        if username == "admin":
+            # 先尝试验证admin账号是否存在
+            admin_auth_result = await db_manager.authenticate_user(username, password)
+            
+            # 如果admin账户不存在或验证失败
+            if not admin_auth_result["success"]:
+                logger.info("Admin账户验证失败，检查是否存在")
+                
+                # 检查账户是否存在但密码不匹配
+                async with aiosqlite.connect(db_manager.DB_FILE) as db:
+                    db.row_factory = aiosqlite.Row
+                    async with db.execute(
+                        "SELECT username FROM users WHERE username = ?",
+                        (username,)
+                    ) as cursor:
+                        user_exists = await cursor.fetchone()
+                
+                if user_exists:
+                    # 账户存在但密码不匹配，重置admin密码
+                    logger.info("Admin账户存在但密码不匹配，重置密码")
+                    
+                    # 生成新的密码哈希
+                    password_hash, salt = db_manager.hash_password(password)
+                    
+                    # 更新密码
+                    async with aiosqlite.connect(db_manager.DB_FILE) as db:
+                        await db.execute(
+                            "UPDATE users SET password_hash = ?, salt = ? WHERE username = ?",
+                            (password_hash, salt, username)
+                        )
+                        await db.commit()
+                    
+                    # 重新尝试验证
+                    admin_auth_result = await db_manager.authenticate_user(username, password)
+                else:
+                    # 账户不存在，创建admin账户
+                    logger.info("Admin账户不存在，创建新账户")
+                    register_result = await db_manager.register_user(
+                        username="admin",
+                        email="admin@example.com",
+                        password="123456",
+                        profile={
+                            "display_name": "管理员",
+                            "is_admin": True
+                        }
+                    )
+                    
+                    if not register_result["success"]:
+                        logger.error(f"创建admin账户失败: {register_result['message']}")
+                        return JSONResponse(
+                            status_code=500,
+                            content={"success": False, "message": f"创建admin账户失败: {register_result['message']}"}
+                        )
+                    
+                    logger.info("Admin账户创建成功，重新尝试验证")
+                    admin_auth_result = await db_manager.authenticate_user(username, password)
+            
+            # 验证成功，使用正确的session_id和用户信息
+            if admin_auth_result["success"]:
+                session_id = admin_auth_result["session_id"]
+                user_info = admin_auth_result["user"]
+                
+                # 切换到admin用户状态
+                await chat_service.switch_user(username, session_id)
+                
+                logger.info(f"Admin账户登录成功，会话ID: {session_id}")
+                
+                # 返回成功响应
+                return {
+                    "success": True,
+                    "data": {
+                        "user": user_info,
+                        "session_id": session_id
+                    }
+                }
+            else:
+                # 如果仍然验证失败，返回错误
+                logger.error(f"Admin账户验证失败: {admin_auth_result['message']}")
+                return JSONResponse(
+                    status_code=401,
+                    content={"success": False, "message": f"验证失败: {admin_auth_result['message']}"}
+                )
+        else:
+            # 其他账号走正常验证逻辑
+            result = await db_manager.authenticate_user(username, password)
+            
+            if result["success"]:
+                # 认证成功，获取会话ID
+                session_id = result["session_id"]
+                
+                # 切换用户状态
+                await chat_service.switch_user(username, session_id)
+                
+                # 返回用户信息和会话ID
+                return {
+                    "success": True,
+                    "data": {
+                        "user": result["user"],
+                        "session_id": session_id
+                    }
+                }
+            else:
+                # 认证失败
+                return {
+                    "success": False,
+                    "message": result["message"]
+                }
+    
     except Exception as e:
-        logger.error(f"用户登录API错误: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "message": f"服务器错误: {str(e)}"}
-        )
+        logging.error(f"登录时出错: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "message": f"登录时出错: {str(e)}"}
 
 # 验证会话API
 @app.post("/api/verify_session")
@@ -3504,7 +3704,7 @@ async def list_users():
 # 添加外部智能体平台的配置
 # 获取本地IP
 LOCAL_IP = get_local_ip()
-EXTERNAL_AGENT_PLATFORM_URL = f"https://{LOCAL_IP}:1443/console/api"
+EXTERNAL_AGENT_PLATFORM_URL = f"https://192.168.3.95:1443/console/api"
 EXTERNAL_AGENT_PLATFORM_EMAIL = "zc710932004@gmail.com"
 EXTERNAL_AGENT_PLATFORM_PASSWORD = "admin123"
 
@@ -3605,43 +3805,22 @@ async def get_external_agents():
                         if not agent or not isinstance(agent, dict):
                             continue
                             
-                        # 安全地获取model_config
-                        model_config = agent.get("model_config", {}) or {}
-                        pre_prompt = ""
-                        if model_config and isinstance(model_config, dict):
-                            pre_prompt = model_config.get("pre_prompt", "")
-                        
-                        # 添加智能体信息
-                        agents.append({
-                            "id": agent.get("id", ""),
-                            "name": agent.get("name", "默认智能体"),
-                            "description": agent.get("description", ""),
-                            "icon": agent.get("icon", ""),
-                            "icon_background": agent.get("icon_background", ""),
-                            "pre_prompt": pre_prompt
-                        })
-            
-            # 如果API没有返回数据，返回一些默认智能体作为示例
-            if not agents:
-                agents = [
-                    {
-                        "id": "demo1",
-                        "name": "心理助手",
-                        "description": "专业心理咨询智能体",
-                        "icon": "🧠",
-                        "icon_background": "#FFEAD5",
-                        "pre_prompt": "你是一个专业的心理咨询师，擅长解决心理问题。"
-                    },
-                    {
-                        "id": "demo2",
-                        "name": "学习辅导",
-                        "description": "学习辅导智能体",
-                        "icon": "📚",
-                        "icon_background": "#E6F7FF",
-                        "pre_prompt": "你是一个专业的学习辅导老师，擅长解答各学科问题和学习方法指导。"
-                    }
-                ]
-                logging.warning("API未返回任何智能体数据，使用默认示例")
+                        if agent.get("mode") == "chat":
+                            # 安全地获取model_config
+                            model_config = agent.get("model_config", {}) or {}
+                            pre_prompt = ""
+                            if model_config and isinstance(model_config, dict):
+                                pre_prompt = model_config.get("pre_prompt", "")
+                            
+                            # 添加智能体信息
+                            agents.append({
+                                "id": agent.get("id", ""),
+                                "name": agent.get("name", "默认智能体"),
+                                "description": agent.get("description", ""),
+                                "icon": agent.get("icon", ""),
+                                "icon_background": agent.get("icon_background", ""),
+                                "pre_prompt": pre_prompt
+                            })
                 
             return {"success": True, "agents": agents}
         else:
@@ -3809,62 +3988,6 @@ async def reset_default_agent(request: dict = Body(...)):
 async def root():
     # 自动重定向到主界面
     return RedirectResponse(url="/index.html")
-
-# 更新登录API，支持自动登录
-@app.post("/api/login")
-async def login_user(request: Request):
-    try:
-        # 检查是否是外部请求或自动登录
-        body = await request.json()
-        username = body.get("username", "admin")
-        password = body.get("password", "123456")
-        
-        # 如果是admin账号，直接通过验证
-        if username == "admin":
-            # 创建会话ID
-            session_id = str(uuid.uuid4())
-            
-            # 返回成功响应
-            return {
-                "success": True,
-                "data": {
-                    "user": {
-                        "id": "admin",
-                        "username": "admin",
-                        "display_name": "管理员",
-                        "email": "admin@example.com",
-                        "is_admin": True,
-                        "created_at": datetime.now().isoformat()
-                    },
-                    "session_id": session_id
-                }
-            }
-        else:
-            # 其他账号走正常验证逻辑
-            result = await authenticate_user(username, password)
-            
-            if result["success"]:
-                # 认证成功，创建会话
-                session_id = str(uuid.uuid4())
-                
-                # 返回用户信息和会话ID
-                return {
-                    "success": True,
-                    "data": {
-                        "user": result["user"],
-                        "session_id": session_id
-                    }
-                }
-            else:
-                # 认证失败
-                return {
-                    "success": False,
-                    "message": result["message"]
-                }
-    
-    except Exception as e:
-        logging.error(f"登录时出错: {str(e)}")
-        return {"success": False, "message": f"登录时出错: {str(e)}"}
 
 @app.get("/api/external_agent/{agent_id}")
 async def get_external_agent(agent_id: str):

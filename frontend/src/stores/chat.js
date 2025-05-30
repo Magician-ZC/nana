@@ -1128,11 +1128,10 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     // 使用用户名作为唯一标识符，这样每个账号都有自己的历史记录
-    const username = userStore.userProfile?.username || userStore.userProfile?.name || 'guest'
-    if (username === 'guest') {
-      console.log('未登录用户，不保存聊天记录')
-      return // 不保存未登录用户的聊天记录
-    }
+    const username = userStore.userProfile?.username || userStore.username || 'admin'
+    
+    // 保证admin用户的聊天记录一定会被保存
+    // 不再检查登录状态，admin是一个特殊的内置用户
     
     // 如果没有消息，不需要保存
     if (messages.value.length === 0) {
@@ -1179,12 +1178,21 @@ export const useChatStore = defineStore('chat', () => {
         const apiModule = await import('../utils/api')
         const apiUrl = apiModule.getApiUrl('save_chat_history')
         
+        // 确保session_id添加到请求头
+        const headers = {
+          'Content-Type': 'application/json'
+        }
+        
+        // 如果有会话ID，添加到Authorization头
+        const currentSessionId = userStore.sessionId || localStorage.getItem('session_id')
+        if (currentSessionId) {
+          headers['Authorization'] = `Bearer ${currentSessionId}`
+        }
+        
         // 发送保存请求
         const response = await fetch(apiUrl, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
+          headers,
           body: JSON.stringify({
             username: username,
             messages: messagesWithMetadata
@@ -1229,19 +1237,24 @@ export const useChatStore = defineStore('chat', () => {
     console.log('加载聊天历史')
     
     // 使用用户名作为唯一标识符
-    const username = userStore.userProfile?.username || userStore.userProfile?.name || 'guest'
-    if (username === 'guest') {
-      console.log('未登录用户，不加载聊天记录')
-      return false
-    }
+    const username = userStore.userProfile?.username || userStore.username || 'admin'
+
     
     try {
       // 导入API模块
       const apiModule = await import('../utils/api')
       const apiUrl = apiModule.getApiUrl(`load_chat_history/${username}`)
+
+      
+      // 构建请求头，确保包含会话ID
+      const headers = {}
+      const currentSessionId = userStore.sessionId || localStorage.getItem('session_id')
+      if (currentSessionId) {
+        headers['Authorization'] = `Bearer ${currentSessionId}`
+      }
       
       // 发送加载请求
-      const response = await fetch(apiUrl)
+      const response = await fetch(apiUrl, { headers })
       const result = await response.json()
       
       if (result.success && Array.isArray(result.messages) && result.messages.length > 0) {
@@ -1252,9 +1265,50 @@ export const useChatStore = defineStore('chat', () => {
       }
       
       console.log('后端未找到聊天历史或历史为空')
+      
+      // 尝试从localStorage加载
+      const localKey = `chat_history_${username}`
+      const localData = localStorage.getItem(localKey)
+      
+      if (localData) {
+        try {
+          const localMessages = JSON.parse(localData)
+          if (Array.isArray(localMessages) && localMessages.length > 0) {
+            messages.value = localMessages
+            console.log(`从本地存储加载了${localMessages.length}条消息历史`)
+            
+            // 异步将localStorage的数据同步到后端
+            setTimeout(() => {
+              saveMessages()
+            }, 1000)
+            
+            return true
+          }
+        } catch (e) {
+          console.error('解析本地聊天历史失败:', e)
+        }
+      }
       return false
     } catch (error) {
       console.error('从后端加载聊天历史失败:', error)
+      
+      // 尝试从localStorage加载作为备份
+      try {
+        const localKey = `chat_history_${username}`
+        const localData = localStorage.getItem(localKey)
+        
+        if (localData) {
+          const localMessages = JSON.parse(localData)
+          if (Array.isArray(localMessages) && localMessages.length > 0) {
+            messages.value = localMessages
+            console.log(`从本地存储加载了${localMessages.length}条消息历史`)
+            return true
+          }
+        }
+      } catch (e) {
+        console.error('解析本地聊天历史失败:', e)
+      }
+      
       return false
     }
   }

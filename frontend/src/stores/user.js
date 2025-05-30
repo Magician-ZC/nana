@@ -172,20 +172,18 @@ export const useUserStore = defineStore('user', () => {
       const data = await response.json()
       
       if (data.success && data.data) {
-        // 保存会话ID和用户资料
-        sessionId.value = data.data.session_id
-        localStorage.setItem('session_id', data.data.session_id)
-        isAuthenticated.value = true
         
-        if (data.data.user) {
-          userProfile.value = data.data.user
-          localStorage.setItem('user_profile', JSON.stringify(data.data.user))
+        const sessionData = {
+          session_id: data.data.session_id,
+          user: data.data.user
         }
         
-        console.log('自动登录成功')
-        return true
-      } else {
-        console.error('自动登录失败:', data.message)
+        // 使用统一的会话处理方法
+        setSession(sessionData)
+        
+        console.log('自动登录成功，会话ID:', sessionId.value)
+        
+        // 确保本地保存完成后，返回自动登录成功
         return false
       }
     } catch (error) {
