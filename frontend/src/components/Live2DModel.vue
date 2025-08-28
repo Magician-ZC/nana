@@ -175,8 +175,8 @@ const loadModel = async (modelId) => {
     model.value.x = app.value.view.width / 2
     model.value.y = app.value.view.height / 2
     
-    // 启用追踪
-    model.value.autoInteract = true
+    // 禁用追踪（禁止鼠标跟随）
+    model.value.autoInteract = false
     
     // 启用随机动作
     model.value.internalModel.motionManager.settings.autoAddRandomMotion = true
