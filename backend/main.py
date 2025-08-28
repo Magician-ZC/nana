@@ -3806,21 +3806,32 @@ async def get_external_agents():
                             continue
                             
                         if agent.get("mode") == "chat":
-                            # 安全地获取model_config
-                            model_config = agent.get("model_config", {}) or {}
-                            pre_prompt = ""
-                            if model_config and isinstance(model_config, dict):
-                                pre_prompt = model_config.get("pre_prompt", "")
+                            # 检查是否包含"心理"标签
+                            tags = agent.get("tags", [])
+                            has_psychology_tag = False
+                            if tags and isinstance(tags, list):
+                                for tag in tags:
+                                    if tag and isinstance(tag, dict) and tag.get("name") == "心理":
+                                        has_psychology_tag = True
+                                        break
                             
-                            # 添加智能体信息
-                            agents.append({
-                                "id": agent.get("id", ""),
-                                "name": agent.get("name", "默认智能体"),
-                                "description": agent.get("description", ""),
-                                "icon": agent.get("icon", ""),
-                                "icon_background": agent.get("icon_background", ""),
-                                "pre_prompt": pre_prompt
-                            })
+                            # 只处理包含"心理"标签的智能体
+                            if has_psychology_tag:
+                                # 安全地获取model_config
+                                model_config = agent.get("model_config", {}) or {}
+                                pre_prompt = ""
+                                if model_config and isinstance(model_config, dict):
+                                    pre_prompt = model_config.get("pre_prompt", "")
+                                
+                                # 添加智能体信息
+                                agents.append({
+                                    "id": agent.get("id", ""),
+                                    "name": agent.get("name", "默认智能体"),
+                                    "description": agent.get("description", ""),
+                                    "icon": agent.get("icon", ""),
+                                    "icon_background": agent.get("icon_background", ""),
+                                    "pre_prompt": pre_prompt
+                                })
                 
             return {"success": True, "agents": agents}
         else:
