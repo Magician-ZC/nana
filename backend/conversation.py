@@ -1,6 +1,7 @@
 import json
 import os
 import uuid
+import asyncio
 from typing import List, Dict, Optional, Tuple, Any
 from datetime import datetime
 import re
@@ -234,6 +235,22 @@ class ConversationHistory:
                 )
             except Exception as db_error:
                 print(f"保存到向量数据库时出错: {db_error}")
+                # 如果保存失败，尝试重建数据库
+                print("尝试重建向量数据库...")
+                self._rebuild_database()
+                try:
+                    # 重建后再次尝试保存
+                    self.collection.add(
+                        documents=[summary],
+                        metadatas=[{
+                            "timestamp": datetime.now().isoformat(),
+                            "type": "user_profile"
+                        }],
+                        ids=[str(uuid.uuid4())]
+                    )
+                    print("重建数据库后保存成功")
+                except Exception as retry_error:
+                    print(f"重建数据库后仍然保存失败: {retry_error}")
             
             # 移除已归档的对话
             self.turns = self.turns[archive_count:]
@@ -285,7 +302,39 @@ class ConversationHistory:
             return []
         except Exception as e:
             logging.error(f"向量数据库检索失败: {str(e)}")
+            print(f"ChromaDB查询出错: {e}")
+            print("尝试重建向量数据库...")
+            # 重建数据库
+            self._rebuild_database()
             return []
+    
+    def _rebuild_database(self):
+        """重建向量数据库"""
+        try:
+            import shutil
+            import os
+            
+            # 删除损坏的数据库文件
+            db_path = "save/memory"
+            if os.path.exists(db_path):
+                shutil.rmtree(db_path)
+                print(f"已删除损坏的数据库目录: {db_path}")
+            
+            # 重新初始化客户端和集合
+            self.client = chromadb.Client(Settings(
+                persist_directory=db_path,
+                is_persistent=True
+            ))
+            
+            # 重新创建集合
+            self.collection = self.client.get_or_create_collection(
+                name="memory",
+                embedding_function=APIEmbeddingFunction()
+            )
+            print("向量数据库已重建")
+            
+        except Exception as rebuild_error:
+            print(f"重建数据库时出错: {rebuild_error}")
     
     async def sync_profile_to_user_info(self, user_info_processor, force_update=False):
         """将用户画像同步到用户信息

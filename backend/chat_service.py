@@ -323,6 +323,11 @@ class ChatService:
             if not message or not message.strip():
                 return "请输入有效的消息内容", None
             
+            # 重新加载用户设置，确保使用最新的配置
+            # 从session_id获取用户名，如果是default则使用admin
+            username = "admin" if session_id == "default" else session_id
+            await self._load_user_settings(username)
+            
             # 确保TTS服务使用最新的配置
             self._refresh_tts_services()
             
