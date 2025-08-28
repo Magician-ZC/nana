@@ -5,6 +5,14 @@ import { useUserStore } from './user'
 
 // agent角色配置
 const AGENT_WELCOME_MESSAGES = {
+  xiaozhi: {
+    message: '你好，我是小智！有什么可以帮助你的吗？',
+    personality: '阳光开朗，积极向上，乐于助人'
+  },
+  linzong: {
+    message: '你好，我是欧米克网络科技的创始人林艺滨！有什么可以帮助你的吗？',
+    personality: '阳光开朗，积极向上，乐于助人'
+  },
   nanaA: {
     message: '哼~又是无聊的一天呢，有什么事吗？别浪费我时间哦。',
     personality: '傲娇，有点酷，略带不耐烦但内心善良'
@@ -84,6 +92,8 @@ export const useChatStore = defineStore('chat', () => {
   const isTracking = ref(true)
   const hasShownWelcome = ref({})  // 改为对象，记录每个agent是否显示过欢迎消息
   const agents = ref([
+    { id: 'xiaozhi', name: '小智', description: '阳光小助手' },
+    { id: 'linzong', name: '林艺滨', description: '商业强人' },
     { id: 'nanaA', name: '娜娜A', description: '傲娇猫娘' },
     { id: 'nanaB', name: '娜娜B', description: '知性大姐姐' },
     { id: 'nanaC', name: '娜娜C', description: '元气少女' }

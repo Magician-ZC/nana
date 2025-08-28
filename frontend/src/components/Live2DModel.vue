@@ -13,11 +13,13 @@ window.PIXI = PIXI
 const props = defineProps({
   modelId: {
     type: String,
-    default: 'nanaA'
+    default: 'linzong'
   }
 })
 
 const MODEL_PATHS = {
+  linzong: '/models/Lin/Lin.model3.json',
+  xiaozhi: '/models/xiaozhi/xiaozhi.model3.json',
   nanaA: '/models/Haru/Haru.model3.json',
   nanaB: '/models/Hiyori/Hiyori.model3.json',
   nanaC: '/models/PinkFox/PinkFox.model3.json',

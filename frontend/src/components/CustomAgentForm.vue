@@ -60,6 +60,8 @@
                 v-model="form.model"
                 class="w-full px-4 py-2.5 rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-700 text-neutral-800 dark:text-white placeholder-neutral-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 dark:focus:ring-primary-400 transition-all duration-200"
               >
+                <option value="xiaozhi">小智 - 阳光小助手</option>
+                <option value="linzong">林总 - 商业强人</option>
                 <option value="nanaA">娜娜A - 傲娇猫娘</option>
                 <option value="nanaB">娜娜B - 知性大姐姐</option>
                 <option value="nanaC">娜娜C - 元气少女</option>
@@ -259,7 +261,13 @@
             <div class="space-y-4">
               <!-- 角色形象预览 -->
               <div class="w-full aspect-square rounded-lg bg-primary-50 dark:bg-primary-900/20 flex items-center justify-center border border-neutral-200 dark:border-neutral-700 overflow-hidden">
-                <div v-if="form.model === 'nanaA'" class="flex items-center justify-center h-full">
+                <div v-if="form.model === 'xiaozhi'" class="text-center">
+                  <div class="mb-2 text-5xl text-primary-500 dark:text-primary-400">
+                    <i class="fa-solid fa-robot"></i>
+                  </div>
+                  <div class="text-sm text-primary-600 dark:text-primary-400">小智</div>
+                </div>
+                <div v-else-if="form.model === 'nanaA'" class="flex items-center justify-center h-full">
                   <img src="/models/Haru/preview.png" alt="娜娜A" class="max-h-full max-w-full object-contain"/>
                 </div>
                 <div v-else-if="form.model === 'nanaB'" class="flex items-center justify-center h-full">
@@ -429,7 +437,7 @@ const selectedTags = ref([])
 const form = ref({
   name: '',
   description: '',
-  model: 'nanaA',
+  model: 'linzong',
   personality: '',
   interests: '',
   lifestyle: '',

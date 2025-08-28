@@ -1,0 +1,37 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "xiaozhi.moc3",
+		"Textures": [
+			"xiaozhi.1024/texture_00.png"
+		],
+		"DisplayInfo": "xiaozhi.cdi3.json",
+		"Expressions": [
+			{
+				"Name": "idle1",
+				"File": "idle1.exp3.json"
+			},
+			{
+				"Name": "weixiao",
+				"File": "weixiao.exp3.json"
+			},
+			{
+				"Name": "idle0",
+				"File": "idle0.exp3.json"
+			}
+		]
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": []
+		},
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": []
+		}
+	],
+	"HitAreas": []
+}

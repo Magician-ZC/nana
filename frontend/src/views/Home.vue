@@ -201,11 +201,13 @@ function requestWelcomeAudio() {
         } else {
           // 默认表情
           const defaultExpressions = {
+            'xiaozhi': '微笑',
+            'linzong':'微笑',
             'nanaA': '酷酷',
             'nanaB': '开心',
             'nanaC': '害羞',
           };
-          live2dRef.value?.showExpression(defaultExpressions[chatStore.currentModel] || '酷酷');
+          live2dRef.value?.showExpression(defaultExpressions[chatStore.currentModel] || '微笑');
         }
         
         // 1.5秒后恢复默认表情
@@ -277,11 +279,13 @@ watch(() => chatStore.messages, async (newMessages, oldMessages) => {
     } else {
       // 默认表情
       const defaultExpressions = {
+        'xiaozhi': '微笑',
+        'linzong': '微笑',
         'nanaA': '酷酷',
         'nanaB': '开心',
         'nanaC': '害羞',
       }
-      live2dRef.value?.showExpression(defaultExpressions[chatStore.currentModel] || '酷酷')
+      live2dRef.value?.showExpression(defaultExpressions[chatStore.currentModel] || '微笑')
     }
     
     // 1.5秒后恢复默认表情

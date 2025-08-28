@@ -17,7 +17,7 @@ function detectApiBaseUrl() {
     
     // 如果是localhost或127.0.0.1，直接使用localhost
     if (['localhost', '127.0.0.1'].includes(currentHost)) {
-      apiHost = 'woaiwo.oamicnet.com';
+      apiHost = '192.168.3.51';
     } else {
       // 对于IP地址访问，使用当前访问的IP
       apiHost = 'woaiwo.oamicnet.com';
