@@ -203,6 +203,7 @@ function requestWelcomeAudio() {
           const defaultExpressions = {
             'xiaozhi': '微笑',
             'linzong':'微笑',
+            'zynx': '微笑',
             'nanaA': '酷酷',
             'nanaB': '开心',
             'nanaC': '害羞',
@@ -281,6 +282,7 @@ watch(() => chatStore.messages, async (newMessages, oldMessages) => {
       const defaultExpressions = {
         'xiaozhi': '微笑',
         'linzong': '微笑',
+        'zynx': '微笑',
         'nanaA': '酷酷',
         'nanaB': '开心',
         'nanaC': '害羞',

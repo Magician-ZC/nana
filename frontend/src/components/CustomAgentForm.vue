@@ -62,6 +62,7 @@
               >
                 <option value="xiaozhi">小智 - 阳光小助手</option>
                 <option value="linzong">林总 - 商业强人</option>
+                <option value="zynx">李思思 - 产品经理</option>
                 <option value="nanaA">娜娜A - 傲娇猫娘</option>
                 <option value="nanaB">娜娜B - 知性大姐姐</option>
                 <option value="nanaC">娜娜C - 元气少女</option>

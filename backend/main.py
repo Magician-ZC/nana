@@ -3712,8 +3712,12 @@ EXTERNAL_AGENT_PLATFORM_PASSWORD = "admin123"
 external_platform_token = None
 
 # 添加获取外部平台令牌的函数
-async def get_external_platform_token():
+async def get_external_platform_token(force_refresh=False):
     global external_platform_token
+    
+    # 如果强制刷新，则清除现有令牌
+    if force_refresh:
+        external_platform_token = None
     
     # 如果已有令牌，则直接返回
     if external_platform_token:
@@ -3778,68 +3782,88 @@ async def get_external_agents():
     获取外部智能体平台的智能体列表
     """
     try:
-        # 获取访问令牌
-        token = await get_external_platform_token()
-        if not token:
-            return {"success": False, "message": "无法获取访问令牌"}
-        
-        # 构建请求头
-        headers = {
-            "Authorization": f"Bearer {token}"
-        }
-        
-        # 请求智能体列表
-        agents_url = f"{EXTERNAL_AGENT_PLATFORM_URL}/apps?page=1&limit=30&name=&is_created_by_me=false"
-        response = requests.get(agents_url, headers=headers, verify=False)
-        
-        if response.status_code == 200:
-            data = response.json()
+        # 最多重试一次（首次 + 刷新令牌后重试）
+        for attempt in range(2):
+            # 获取访问令牌
+            if attempt == 0:
+                token = await get_external_platform_token()
+            else:
+                # 第二次尝试：强制刷新令牌
+                logging.warning("令牌已过期，正在重新获取令牌...")
+                token = await get_external_platform_token(force_refresh=True)
             
-            # 提取所需的智能体信息
-            agents = []
-            if data and isinstance(data, dict):
-                # 安全地获取data列表
-                agent_list = data.get("data", [])
-                if agent_list and isinstance(agent_list, list):
-                    for agent in agent_list:
-                        if not agent or not isinstance(agent, dict):
-                            continue
-                            
-                        if agent.get("mode") == "chat":
-                            # 检查是否包含"心理"标签
-                            tags = agent.get("tags", [])
-                            has_psychology_tag = False
-                            if tags and isinstance(tags, list):
-                                for tag in tags:
-                                    if tag and isinstance(tag, dict) and tag.get("name") == "心理":
-                                        has_psychology_tag = True
-                                        break
-                            
-                            # 只处理包含"心理"标签的智能体
-                            if has_psychology_tag:
-                                # 安全地获取model_config
-                                model_config = agent.get("model_config", {}) or {}
-                                pre_prompt = ""
-                                if model_config and isinstance(model_config, dict):
-                                    pre_prompt = model_config.get("pre_prompt", "")
-                                
-                                # 添加智能体信息
-                                agents.append({
-                                    "id": agent.get("id", ""),
-                                    "name": agent.get("name", "默认智能体"),
-                                    "description": agent.get("description", ""),
-                                    "icon": agent.get("icon", ""),
-                                    "icon_background": agent.get("icon_background", ""),
-                                    "pre_prompt": pre_prompt
-                                })
-                
-            return {"success": True, "agents": agents}
-        else:
-            logging.error(f"获取智能体列表API返回错误: {response.status_code}, {response.text}")
-            return {
-                "success": False, 
-                "message": f"获取智能体列表失败: HTTP {response.status_code}"
+            if not token:
+                if attempt == 0:
+                    continue  # 第一次失败，尝试刷新令牌
+                else:
+                    return {"success": False, "message": "重新获取访问令牌失败"}
+            
+            # 构建请求头
+            headers = {
+                "Authorization": f"Bearer {token}"
             }
+            
+            # 请求智能体列表
+            agents_url = f"{EXTERNAL_AGENT_PLATFORM_URL}/apps?page=1&limit=30&name=&is_created_by_me=false"
+            response = requests.get(agents_url, headers=headers, verify=False)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # 提取所需的智能体信息
+                agents = []
+                if data and isinstance(data, dict):
+                    # 安全地获取data列表
+                    agent_list = data.get("data", [])
+                    if agent_list and isinstance(agent_list, list):
+                        for agent in agent_list:
+                            if not agent or not isinstance(agent, dict):
+                                continue
+                                
+                            if agent.get("mode") == "chat":
+                                # 检查是否包含"心理"标签
+                                tags = agent.get("tags", [])
+                                has_psychology_tag = False
+                                if tags and isinstance(tags, list):
+                                    for tag in tags:
+                                        if tag and isinstance(tag, dict) and tag.get("name") == "心理":
+                                            has_psychology_tag = True
+                                            break
+                                
+                                # 只处理包含"心理"标签的智能体
+                                if has_psychology_tag:
+                                    # 安全地获取model_config
+                                    model_config = agent.get("model_config", {}) or {}
+                                    pre_prompt = ""
+                                    if model_config and isinstance(model_config, dict):
+                                        pre_prompt = model_config.get("pre_prompt", "")
+                                    
+                                    # 添加智能体信息
+                                    agents.append({
+                                        "id": agent.get("id", ""),
+                                        "name": agent.get("name", "默认智能体"),
+                                        "description": agent.get("description", ""),
+                                        "icon": agent.get("icon", ""),
+                                        "icon_background": agent.get("icon_background", ""),
+                                        "pre_prompt": pre_prompt
+                                    })
+                    
+                return {"success": True, "agents": agents}
+            
+            elif response.status_code == 401 and attempt == 0:
+                # 第一次遇到401错误，继续下一次循环（刷新令牌）
+                logging.info("成功重新获取令牌，正在重试请求...")
+                continue
+            else:
+                # 其他错误或第二次仍然401，直接返回错误
+                logging.error(f"获取智能体列表API返回错误: {response.status_code}, {response.text}")
+                return {
+                    "success": False, 
+                    "message": f"获取智能体列表失败: HTTP {response.status_code}"
+                }
+        
+        # 如果循环结束仍未成功，返回失败
+        return {"success": False, "message": "获取智能体列表失败，请稍后再试"}
     
     except Exception as e:
         logging.error(f"获取外部智能体列表时出错: {str(e)}")
@@ -3869,58 +3893,89 @@ async def switch_external_agent(request: dict = Body(...)):
         
         if not agent_prompt:
             logging.info("前端未提供prompt或pre_prompt，尝试从外部API获取")
-            # 获取智能体提示词
-            token = await get_external_platform_token()
-            if not token:
-                logging.error("切换外部智能体失败: 无法获取访问令牌")
-                return {"success": False, "message": "无法获取访问令牌"}
             
-            # 构建请求头
-            headers = {
-                "Authorization": f"Bearer {token}"
-            }
-            
-            # 请求智能体详情
-            try:
-                agent_url = f"{EXTERNAL_AGENT_PLATFORM_URL}/apps/{agent_id}"
-                response = requests.get(
-                    agent_url, 
-                    headers=headers, 
-                    verify=False,
-                    timeout=5
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    logging.info(f"获取到智能体响应: {data.keys()}")
-                    
-                    # 处理不同的响应结构
-                    if "data" in data and "model_config" in data["data"]:
-                        agent_prompt = data["data"]["model_config"].get("pre_prompt", "")
-                        logging.info("从model_config.pre_prompt获取智能体提示词")
-                    elif "model_config" in data:
-                        agent_prompt = data["model_config"].get("pre_prompt", "")
-                        logging.info("直接从model_config.pre_prompt获取智能体提示词")
-                    
-                    # 如果还是找不到，尝试其他可能的字段
-                    if not agent_prompt and "data" in data:
-                        if "prompt" in data["data"]:
-                            agent_prompt = data["data"]["prompt"]
-                            logging.info("从data.prompt获取智能体提示词")
-                        elif "pre_prompt" in data["data"]:
-                            agent_prompt = data["data"]["pre_prompt"]
-                            logging.info("从data.pre_prompt获取智能体提示词")
-                    
-                    # 如果仍然没有找到提示词
-                    if not agent_prompt:
-                        logging.error(f"智能体详情中未找到提示词，响应数据: {data}")
+            # 最多重试一次（首次 + 刷新令牌后重试）
+            for attempt in range(2):
+                # 获取访问令牌
+                if attempt == 0:
+                    token = await get_external_platform_token()
                 else:
-                    logging.error(f"获取智能体详情失败: HTTP {response.status_code}, {response.text}")
-            except Exception as e:
-                logging.error(f"获取智能体详情时出错: {str(e)}")
+                    # 第二次尝试：强制刷新令牌
+                    logging.warning("令牌已过期，正在重新获取令牌...")
+                    token = await get_external_platform_token(force_refresh=True)
+                
+                if not token:
+                    if attempt == 0:
+                        continue  # 第一次失败，尝试刷新令牌
+                    else:
+                        logging.error("重新获取访问令牌失败")
+                        # 使用默认提示词
+                        agent_prompt = f"你是{agent_name}，一个有用的AI助手。请用友善、专业的态度回答用户问题。"
+                        logging.warning(f"无法获取智能体提示词，使用默认提示词: {agent_prompt}")
+                        break
+                
+                # 构建请求头
+                headers = {
+                    "Authorization": f"Bearer {token}"
+                }
+                
+                # 请求智能体详情
+                try:
+                    agent_url = f"{EXTERNAL_AGENT_PLATFORM_URL}/apps/{agent_id}"
+                    response = requests.get(
+                        agent_url, 
+                        headers=headers, 
+                        verify=False,
+                        timeout=5
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        logging.info(f"获取到智能体响应: {data.keys()}")
+                        
+                        # 处理不同的响应结构
+                        prompt = ""
+                        if "data" in data and "model_config" in data["data"]:
+                            prompt = data["data"]["model_config"].get("pre_prompt", "")
+                            logging.info("从model_config.pre_prompt获取智能体提示词")
+                        elif "model_config" in data:
+                            prompt = data["model_config"].get("pre_prompt", "")
+                            logging.info("直接从model_config.pre_prompt获取智能体提示词")
+                        
+                        # 如果还是找不到，尝试其他可能的字段
+                        if not prompt and "data" in data:
+                            if "prompt" in data["data"]:
+                                prompt = data["data"]["prompt"]
+                                logging.info("从data.prompt获取智能体提示词")
+                            elif "pre_prompt" in data["data"]:
+                                prompt = data["data"]["pre_prompt"]
+                                logging.info("从data.pre_prompt获取智能体提示词")
+                        
+                        # 如果仍然没有找到提示词
+                        if not prompt:
+                            logging.error(f"智能体详情中未找到提示词，响应数据: {data}")
+                        
+                        # 成功获取到提示词
+                        agent_prompt = prompt
+                        break
+                        
+                    elif response.status_code == 401 and attempt == 0:
+                        # 第一次遇到401错误，继续下一次循环（刷新令牌）
+                        logging.info("成功重新获取令牌，正在重试请求...")
+                        continue
+                    else:
+                        # 其他错误或第二次仍然401
+                        logging.error(f"获取智能体详情失败: HTTP {response.status_code}, {response.text}")
+                        if attempt == 1:  # 第二次尝试也失败了
+                            break
+                        
+                except Exception as e:
+                    logging.error(f"获取智能体详情时出错: {str(e)}")
+                    if attempt == 1:  # 第二次尝试也失败了
+                        break
             
+            # 如果仍然无法获取提示词，使用默认提示词
             if not agent_prompt:
-                # 如果仍然无法获取提示词，使用默认提示词
                 agent_prompt = f"你是{agent_name}，一个有用的AI助手。请用友善、专业的态度回答用户问题。"
                 logging.warning(f"无法获取智能体提示词，使用默认提示词: {agent_prompt}")
         
@@ -4006,40 +4061,62 @@ async def get_external_agent(agent_id: str):
     获取外部智能体平台的特定智能体详情
     """
     try:
-        # 获取访问令牌
-        token = await get_external_platform_token()
-        if not token:
-            return {"success": False, "message": "无法获取访问令牌"}
-        
-        # 构建请求头
-        headers = {
-            "Authorization": f"Bearer {token}"
-        }
-        
-        # 请求智能体详情
-        agent_url = f"{EXTERNAL_AGENT_PLATFORM_URL}/apps/{agent_id}"
-        response = requests.get(agent_url, headers=headers, verify=False)
-        
-        if response.status_code == 200:
-            data = response.json()
-            if "data" in data:
-                agent_data = data["data"]
-                pre_prompt = agent_data.get("model_config", {}).get("pre_prompt", "")
-                
-                agent = {
-                    "id": agent_data.get("id", ""),
-                    "name": agent_data.get("name", ""),
-                    "description": agent_data.get("description", ""),
-                    "icon": agent_data.get("icon", ""),
-                    "icon_background": agent_data.get("icon_background", ""),
-                    "pre_prompt": pre_prompt
-                }
-                
-                return {"success": True, "agent": agent}
+        # 最多重试一次（首次 + 刷新令牌后重试）
+        for attempt in range(2):
+            # 获取访问令牌
+            if attempt == 0:
+                token = await get_external_platform_token()
             else:
-                return {"success": False, "message": "无法解析智能体详情数据"}
-        else:
-            return {"success": False, "message": f"获取智能体详情失败: {response.text}"}
+                # 第二次尝试：强制刷新令牌
+                logging.warning("令牌已过期，正在重新获取令牌...")
+                token = await get_external_platform_token(force_refresh=True)
+            
+            if not token:
+                if attempt == 0:
+                    continue  # 第一次失败，尝试刷新令牌
+                else:
+                    return {"success": False, "message": "重新获取访问令牌失败"}
+            
+            # 构建请求头
+            headers = {
+                "Authorization": f"Bearer {token}"
+            }
+            
+            # 请求智能体详情
+            agent_url = f"{EXTERNAL_AGENT_PLATFORM_URL}/apps/{agent_id}"
+            response = requests.get(agent_url, headers=headers, verify=False)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if "data" in data:
+                    agent_data = data["data"]
+                    pre_prompt = agent_data.get("model_config", {}).get("pre_prompt", "")
+                    
+                    agent = {
+                        "id": agent_data.get("id", ""),
+                        "name": agent_data.get("name", ""),
+                        "description": agent_data.get("description", ""),
+                        "icon": agent_data.get("icon", ""),
+                        "icon_background": agent_data.get("icon_background", ""),
+                        "pre_prompt": pre_prompt
+                    }
+                    
+                    return {"success": True, "agent": agent}
+                else:
+                    return {"success": False, "message": "无法解析智能体详情数据"}
+                    
+            elif response.status_code == 401 and attempt == 0:
+                # 第一次遇到401错误，继续下一次循环（刷新令牌）
+                logging.info("成功重新获取令牌，正在重试请求...")
+                continue
+            else:
+                # 其他错误或第二次仍然401，直接返回错误
+                status_code = response.status_code
+                message = response.text
+                return {"success": False, "message": f"获取智能体详情失败: HTTP {status_code} - {message}"}
+        
+        # 如果循环结束仍未成功，返回失败
+        return {"success": False, "message": "获取智能体详情失败，请稍后再试"}
     
     except Exception as e:
         logging.error(f"获取外部智能体详情时出错: {str(e)}")

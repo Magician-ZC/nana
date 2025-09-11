@@ -1,0 +1,17 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "LinYB.moc3",
+		"Textures": [
+			"LinYB.2048/texture_00.png"
+		],
+		"DisplayInfo": "LinYB.cdi3.json"
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": []
+		}
+	]
+}
