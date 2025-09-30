@@ -990,6 +990,12 @@ async def list_custom_agents():
         for filename in os.listdir(CUSTOM_AGENTS_DIR):
             if filename.endswith(".json"):
                 try:
+                    # 过滤掉外部智能体（从话题广场获取的智能体）
+                    # 外部智能体的文件名格式为: custom_external_{agent_id}.json
+                    if "external_" in filename:
+                        print(f"跳过外部智能体: {filename}")
+                        continue
+                    
                     with open(os.path.join(CUSTOM_AGENTS_DIR, filename), "r", encoding="utf-8") as f:
                         agent_config = json.load(f)
                         # 确保agent_config包含所有必要字段
@@ -1035,6 +1041,15 @@ async def update_custom_agent(agent_id: str, request: CustomAgentRequest):
                 content={
                     "success": False,
                     "message": "只能更新自定义角色"
+                }
+            )
+        
+        # 检查是否是外部智能体（从话题广场获取的）
+        if "external_" in agent_id:
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": "外部智能体不能修改，它们由话题广场管理"
                 }
             )
             
@@ -1202,6 +1217,15 @@ async def delete_custom_agent(agent_id: str):
                 content={
                     "success": False,
                     "message": "只能删除自定义角色"
+                }
+            )
+        
+        # 检查是否是外部智能体（从话题广场获取的）
+        if "external_" in agent_id:
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": "外部智能体不能通过此接口删除，请在话题广场中退出使用即可"
                 }
             )
             
@@ -2927,6 +2951,22 @@ def process_json_response(response_text):
     # 首先检查是否为空
     if not response_text or not response_text.strip():
         return reply, expression, is_summary
+    
+    # 移除<think>标签及其内容
+    if '<think>' in response_text:
+        print("检测到<think>标签，正在移除思考过程内容")
+        import re
+        think_pattern = r'<think>.*?</think>'
+        cleaned_text = re.sub(think_pattern, '', response_text, flags=re.DOTALL).strip()
+        
+        # 如果移除后为空，说明只有思考过程没有实际回复
+        if not cleaned_text:
+            print("警告: 回复只包含思考过程，没有实际内容")
+            return "嗯...我在想该怎么回答你呢。", None, False
+        
+        response_text = cleaned_text
+        reply = response_text
+        print(f"移除<think>标签后的回复: {response_text}")
     
     # 处理带有```json标记的回复
     if '```json' in response_text:

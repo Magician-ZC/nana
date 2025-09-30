@@ -398,8 +398,8 @@ class MainAgent:
                 # 如果是快捷提问类别，调用LLM生成回复
                 raw_response = await self.llm_service.async_chat(prompt, max_tokens=2048, temperature=0.7)
             else:
-                # 否则，生成更简短的回复
-                raw_response = await self.llm_service.async_chat(prompt, max_tokens=100, temperature=0.9)
+                # 否则，生成更简短的回复（增加token限制以容纳思考过程）
+                raw_response = await self.llm_service.async_chat(prompt, max_tokens=500, temperature=0.9)
             
             # 记录LLM原始回复
             print(f"LLM原始回复: {raw_response}")
@@ -814,20 +814,30 @@ class MainAgent:
         """
         if not response:
             return None
+        
+        # 首先移除<think>标签及其内容
+        import re
+        cleaned_response = response
+        think_pattern = r'<think>.*?</think>'
+        cleaned_response = re.sub(think_pattern, '', cleaned_response, flags=re.DOTALL).strip()
+        
+        # 如果移除<think>后为空，说明只有思考过程没有实际回复
+        if not cleaned_response:
+            print("警告: LLM回复只包含思考过程，没有实际内容")
+            return {"reply": "嗯...我在想该怎么回答你呢。", "expression": "咪咪眼"}
             
         try:
             # 尝试直接解析JSON
-            if response.strip().startswith('{') and response.strip().endswith('}'):
-                return json.loads(response)
+            if cleaned_response.strip().startswith('{') and cleaned_response.strip().endswith('}'):
+                return json.loads(cleaned_response)
                 
             # 检查是否是双花括号格式
-            if response.strip().startswith('{{') and response.strip().endswith('}}'):
-                fixed = response.replace('{{', '{').replace('}}', '}')
+            if cleaned_response.strip().startswith('{{') and cleaned_response.strip().endswith('}}'):
+                fixed = cleaned_response.replace('{{', '{').replace('}}', '}')
                 return json.loads(fixed)
                 
             # 尝试在文本中查找JSON
-            import re
-            json_match = re.search(r'({.*})', response, re.DOTALL)
+            json_match = re.search(r'({.*})', cleaned_response, re.DOTALL)
             if json_match:
                 return json.loads(json_match.group(1))
         except Exception as e:
@@ -836,10 +846,10 @@ class MainAgent:
         # 如果不是JSON格式，尝试构造一个基本的回复格式
         try:
             # 移除前缀（如 "Assistant: "）
-            clean_response = response
+            clean_response = cleaned_response
             for prefix in ["Assistant:", "助手:"]:
-                if response.startswith(prefix):
-                    clean_response = response[len(prefix):].strip()
+                if cleaned_response.startswith(prefix):
+                    clean_response = cleaned_response[len(prefix):].strip()
                     break
                     
             return {"reply": clean_response, "expression": "咪咪眼"}
