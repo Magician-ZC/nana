@@ -1284,7 +1284,13 @@ async def stream_chat(request: ChatRequest):
         global client
         
         # 打印请求内容以进行调试
-        print(f"stream_chat API接收到请求: {request}")
+        print(f"\n{'='*80}")
+        print(f"[stream_chat] 收到新请求")
+        print(f"消息内容: {request.message}")
+        print(f"会话ID: {request.session_id}")
+        print(f"智能体类型: {request.agent_type}")
+        print(f"是否快捷提问: {request.is_category}")
+        print(f"{'='*80}\n")
         
         # 检查是否是无意义输入
         message_for_processing = request.message
@@ -1371,155 +1377,197 @@ async def stream_chat(request: ChatRequest):
             print("检测到处于引导模式中，使用心理医生agent(xinli_agent)")
             agent_type = "xinli_agent"  # 强制使用心理医生agent
         
-        # 使用对话历史生成回复
-        full_response, audio_data = await chat_service.generate_reply(
-            message=message_for_processing,
-            session_id=request.session_id,
-            agent_type=agent_type,  # 使用可能被覆盖的agent_type
-            personality=request.personality,
-            is_category=current_is_category
+        # 【优化】使用流式生成来避免长时间等待
+        print(f"[流式生成] 开始生成回复...")
+        
+        # 先发送开始指示
+        yield json.dumps({"type": "start", "content": ""}) + "\n"
+        
+        # 准备流式生成所需的上下文信息
+        # 切换智能体（如果需要）
+        if agent_type:
+            print(f"[流式生成] 切换智能体到: {agent_type}")
+            chat_service.change_agent(agent_type, request.session_id)
+        
+        # 获取对话上下文和记忆
+        print(f"[流式生成] 获取对话上下文和记忆...")
+        context = chat_service.conversation_history.get_context()
+        if current_is_category:
+            memory_text = chat_service.main_agent._get_relevant_category_memories(message_for_processing)
+        else:
+            memory_text = chat_service.main_agent._get_relevant_memories(message_for_processing)
+        
+        print(f"[流式生成] 相关记忆: {memory_text if memory_text != '无补充信息' else '无'}")
+        
+        # 构建prompt
+        prompt = chat_service.main_agent.prompt.format(
+            user_info=chat_service.main_agent.user_info_processor.user_info if chat_service.main_agent.user_info_processor else "",
+            chat_history=context,
+            user_message=message_for_processing,
+            memory=memory_text
         )
         
-        # 打印原始回复进行调试
-        print(f"LLM原始回复: {full_response}")
+        print(f"[流式生成] 提示词已构建，长度: {len(prompt)} 字符")
+        print(f"[流式生成] 调用LLM流式API...")
         
-        # 统一处理JSON格式的回复，不区分引导模式和非引导模式
-        response_text, extracted_expression, is_summary = process_json_response(full_response)
-        print(f"处理后的纯文本回复: {response_text}")
+        # 使用流式API生成回复
+        accumulated_response = ""
+        in_think_tag = False
+        json_buffer = ""
+        response_text = ""
+        extracted_expression = None
+        is_summary = False
         
-        # 确保response_text只是reply字段的值，而不是完整JSON
-        if response_text.strip().startswith("{") and response_text.strip().endswith("}"):
-            try:
-                # 尝试解析JSON
-                parsed_json = json.loads(response_text)
-                # 如果reply字段存在，使用它作为回复
-                if "reply" in parsed_json:
-                    response_text = parsed_json["reply"]
-                    print(f"从JSON中提取reply字段: {response_text}")
-            except json.JSONDecodeError:
-                # 如果无法解析为JSON，保持原样
-                print("无法将回复解析为JSON，保持原样")
+        try:
+            # 调用LLM的流式生成API
+            max_tokens = 2048 if current_is_category else 500
+            print(f"[流式生成] LLM参数: max_tokens={max_tokens}, temperature={0.7 if current_is_category else 0.9}")
+            
+            chunk_count = 0
+            async for chunk in chat_service.main_agent.llm_service.generate_streaming(
+                prompt, 
+                temperature=0.7 if current_is_category else 0.9,
+                max_tokens=max_tokens
+            ):
+                chunk_count += 1
+                if chunk_count == 1:
+                    print(f"[流式生成] 开始接收LLM响应流...")
+                
+                accumulated_response += chunk
+                
+                # 检测并过滤 <think> 标签中的内容
+                while True:
+                    if not in_think_tag:
+                        # 查找 <think> 开始标签
+                        think_start = accumulated_response.find("<think>")
+                        if think_start != -1:
+                            # 发送 <think> 之前的内容
+                            before_think = accumulated_response[:think_start]
+                            if before_think:
+                                json_buffer += before_think
+                            accumulated_response = accumulated_response[think_start + 7:]  # 跳过 <think>
+                            in_think_tag = True
+                        else:
+                            # 没有找到 <think>，处理当前内容
+                            json_buffer += accumulated_response
+                            accumulated_response = ""
+                            break
+                    else:
+                        # 查找 </think> 结束标签
+                        think_end = accumulated_response.find("</think>")
+                        if think_end != -1:
+                            # 跳过 <think>...</think> 中的内容
+                            accumulated_response = accumulated_response[think_end + 8:]  # 跳过 </think>
+                            in_think_tag = False
+                        else:
+                            # 还没有找到结束标签，继续等待
+                            accumulated_response = ""
+                            break
+                
+                # 尝试解析JSON（如果有完整的JSON）
+                if json_buffer and not in_think_tag:
+                    # 检查是否有完整的JSON
+                    if '{' in json_buffer and '}' in json_buffer:
+                        try:
+                            # 尝试提取JSON
+                            start_idx = json_buffer.find('{')
+                            end_idx = json_buffer.rfind('}') + 1
+                            if start_idx != -1 and end_idx > start_idx:
+                                json_str = json_buffer[start_idx:end_idx]
+                                parsed_json = json.loads(json_str)
+                                
+                                # 提取reply字段作为要显示的文本
+                                if 'reply' in parsed_json:
+                                    new_text = parsed_json['reply']
+                                    # 发送新增的文本部分
+                                    if len(new_text) > len(response_text):
+                                        new_chars = new_text[len(response_text):]
+                                        for char in new_chars:
+                                            yield json.dumps({"type": "content", "content": char}) + "\n"
+                                        response_text = new_text
+                                    
+                                    # 提取其他字段
+                                    if 'expression' in parsed_json and not extracted_expression:
+                                        extracted_expression = parsed_json['expression']
+                                    if 'is_summary' in parsed_json:
+                                        is_summary = parsed_json['is_summary']
+                                
+                                # 清空已处理的JSON
+                                json_buffer = json_buffer[end_idx:]
+                        except json.JSONDecodeError:
+                            # JSON还不完整，继续累积
+                            pass
+            
+            # 流式生成完毕，处理剩余的buffer
+            if json_buffer.strip():
+                # 如果buffer中还有内容但没有被解析为JSON，尝试最后一次解析
+                try:
+                    # 清理buffer
+                    cleaned = json_buffer.strip()
+                    if cleaned.startswith('{') and cleaned.endswith('}'):
+                        parsed_json = json.loads(cleaned)
+                        if 'reply' in parsed_json:
+                            final_text = parsed_json['reply']
+                            if len(final_text) > len(response_text):
+                                new_chars = final_text[len(response_text):]
+                                for char in new_chars:
+                                    yield json.dumps({"type": "content", "content": char}) + "\n"
+                                response_text = final_text
+                            if 'expression' in parsed_json and not extracted_expression:
+                                extracted_expression = parsed_json['expression']
+                            if 'is_summary' in parsed_json:
+                                is_summary = parsed_json['is_summary']
+                except:
+                    # 如果最终也无法解析，将buffer作为纯文本发送
+                    if json_buffer and not response_text:
+                        for char in json_buffer:
+                            yield json.dumps({"type": "content", "content": char}) + "\n"
+                        response_text = json_buffer
+        
+        except Exception as e:
+            print(f"流式生成过程中出错: {e}")
+            import traceback
+            traceback.print_exc()
+            error_msg = "抱歉，生成回复时遇到了问题。"
+            for char in error_msg:
+                yield json.dumps({"type": "content", "content": char}) + "\n"
+            response_text = error_msg
+        
+        print(f"\n[流式生成] ✅ 完成!")
+        print(f"[流式生成] 最终回复长度: {len(response_text)} 字符")
+        print(f"[流式生成] 回复内容预览: {response_text[:100]}...")
         
         # 更新表情（如果有）
         if extracted_expression:
             chat_service.main_agent.expression = extracted_expression
-            print(f"已设置表情: {extracted_expression}")
+            print(f"[流式生成] 表情: {extracted_expression}")
+            # 发送表情数据
+            yield json.dumps({
+                "type": "metadata", 
+                "expression": extracted_expression
+            }) + "\n"
         
         # 检查是否应该结束引导（仅在引导模式下）
         if is_summary and chat_service.guidance_state["is_guiding"]:
-            print("检测到引导结束标记，重置引导状态")
+            print("[引导模式] 检测到引导结束标记，重置引导状态")
             chat_service._reset_guidance_state()
         
         # 将助手的回复添加到对话历史中
         try:
             if request.message != "SYSTEM_GUIDANCE" and not request.message.startswith("SYSTEM_"):
                 # 只有普通对话才添加到历史记录，系统消息不添加
-                # 使用处理后的纯文本回复保存到历史中
-                await chat_service.conversation_history.add_dialog(message="ASSISTANT_REPLY", reply=response_text)
-                print(f"已将助手回复添加到对话历史，当前对话轮数: {len(chat_service.conversation_history.turns)}")
+                await chat_service.conversation_history.add_dialog(request.message, response_text)
+                print(f"[对话历史] 已添加，当前轮数: {len(chat_service.conversation_history.turns)}")
         except Exception as e:
-            print(f"添加助手回复到对话历史时出错: {e}")
+            print(f"[错误] 添加对话历史失败: {e}")
         
-        # 开始发送响应
-        
-        # 先发送回复类型指示
-        yield json.dumps({"type": "start", "content": ""}) + "\n"
-        
-        # 打印当前打字机速度设置
-        print(f"当前打字机速度: {Config.TYPING_SPEED} 毫秒/字符")
-        
-        # 计算字符延迟时间，毫秒转为秒
-        char_delay = Config.TYPING_SPEED / 1000
-        print(f"字符延迟: {char_delay:.3f} 秒/字符")
-        
-        # 检查是否已有音频数据(如果TTS已经快速生成完成)
-        audio_ready = audio_data and len(audio_data) > 100
-        
-        # 如果已有音频数据且生成快速，先发送音频数据
-        if audio_ready:
-            try:
-                # 音频发送代码
-                MAX_CHUNK_SIZE = 32 * 1024
-                base64_audio = base64.b64encode(audio_data).decode('ascii')
-                audio_size = len(base64_audio)
-                print(f"音频已准备好，Base64编码后的音频大小: {audio_size} 字符")
-                
-                if audio_size > MAX_CHUNK_SIZE:
-                    chunks = []
-                    for i in range(0, audio_size, MAX_CHUNK_SIZE):
-                        chunks.append(base64_audio[i:i+MAX_CHUNK_SIZE])
-                    
-                    print(f"音频数据过大，分为 {len(chunks)} 个片段发送")
-                    
-                    # 发送分片
-                    for i, chunk_data in enumerate(chunks):
-                        chunk_type = "audio_start" if i == 0 else "audio_chunk" if i < len(chunks) - 1 else "audio_end"
-                        chunk = {
-                            "type": chunk_type,
-                            "chunk_index": i,
-                            "total_chunks": len(chunks),
-                            "audio_chunk": chunk_data
-                        }
-                        yield json.dumps(chunk) + "\n"
-                else:
-                    yield json.dumps({
-                        "type": "audio",
-                        "audio_data": base64_audio
-                    }) + "\n"
-            except Exception as e:
-                print(f"发送音频数据出错: {e}")
-        
-        # 逐字发送文本（无论音频是否准备好，都开始文字输出）
-        for char in response_text:
-            yield json.dumps({"type": "content", "content": char}) + "\n"
-            await asyncio.sleep(char_delay)
-        
-        # 发送表情数据
-        if hasattr(chat_service.main_agent, 'expression') and chat_service.main_agent.expression:
-            yield json.dumps({
-                "type": "metadata", 
-                "expression": chat_service.main_agent.expression
-            }) + "\n"
-        
-        # 发送结束指示（文字已全部显示完）
+        # 发送结束指示
+        print(f"[流式生成] 发送结束标记\n{'='*80}\n")
         yield json.dumps({"type": "end", "content": ""}) + "\n"
         
-        # 如果音频是在文字显示后才准备好的，发送延迟音频
-        if not audio_ready and audio_data and len(audio_data) > 100:
-            try:
-                # 延迟音频发送代码
-                MAX_CHUNK_SIZE = 32 * 1024
-                base64_audio = base64.b64encode(audio_data).decode('ascii')
-                audio_size = len(base64_audio)
-                print(f"延迟音频已准备好，Base64编码后的音频大小: {audio_size} 字符")
-                
-                # 发送延迟音频标志，前端可以根据这个标志决定是否播放
-                yield json.dumps({"type": "delayed_audio_notification"}) + "\n"
-                
-                if audio_size > MAX_CHUNK_SIZE:
-                    chunks = []
-                    for i in range(0, audio_size, MAX_CHUNK_SIZE):
-                        chunks.append(base64_audio[i:i+MAX_CHUNK_SIZE])
-                    
-                    print(f"延迟音频数据过大，分为 {len(chunks)} 个片段发送")
-                    
-                    # 发送分片
-                    for i, chunk_data in enumerate(chunks):
-                        chunk_type = "delayed_audio_start" if i == 0 else "delayed_audio_chunk" if i < len(chunks) - 1 else "delayed_audio_end"
-                        chunk = {
-                            "type": chunk_type,
-                            "chunk_index": i,
-                            "total_chunks": len(chunks),
-                            "audio_chunk": chunk_data
-                        }
-                        yield json.dumps(chunk) + "\n"
-                else:
-                    yield json.dumps({
-                        "type": "delayed_audio",
-                        "audio_data": base64_audio
-                    }) + "\n"
-            except Exception as e:
-                print(f"发送延迟音频数据出错: {e}")
+        # 【后台异步生成TTS音频】
+        # 注意：音频生成会在后台进行，不阻塞响应
+        # 这里我们不等待音频，因为流式响应已经完成
         
     # 返回流式响应
     return StreamingResponse(generate_stream_response(), media_type="text/event-stream")
@@ -3744,7 +3792,10 @@ async def list_users():
 # 添加外部智能体平台的配置
 # 获取本地IP
 LOCAL_IP = get_local_ip()
-EXTERNAL_AGENT_PLATFORM_URL = f"https://192.168.3.95:1443/console/api"
+
+# 外部智能体平台配置
+ENABLE_EXTERNAL_AGENTS = False  # 是否启用外部智能体功能
+EXTERNAL_AGENT_PLATFORM_URL = f"https://192.168.3.60:1443/console/api"
 EXTERNAL_AGENT_PLATFORM_EMAIL = "zc710932004@gmail.com"
 EXTERNAL_AGENT_PLATFORM_PASSWORD = "admin123"
 
@@ -3798,13 +3849,13 @@ async def get_external_platform_token(force_refresh=False):
         return None
         
     except requests.exceptions.Timeout:
-        logging.error("获取外部平台访问令牌超时")
+        logging.warning("获取外部平台访问令牌超时（外部智能体功能不可用）")
         return None
     except requests.exceptions.ConnectionError:
-        logging.error("连接外部平台失败，请检查网络或服务器状态")
+        logging.warning("连接外部平台失败（外部智能体功能不可用），请检查网络或服务器状态")
         return None
     except Exception as e:
-        logging.error(f"获取外部平台访问令牌时出错: {str(e)}")
+        logging.warning(f"获取外部平台访问令牌时出错（外部智能体功能不可用）: {str(e)}")
         return None
 
 # 添加外部智能体模型
@@ -3821,6 +3872,10 @@ async def get_external_agents():
     """
     获取外部智能体平台的智能体列表
     """
+    # 检查是否启用外部智能体功能
+    if not ENABLE_EXTERNAL_AGENTS:
+        return {"success": True, "agents": [], "message": "外部智能体功能未启用"}
+    
     try:
         # 最多重试一次（首次 + 刷新令牌后重试）
         for attempt in range(2):

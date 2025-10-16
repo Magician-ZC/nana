@@ -89,12 +89,20 @@ const loadAgents = async () => {
     const data = await response.json()
     if (data.success && Array.isArray(data.agents)) {
       agents.value = data.agents
-      console.log('加载了', agents.value.length, '个外部智能体')
+      if (data.agents.length > 0) {
+        console.log('加载了', agents.value.length, '个外部智能体')
+      } else {
+        console.log('外部智能体功能未启用或无可用智能体')
+      }
     } else {
-      console.error('加载外部智能体失败:', data.message)
+      console.warn('加载外部智能体失败:', data.message || '未知错误')
+      // 不影响使用，静默失败
+      agents.value = []
     }
   } catch (error) {
-    console.error('加载外部智能体时出错:', error)
+    console.warn('加载外部智能体时出错（不影响正常使用）:', error.message || error)
+    // 确保agents是空数组，避免UI错误
+    agents.value = []
   } finally {
     initialLoading.value = false
   }

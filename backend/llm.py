@@ -184,6 +184,16 @@ class LLMService:
         is_json: bool = False,
         max_tokens: int = 1024
     ) -> str:
+        # 检测URL是否是Ollama服务
+        if "ollama" in self.api_url.lower() or "11434" in self.api_url:
+            # 使用Ollama原生API
+            response = await self._ollama_generate(message, temperature, max_tokens)
+            if is_json:
+                return self._parse_json_response(response)
+            else:
+                return response
+        
+        # 使用OpenAI兼容的API
         retry_count = 0
         
         while retry_count < max_retries:
